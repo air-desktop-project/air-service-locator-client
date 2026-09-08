@@ -1,0 +1,25 @@
+[package]
+name = "asl-client-ffi"
+description = "L'ABI C d'asl-client — le passage par lequel entrent les liaisons Python, Ruby, C++, Kotlin et Swift."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+# `cdylib` pour ce qui se charge à l'exécution — Python, Ruby, la JVM.
+# `staticlib` pour ce qui se lie à la construction — C++, et Swift quand on ne
+# veut pas d'objet partagé à installer.
+#
+# LES DEUX, ET NON L'UN OU L'AUTRE : cinq écosystèmes n'ont pas la même façon de
+# charger du code natif, et n'en imposer qu'une reviendrait à choisir lesquels
+# sont bienvenus.
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+asl-client.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,76 @@
+# Manifeste du workspace air-service-locator-client.
+#
+# CE QUE DES TIERS INSTALLENT. Trois choses, un seul dépôt :
+#
+#   `asl-client`      La bibliothèque Rust. Ce qu'un daemon lie pour s'annoncer,
+#                     et ce qu'un de ses clients lie pour retrouver un port.
+#   `asl-client-ffi`  La même, derrière une ABI C. C'est par là que passent les
+#                     liaisons Python, Ruby, C++, Kotlin et Swift (`liaisons/`).
+#   `asl-cli`         L'utilitaire `asl`, pour faire à la main ce que la
+#                     bibliothèque fait dans un programme.
+#
+# POURQUOI CE DÉPÔT EST SÉPARÉ DU SERVEUR
+#
+# Pas pour ranger. Ceci est un PRODUIT à part : son public n'est pas nous, son
+# rythme de publication n'est pas celui d'un serveur qu'on déploie sur ses
+# propres machines, et sa surface est un engagement envers cinq écosystèmes qui
+# ne se mettent pas à jour au même rythme (contrainte C12 du dépôt serveur).
+#
+# **Et la frontière rend LITTÉRALE une règle qui n'était qu'un conseil.** Dans le
+# dépôt serveur, « le client ne doit pas dépendre de l'étage 2 ou 3 » se
+# respectait par discipline. Ici, ces crates ne sont pas atteignables : un daemon
+# qui s'annonce ne peut PAS embarquer la base de données de l'annuaire, même par
+# accident.
+#
+# ── LA DÉPENDANCE VERS LE DÉPÔT SERVEUR, ET CE QU'ELLE COÛTE ────────────────
+#
+# `asl-id` et `asl-proto` vivent dans `air-service-locator-server`, qui porte
+# les spécifications : le dépôt qui décrit la grammaire porte la grammaire.
+#
+# Elles sont tirées par une dépendance `git` ÉPINGLÉE SUR UN SHA. C'est ce qui
+# préserve la reproductibilité — mais **une dépendance `git` échappe à
+# `cargo audit`**, et le SHA doit être revu à chaque changement de protocole
+# plutôt que suivi aveuglément.
+#
+# **C'EST UNE SOLUTION D'ATTENTE, ET ELLE EST DATÉE.** Ce qui la remplacera :
+# publier `asl-id` et `asl-proto` sur crates.io le jour où le protocole se
+# stabilise. Un tiers qui embarque cette bibliothèque doit pouvoir la tirer d'un
+# registre, pas d'un dépôt git dont il ne sait rien.
+
+[workspace]
+resolver = "3"
+members = [
+    "crates/asl-client",
+    "crates/asl-client-ffi",
+    "crates/asl-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98.0"
+license = "MPL-2.0"
+authors = ["air-service-locator contributors"]
+repository = "https://github.com/air-desktop-project/air-service-locator-client"
+
+[workspace.dependencies]
+asl-client = { path = "crates/asl-client", version = "0.1.0" }
+
+# La grammaire, tirée du dépôt qui porte les spécifications.
+asl-id = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "e64294a95714a7678902476cd8f7a9e1a5e504a0" }
+asl-proto = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "e64294a95714a7678902476cd8f7a9e1a5e504a0" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+cast_possible_truncation = "deny"
+cast_sign_loss = "deny"
+cast_lossless = "deny"
+arithmetic_side_effects = "deny"
+
+[profile.release]
+debug = "line-tables-only"
+lto = "thin"
+codegen-units = 1
