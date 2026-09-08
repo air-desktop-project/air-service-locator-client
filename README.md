@@ -81,13 +81,22 @@ parce qu'il se reconstruit ici, tout seul, en un keepalive.
 
 ## Ce que le porteur doit poser sur une machine
 
-**Un secret de machine, `sm-…`, et rien d'autre.** Le même objet des deux côtés :
-la machine qui héberge le daemon le porte avec la capacité `annonce`, celle qui
-consomme le porte avec la capacité `lecture`.
+**Une paire de clés Ed25519 que la bibliothèque génère ELLE-MÊME**, et dont la
+partie privée ne quitte jamais la machine. Il n'y a **aucun secret partagé** à
+poser : c'est la règle du produit, pas une préférence.
 
-**Il n'existe aucun mode anonyme.** Une résolution sans secret valide n'est pas
-prévue par le serveur, et un client qui coderait un chemin de repli « sans
-authentification » ouvrirait une porte qui n'existe pas.
+L'enrôlement se fait en une commande — `asl enrole <code>` — avec un code court
+que l'application affiche, à usage unique et valable quelques minutes. La
+bibliothèque génère alors sa paire et présente sa clé publique. **Le code n'est
+pas un justificatif durable** : il n'ouvre qu'une opération, lier une clé.
+
+Le même objet des deux côtés : la machine qui héberge le daemon porte la
+capacité `annonce`, celle qui consomme porte `lecture`.
+
+**Il n'existe aucun mode anonyme.** Une résolution hors d'une connexion
+authentifiée par une clé n'est pas prévue par le serveur, et un client qui
+coderait un chemin de repli « sans authentification » ouvrirait une porte qui
+n'existe pas.
 
 ## La dépendance vers le dépôt serveur
 

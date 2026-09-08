@@ -3,7 +3,6 @@ name = "asl-client"
 description = "Ce qu'un daemon lie pour s'annoncer auprès d'un annuaire air-service-locator, et ce qu'un client lie pour retrouver un port."
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true

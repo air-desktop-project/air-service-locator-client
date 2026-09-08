@@ -3,7 +3,6 @@ name = "asl-cli"
 description = "L'utilitaire `asl` — annoncer, résoudre et diagnostiquer à la main."
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true

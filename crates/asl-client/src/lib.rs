@@ -45,16 +45,28 @@
 //!
 //! # Ce que le porteur doit poser sur la machine
 //!
-//! **Un secret de machine, `sm-…`, et rien d'autre** (`docs/modele.md` §2.3).
-//! Le même objet des deux côtés : la machine qui héberge le daemon le porte avec
-//! la capacité `annonce`, celle qui consomme le porte avec la capacité
-//! `lecture`. Une machine n'est pas « une machine à daemon » — c'est n'importe
-//! quelle machine d'un utilisateur.
+//! **Rien. La bibliothèque génère sa propre paire de clés Ed25519**
+//! (`docs/modele.md` §2.3), et la partie privée ne quitte jamais la machine.
+//!
+//! **AUCUN SECRET PARTAGÉ N'EST POSÉ** (contrainte C14). L'enrôlement se fait
+//! avec un code court, à usage unique et valable quelques minutes, que
+//! l'application affiche : `asl enrole <code>`. La bibliothèque génère alors sa
+//! paire et présente sa clé publique. Le code n'ouvre qu'une opération — lier une
+//! clé —, et le justificatif durable est la clé, que personne n'a jamais
+//! transmise.
+//!
+//! Le même objet des deux côtés : la machine qui héberge le daemon porte la
+//! capacité `annonce`, celle qui consomme porte `lecture`. Une machine n'est pas
+//! « une machine à daemon » — c'est n'importe quelle machine d'un utilisateur.
+//!
+//! **L'authentification est portée par la CONNEXION** : la clé est prouvée une
+//! fois à l'établissement, et toutes les requêtes en héritent. Il n'y a pas de
+//! jeton à joindre à chaque appel, donc pas de jeton à faire fuir.
 //!
 //! **Il n'y a aucun mode anonyme à implémenter** (contrainte C10) : une
-//! résolution sans secret valide n'existe pas, et un client qui prévoirait un
-//! chemin de repli « sans authentification » coderait une porte que le serveur
-//! n'ouvre pas.
+//! résolution hors d'une connexion authentifiée n'existe pas, et un client qui
+//! prévoirait un chemin de repli « sans authentification » coderait une porte
+//! que le serveur n'ouvre pas.
 //!
 //! # État
 //!

@@ -48,7 +48,15 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.98.0"
+# PAS DE `rust-version`, ET C'EST DÉLIBÉRÉ.
+#
+# Ce champ déclare une version MINIMALE, ce qui n'a de sens que si l'on accepte
+# d'être compilé par plusieurs toolchains. Ici `rust-toolchain.toml` en épingle
+# UNE, datée, celle d'Air : il n'y a pas d'intervalle à déclarer, et un
+# `rust-version` en inventerait un que personne ne vérifie.
+#
+# Il redeviendra utile le jour où ces crates seront publiées sur crates.io — un
+# consommateur, lui, a bien une toolchain à lui.
 license = "MPL-2.0"
 authors = ["air-service-locator contributors"]
 repository = "https://github.com/air-desktop-project/air-service-locator-client"
@@ -57,8 +65,8 @@ repository = "https://github.com/air-desktop-project/air-service-locator-client"
 asl-client = { path = "crates/asl-client", version = "0.1.0" }
 
 # La grammaire, tirée du dépôt qui porte les spécifications.
-asl-id = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "e64294a95714a7678902476cd8f7a9e1a5e504a0" }
-asl-proto = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "e64294a95714a7678902476cd8f7a9e1a5e504a0" }
+asl-id = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "91f3119c91f633d9d61c19a2f3356b427c585526" }
+asl-proto = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "91f3119c91f633d9d61c19a2f3356b427c585526" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "forbid"

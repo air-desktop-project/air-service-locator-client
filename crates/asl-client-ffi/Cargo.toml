@@ -3,7 +3,6 @@ name = "asl-client-ffi"
 description = "L'ABI C d'asl-client — le passage par lequel entrent les liaisons Python, Ruby, C++, Kotlin et Swift."
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true

@@ -27,9 +27,9 @@ dependencies = [
 [[package]]
 name = "asl-id"
 version = "0.1.0"
-source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=e64294a95714a7678902476cd8f7a9e1a5e504a0#e64294a95714a7678902476cd8f7a9e1a5e504a0"
+source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=91f3119c91f633d9d61c19a2f3356b427c585526#91f3119c91f633d9d61c19a2f3356b427c585526"
 
 [[package]]
 name = "asl-proto"
 version = "0.1.0"
-source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=e64294a95714a7678902476cd8f7a9e1a5e504a0#e64294a95714a7678902476cd8f7a9e1a5e504a0"
+source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=91f3119c91f633d9d61c19a2f3356b427c585526#91f3119c91f633d9d61c19a2f3356b427c585526"
