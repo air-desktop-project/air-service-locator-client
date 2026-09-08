@@ -16,21 +16,41 @@
 #
 # # CE QUI MANQUE ENCORE, ET QUI EST DIT PLUTÔT QUE TU
 #
-# Trois barrières et les essais. Celle qui MANQUE et qui comptera le plus ici est
-# `check-abi.sh` : la surface exposée par `asl-client-ffi` est un engagement
-# envers cinq écosystèmes (contrainte C12 du dépôt serveur), et le retrait d'une
-# signature casse du code que nous ne voyons pas.
+# # L'ORDRE, EN DÉTAIL
 #
-# Elle s'ajoutera AVEC la première fonction exportée, jamais avant : comparer un
-# en-tête vide à un en-tête vide est une barrière verte qui n'a rien examiné,
-# c'est-à-dire un mensonge poli.
+#   1. `check-toolchain` — INSTANTANÉ, et en premier : un verdict rendu par la
+#      mauvaise toolchain ne vaut rien.
+#   2. `check-compile`   — une erreur de type se lit en une seconde.
+#   3. `check-pile`      — le graphe résolu, donc les dépendances transitives.
+#   4. `check-abi`       — la surface exportée, lue dans le BINAIRE.
+#   5. `check-clippy`
+#   6. `cargo test`
+#   7. `check-format`    — EN DERNIER (voir ci-dessus).
+#
+# **`check-abi` EXISTE AVANT LA PREMIÈRE FONCTION EXPORTÉE, et c'est un choix.**
+# On aurait pu attendre : comparer une surface vide à un registre vide n'atteste
+# de rien. Mais une barrière ajoutée après coup se découvre cassée le jour où
+# l'on en a besoin — et surtout, le registre `abi.txt` doit exister AVANT la
+# première fonction, sinon celle-ci entrera sans que rien ne l'inscrive.
+#
+# Le contrôle DIT qu'il n'a rien comparé, plutôt que de rendre un OK muet.
+#
+# # CE QUI MANQUE ENCORE
+#
+# `check-abi` ne juge pas les SIGNATURES : changer un `int32_t` en `int64_t` sans
+# renommer la fonction casse les cinq liaisons sans qu'il bronche. Le jour où la
+# première fonction existera, il faudra soit un en-tête committé en plus, soit la
+# discipline de renommer ce qu'on change.
 
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
 barrieres=(
+    scripts/check-toolchain.sh
     scripts/check-compile.sh
+    scripts/check-pile.sh
+    scripts/check-abi.sh
     scripts/check-clippy.sh
     scripts/check-format.sh
 )

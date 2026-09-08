@@ -1,0 +1,19 @@
+# LE REGISTRE DE L'ABI — ce que cette bibliothèque exporte, symbole par symbole.
+#
+# CE FICHIER EST LE CONTRAT (C12 du dépôt serveur). Cinq liaisons passent par
+# ces symboles — Python, Ruby, C++, Kotlin, Swift —, elles vivent dans du code
+# que nous ne voyons pas, et elles ne se mettent pas à jour au même rythme.
+#
+# `scripts/check-abi.sh` compare cette liste aux symboles RÉELLEMENT exportés par
+# `libasl_client_ffi.so`. Un ajout est libre mais doit être inscrit ici dans le
+# même commit ; UN RETRAIT EST UNE RUPTURE MAJEURE et appartient à une version
+# majeure, avec sa raison dans le message de commit.
+#
+# Une ligne par symbole. Les lignes vides et celles commençant par `#` sont
+# ignorées.
+#
+# ── VIDE, ET C'EST LA VÉRITÉ ────────────────────────────────────────────────
+#
+# `asl-client-ffi` n'exporte rien : `asl-client` n'a aucune fonction à exposer.
+# Le contrôle le dit lui-même plutôt que de rendre un OK qui n'aurait rien
+# comparé.

@@ -72,8 +72,25 @@ jobs:
           cargo --version
           rustc --version
 
+      # ── EN PREMIER, ET INSTANTANÉ ────────────────────────────────────────
+      #
+      # Un verdict rendu par la mauvaise toolchain ne vaut rien. Ici `air`
+      # n'existe pas : le contrôle ne compare qu'à la valeur écrite dans le
+      # script, et il le DIT.
+      - name: check-toolchain
+        run: ./scripts/check-toolchain.sh
+
       - name: check-compile
         run: ./scripts/check-compile.sh
+
+      # ── LA PILE (C15) ────────────────────────────────────────────────────
+      #
+      # Elle compte DAVANTAGE ici que dans le dépôt serveur : cette bibliothèque
+      # est chargée dans des processus qui ne sont pas les nôtres, et une pile
+      # tierce y ferait entrer des dépendances C dans l'interpréteur de
+      # quelqu'un d'autre.
+      - name: check-pile
+        run: ./scripts/check-pile.sh
 
       - name: check-clippy
         run: ./scripts/check-clippy.sh
@@ -95,6 +112,15 @@ jobs:
           test -f target/debug/libasl_client_ffi.so
           test -f target/debug/libasl_client_ffi.a
           echo "cdylib et staticlib : présents"
+
+      # ── L'ABI (C12) ──────────────────────────────────────────────────────
+      #
+      # APRÈS l'étape ci-dessus, et ce n'est pas un hasard : `check-abi` lit les
+      # symboles DANS le `.so`. Si celui-ci n'existe pas, l'échec doit dire
+      # « crate-type » et non « ABI » — deux causes très différentes, et c'est
+      # l'ordre qui les distingue.
+      - name: check-abi
+        run: ./scripts/check-abi.sh
 
       - name: check-format
         run: ./scripts/check-format.sh
