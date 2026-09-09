@@ -21,7 +21,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use asl_client::{Identite, Reprise, Tournee};
 
@@ -221,6 +221,12 @@ pub struct Etat {
     /// illisible, une liste vide. Jamais sur une panne de réseau, quelle qu'en
     /// soit la durée.
     pub abandonnee: bool,
+    /// Combien de poussées de verdict sont arrivées depuis le départ.
+    ///
+    /// **ZÉRO N'EST PAS UNE ANOMALIE** : l'annuaire ne pousse que ce qui a
+    /// CHANGÉ, et un service dont les sondes confirment ce qu'il disait déjà n'en
+    /// produit aucune.
+    pub poussees: u64,
 }
 
 /// Ce que la tâche et son propriétaire se disent.
@@ -229,8 +235,22 @@ struct Partage {
     attachee: AtomicBool,
     attaches: AtomicU64,
     ruptures: AtomicU64,
+    poussees: AtomicU64,
     abandonnee: AtomicBool,
     retrait: AtomicBool,
+    /// La dernière poussée de verdict, telle qu'elle est arrivée.
+    ///
+    /// # UNE SEULE, ET C'EST SUFFISANT
+    ///
+    /// Chaque poussée porte la liste ENTIÈRE (`protocole.md` §1.4) : la dernière
+    /// remplace tout ce qui précède. En garder une file obligerait à décider
+    /// quoi faire de celles qu'on n'a pas lues, et la réponse serait « les
+    /// jeter » — autant ne garder que la bonne.
+    ///
+    /// **Un `Mutex` et non un atomique** : ce sont des octets, pas un nombre. Il
+    /// n'est pris que le temps d'un remplacement ou d'une lecture, jamais
+    /// pendant une attente réseau.
+    poussee: Mutex<Option<Vec<u8>>>,
 }
 
 /// Une annonce tenue vivante, quoi qu'il arrive au réseau.
@@ -312,7 +332,27 @@ impl Attache {
             attaches: self.partage.attaches.load(Ordering::Relaxed),
             ruptures: self.partage.ruptures.load(Ordering::Relaxed),
             abandonnee: self.partage.abandonnee.load(Ordering::Acquire),
+            poussees: self.partage.poussees.load(Ordering::Relaxed),
         }
+    }
+
+    /// La dernière poussée de verdict, telle qu'elle est arrivée.
+    ///
+    /// # ELLE PORTE LA LISTE ENTIÈRE, ET NON UN DELTA
+    ///
+    /// `protocole.md` §1.4 : la dernière remplace tout ce qui précède. Elle se
+    /// lit avec `asl_proto::Poussee::decoder`, et l'appeler deux fois rend deux
+    /// fois la même chose tant qu'aucune autre n'est arrivée.
+    ///
+    /// `None` tant qu'aucune sonde n'a changé d'avis — ce qui est le cas le plus
+    /// fréquent, et n'est pas une anomalie.
+    #[must_use]
+    pub fn derniere_poussee(&self) -> Option<Vec<u8>> {
+        self.partage
+            .poussee
+            .lock()
+            .ok()
+            .and_then(|quoi| quoi.clone())
     }
 
     /// Retire l'annonce, en fermant la connexion proprement.
@@ -405,6 +445,16 @@ async fn tenir(
         }
     }
 
+    // **LE FLUX DES VERDICTS S'OUVRE APRÈS L'ANNONCE, ET NON AVANT.**
+    //
+    // Il ne dirait rien d'utile plus tôt : l'annuaire pousse ce qu'il apprend des
+    // services de CETTE connexion, et avant l'annonce il n'y en a aucun.
+    //
+    // **UN ÉCHEC ICI NE ROMPT PAS L'ATTACHE.** L'annonce tient ; ce qu'on perd
+    // est de SAVOIR si elle est joignable, ce qui est moins grave que de ne plus
+    // être annoncé du tout.
+    let _ = connexion.ecouter_les_poussees().await;
+
     partage.attachee.store(true, Ordering::Release);
     partage.attaches.fetch_add(1, Ordering::Relaxed);
 
@@ -414,6 +464,31 @@ async fn tenir(
         if connexion.entretenir(ENTRETIEN_MS).await.is_err() {
             break;
         }
+        recueillir_les_poussees(connexion, partage);
     }
     true
+}
+
+/// Range la dernière poussée arrivée, s'il en est arrivé.
+///
+/// **ON NE GARDE QUE LA DERNIÈRE** : chacune porte la liste entière, donc celle
+/// qui précède ne dit plus rien de vrai. Le compteur, lui, monte de toutes —
+/// c'est ce qui permet à un porteur de voir que le flux vit.
+fn recueillir_les_poussees(connexion: &mut Connexion, partage: &Partage) {
+    // **UNE POUSSÉE ILLISIBLE NE ROMPT RIEN.** Elle serait notre faute ou celle
+    // de l'annuaire, et dans les deux cas l'annonce reste bonne : on ignore ce
+    // qu'on ne sait pas lire plutôt que de retirer un service qui écoute.
+    let Ok(arrivees) = connexion.poussees() else {
+        return;
+    };
+    // Le compteur monte de TOUTES : deux poussées lues d'un coup restent deux
+    // poussées, et un porteur qui ne verrait qu'un tour croirait le flux muet.
+    let combien = u64::try_from(arrivees.len()).unwrap_or(u64::MAX);
+    let Some(derniere) = arrivees.into_iter().next_back() else {
+        return;
+    };
+    partage.poussees.fetch_add(combien, Ordering::Relaxed);
+    if let Ok(mut place) = partage.poussee.lock() {
+        *place = Some(derniere);
+    }
 }

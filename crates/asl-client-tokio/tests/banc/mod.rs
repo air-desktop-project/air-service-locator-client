@@ -68,6 +68,13 @@ impl ams_h3::Service for FauxAnnuaire {
         _corps: &[u8],
         sortie: &'o mut [u8],
     ) -> ams_h3::Reponse<'o> {
+        // **LE FLUX DES VERDICTS : UNE RÉPONSE QUI NE SE TERMINE PAS.**
+        //
+        // C'est ce que fait l'annuaire (`protocole.md` §1.4) : il répond, garde
+        // le flux ouvert, et y écrit un objet à chaque verdict.
+        if matches!(tete.method(), Method::Get) && tete.path() == b"/v1/poussees" {
+            return ams_h3::Reponse::new(StatusCode::OK, &[]).tenue();
+        }
         let (code, combien) = match (tete.method(), tete.path()) {
             // Un défi : trente-deux octets, ni plus ni moins.
             (Method::Get, b"/v1/defi") => (StatusCode::OK, asl_cle::DEFI_OCTETS),
@@ -94,11 +101,34 @@ fn maintenant() -> u64 {
 pub async fn lever<S>(
     chaine: Vec<u8>,
     cle: Vec<u8>,
-    mut service: S,
+    service: S,
 ) -> (SocketAddr, tokio::task::JoinHandle<()>)
 where
     S: ams_h3::Service + Send + 'static,
 {
+    let (adresse, tache, _) = lever_qui_pousse(chaine, cle, service).await;
+    (adresse, tache)
+}
+
+/// Le même, avec de quoi pousser un verdict quand l'essai le décide.
+///
+/// **LE BANC NE POUSSE PAS TOUT SEUL**, et c'est ce qu'on veut éprouver : un
+/// verdict arrive quand une sonde a fini, c'est-à-dire à un moment que le client
+/// ne choisit pas. Un banc qui pousserait à l'établissement ne prouverait que le
+/// cas facile.
+pub async fn lever_qui_pousse<S>(
+    chaine: Vec<u8>,
+    cle: Vec<u8>,
+    mut service: S,
+) -> (
+    SocketAddr,
+    tokio::task::JoinHandle<()>,
+    tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+)
+where
+    S: ams_h3::Service + Send + 'static,
+{
+    let (voie, mut a_pousser) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
     let socket = UdpSocket::bind("127.0.0.1:0").await.expect("une socket");
     let adresse = socket.local_addr().expect("une adresse");
 
@@ -111,12 +141,16 @@ where
         let mut h3 = ams_h3::Http3::new();
         let mut recu = vec![0_u8; 1_500];
         let mut place = vec![0_u8; 1_500];
+        // **ON RETIENT À QUI L'ON PARLE** : une poussée part hors d'un
+        // datagramme reçu, donc sans adresse sous la main.
+        let mut dernier_pair: Option<((), SocketAddr)> = None;
 
         loop {
             let attente = tokio::time::Duration::from_millis(50);
             let arrivee = tokio::time::timeout(attente, socket.recv_from(&mut recu)).await;
 
             if let Ok(Ok((lus, pair))) = arrivee {
+                dernier_pair = Some(((), pair));
                 let mut datagramme = recu.get(..lus).unwrap_or_default().to_vec();
                 if connexion.is_none() {
                     let Ok(entrant) = ams_quic::Incoming::read(&datagramme, 0) else {
@@ -168,10 +202,41 @@ where
             } else if let Some(quic) = connexion.as_mut() {
                 quic.on_timeout(maintenant());
             }
+
+            // ── CE QUE L'ESSAI A DEMANDÉ DE POUSSER ─────────────────────────
+            if let Some(quic) = connexion.as_mut() {
+                // **ON NE VIDE LA VOIE QUE SI L'ON A OÙ ÉCRIRE.** Sans cela, un
+                // essai qui pousse avant que le client ait demandé le flux verrait
+                // sa poussée consommée et jetée — et l'essai échouerait pour une
+                // faute du banc, pas du code.
+                let tenus: Vec<StreamId> = h3.tenus().to_vec();
+                let mut a_ecrit = false;
+                if !tenus.is_empty() {
+                    while let Ok(octets) = a_pousser.try_recv() {
+                        for flux in &tenus {
+                            let mut pont = asl_client_tokio::Pont(quic);
+                            let _ = h3.pousser(&mut pont, *flux, &octets);
+                            a_ecrit = true;
+                        }
+                    }
+                }
+                if let Some(((), pair)) = dernier_pair.filter(|_| a_ecrit) {
+                    loop {
+                        match quic.poll_transmit(&mut place, maintenant()) {
+                            Ok(0) | Err(_) => break,
+                            Ok(ecrit) => {
+                                let _ = socket
+                                    .send_to(place.get(..ecrit).unwrap_or_default(), pair)
+                                    .await;
+                            }
+                        }
+                    }
+                }
+            }
         }
     });
 
-    (adresse, tache)
+    (adresse, tache, voie)
 }
 
 /// Le matériel de banc : une autorité, un certificat, une clé.

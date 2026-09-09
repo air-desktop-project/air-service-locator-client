@@ -162,6 +162,21 @@ pub struct Connexion {
     liaison: LiaisonDeCanal,
     /// Le nom qu'on met dans `:authority`.
     autorite: String,
+    /// Le flux par lequel les verdicts arrivent, s'il est ouvert.
+    ///
+    /// # POURQUOI IL EST RETENU ICI, ET NON REDEMANDÉ
+    ///
+    /// C'est une requête dont la réponse ne se termine JAMAIS
+    /// (`protocole.md` §1.4). `requete` attendrait donc pour toujours, et il n'y
+    /// a rien à réclamer plus tard : on garde son numéro, et l'on relit ce qui
+    /// s'y est accumulé.
+    poussees: Option<StreamId>,
+    /// Ce qui est arrivé sur ce flux et qu'on n'a pas fini de découper.
+    ///
+    /// **UN OBJET COUPÉ EN DEUX PAR UN DATAGRAMME EST LE CAS ORDINAIRE**, et
+    /// `asl_proto::cadrage::objets` dit combien d'octets sont complets. Le reste
+    /// attend ici la suite.
+    reste: Vec<u8>,
 }
 
 impl Connexion {
@@ -220,6 +235,8 @@ impl Connexion {
             // `poignee_de_main` la pose, et échoue plutôt que de la laisser.
             liaison: LiaisonDeCanal::depuis_octets([0; asl_cle::LIAISON_OCTETS]),
             autorite: nom.to_owned(),
+            poussees: None,
+            reste: Vec::new(),
         };
         connexion.poignee_de_main().await?;
         Ok(connexion)
@@ -351,6 +368,89 @@ impl Connexion {
             .map_err(Faute::Http3)
     }
 
+    /// Ouvre le flux par lequel les verdicts de sonde arriveront.
+    ///
+    /// # POURQUOI IL FAUT LE DEMANDER, ET CE QU'ON PERD À NE PAS LE FAIRE
+    ///
+    /// L'annuaire répond souvent `en_cours` à une annonce : il ne fait pas
+    /// attendre le démarrage d'un daemon le temps d'une sonde vers une machine
+    /// qui peut ne jamais répondre. **Sans ce flux, le verdict n'arrive jamais**,
+    /// et le daemon reste à croire que sa joignabilité est en cours de mesure.
+    ///
+    /// Ce n'est PAS ouvert d'office : un daemon qui ne veut pas savoir n'a pas à
+    /// tenir une ressource des deux côtés.
+    ///
+    /// # ELLE N'ATTEND AUCUNE RÉPONSE, ET C'EST NORMAL
+    ///
+    /// La réponse ne se termine jamais. On écrit la requête, on garde le numéro
+    /// du flux, et [`Connexion::poussees`] lit ce qui y arrive.
+    ///
+    /// Appeler deux fois ne rouvre rien.
+    ///
+    /// # Errors
+    ///
+    /// [`Faute::Http3`], [`Faute::Socket`], [`Faute::Quic`].
+    pub async fn ecouter_les_poussees(&mut self) -> Result<(), Faute> {
+        if self.poussees.is_some() {
+            return Ok(());
+        }
+        let flux = {
+            let mut pont = Pont(&mut self.quic);
+            self.h3
+                .request(
+                    &mut pont,
+                    b"GET",
+                    b"/v1/poussees",
+                    self.autorite.as_bytes(),
+                    &[],
+                    b"",
+                )
+                .map_err(Faute::Http3)?
+        };
+        self.poussees = Some(flux);
+        self.emettre().await
+    }
+
+    /// Les verdicts arrivés depuis le dernier appel.
+    ///
+    /// **RIEN N'EST UNE RÉPONSE**, et la plus fréquente : une sonde met des
+    /// secondes, et cette fonction se rappelle à chaque tour de boucle.
+    ///
+    /// # CHAQUE POUSSÉE PORTE LA LISTE ENTIÈRE, ET NON UN DELTA
+    ///
+    /// `protocole.md` §1.4 : un delta obligerait le receveur à fusionner, donc à
+    /// décider quoi faire d'une entrée inconnue — et deux receveurs qui
+    /// fusionnent différemment lisent deux états dans les mêmes messages. **La
+    /// dernière rendue remplace tout ce qui précède.**
+    ///
+    /// # Errors
+    ///
+    /// [`Faute::Illisible`] si ce que l'annuaire écrit ne se découpe pas. **Ce
+    /// n'est pas un objet incomplet** — celui-là attend simplement la suite.
+    pub fn poussees(&mut self) -> Result<Vec<Vec<u8>>, Faute> {
+        let Some(flux) = self.poussees else {
+            return Ok(Vec::new());
+        };
+        if let Some(arrives) = self.h3.prendre_ce_qui_est_arrive(flux) {
+            self.reste.extend_from_slice(&arrives);
+        }
+
+        let (trouves, consommes) =
+            asl_proto::cadrage::objets(&self.reste).map_err(|_| Faute::Illisible)?;
+        let rendus: Vec<Vec<u8>> = trouves.map(<[u8]>::to_vec).collect();
+        self.reste.drain(..consommes);
+        Ok(rendus)
+    }
+
+    /// Le flux des poussées est-il encore ouvert ?
+    ///
+    /// **UN FLUX QUI SE FERME EST UNE INFORMATION** : l'annuaire a fini de
+    /// pousser, et ce qu'on attendait n'arrivera plus.
+    #[must_use]
+    pub fn ecoute_les_poussees(&self) -> bool {
+        self.poussees.is_some_and(|flux| !self.h3.est_fini(flux))
+    }
+
     /// Tient la connexion vivante, sans rien demander.
     ///
     /// **LA CONNEXION EST LE BAIL** (`protocole.md` §1.2) : il n'y a rien à
@@ -362,7 +462,13 @@ impl Connexion {
     /// [`Faute::Socket`], [`Faute::Quic`], [`Faute::Http3`].
     pub async fn entretenir(&mut self, attente_ms: u64) -> Result<(), Faute> {
         self.recevoir(attente_ms).await?;
-        let vivants: Vec<StreamId> = self.quic.streams_alive().collect();
+        let mut vivants: Vec<StreamId> = self.quic.streams_alive().collect();
+        // **LE FLUX DES POUSSÉES PEUT N'ÊTRE DANS AUCUNE LISTE** : rien n'y est
+        // arrivé depuis longtemps, et il n'a plus d'octets prêts. Le relire
+        // explicitement est ce qui fait entrer un verdict.
+        if let Some(flux) = self.poussees.filter(|flux| !vivants.contains(flux)) {
+            vivants.push(flux);
+        }
         {
             let mut pont = Pont(&mut self.quic);
             for flux in vivants {

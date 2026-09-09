@@ -246,3 +246,194 @@ async fn une_attache_perdue_se_refait_sur_l_autre_annuaire() {
 
     tache_deux.abort();
 }
+
+// ── Le flux des verdicts ────────────────────────────────────────────────────
+
+use banc::lever_qui_pousse;
+
+#[tokio::test]
+async fn un_verdict_pousse_apres_coup_arrive_au_client() {
+    // **C'EST LA LACUNE QUE `asl` AVAIT NOMMÉE**, comblée de bout en bout.
+    // L'annuaire répond `en_cours` pour ne pas faire attendre le démarrage d'un
+    // daemon ; le verdict arrive ensuite, sur la connexion déjà tenue. Sans ce
+    // flux, il n'arrivait jamais — et rien ne plantait, ce qui est pire.
+    let (_atelier, autorite, cert, cle) = materiel("poussees");
+    let (adresse, tache, pousser) = lever_qui_pousse(cert, cle, FauxAnnuaire).await;
+
+    let reglages = Reglages::nouveaux(vec![annuaire(adresse)], autorite, PLAFOND_MS)
+        .expect("la configuration est bonne");
+    let mut connexion =
+        tokio::time::timeout(Duration::from_secs(10), joindre(&reglages, &|| [0x5A; 16]))
+            .await
+            .expect("elle ne doit pas tourner en rond")
+            .expect("l'annuaire répond");
+
+    connexion
+        .ecouter_les_poussees()
+        .await
+        .expect("le flux s'ouvre");
+    assert!(connexion.ecoute_les_poussees());
+
+    // Laisser l'annuaire servir la requête : le flux n'est tenu qu'après.
+    for _ in 0..6 {
+        connexion.entretenir(50).await.expect("elle vit");
+    }
+
+    // **RIEN N'EST UNE RÉPONSE, ET C'EST LA PLUS FRÉQUENTE** : une sonde met des
+    // secondes, et cette fonction se rappelle à chaque tour de boucle.
+    assert!(
+        connexion.poussees().expect("rien à découper").is_empty(),
+        "aucune sonde n'a encore parlé"
+    );
+
+    pousser
+        .send(br#"{"verdict":"joignable"}"#.to_vec())
+        .expect("le banc accepte");
+    pousser
+        .send(br#"{"verdict":"injoignable"}"#.to_vec())
+        .expect("le banc accepte");
+
+    let mut recues = Vec::new();
+    for _ in 0..40 {
+        connexion.entretenir(50).await.expect("elle vit");
+        recues.extend(connexion.poussees().expect("elles se découpent"));
+        if recues.len() >= 2 {
+            break;
+        }
+    }
+
+    assert_eq!(recues.len(), 2, "les deux poussées devaient arriver");
+    assert_eq!(recues[0].as_slice(), br#"{"verdict":"joignable"}"#);
+    assert_eq!(recues[1].as_slice(), br#"{"verdict":"injoignable"}"#);
+
+    tache.abort();
+}
+
+#[tokio::test]
+async fn un_objet_coupe_par_un_datagramme_attend_sa_suite() {
+    // **C'EST LE CAS ORDINAIRE D'UN FLUX**, et le refuser ferait rejeter une
+    // poussée parfaitement valide parce qu'un paquet n'est pas encore arrivé.
+    let (_atelier, autorite, cert, cle) = materiel("poussees-coupees");
+    let (adresse, tache, pousser) = lever_qui_pousse(cert, cle, FauxAnnuaire).await;
+
+    let reglages = Reglages::nouveaux(vec![annuaire(adresse)], autorite, PLAFOND_MS)
+        .expect("la configuration est bonne");
+    let mut connexion =
+        tokio::time::timeout(Duration::from_secs(10), joindre(&reglages, &|| [0x5A; 16]))
+            .await
+            .expect("elle ne doit pas tourner en rond")
+            .expect("l'annuaire répond");
+    connexion.ecouter_les_poussees().await.expect("il s'ouvre");
+    for _ in 0..6 {
+        connexion.entretenir(50).await.expect("elle vit");
+    }
+
+    // La moitié d'un objet : rien ne doit sortir, et rien ne doit échouer.
+    pousser
+        .send(br#"{"verdict":"joi"#.to_vec())
+        .expect("le banc accepte");
+    for _ in 0..10 {
+        connexion.entretenir(50).await.expect("elle vit");
+        assert!(
+            connexion.poussees().expect("pas une faute").is_empty(),
+            "un objet incomplet ne doit rien rendre"
+        );
+    }
+
+    // Et la suite le complète.
+    pousser
+        .send(br#"gnable"}"#.to_vec())
+        .expect("le banc accepte");
+    let mut recues = Vec::new();
+    for _ in 0..40 {
+        connexion.entretenir(50).await.expect("elle vit");
+        recues.extend(connexion.poussees().expect("elles se découpent"));
+        if !recues.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(recues.len(), 1);
+    assert_eq!(recues[0].as_slice(), br#"{"verdict":"joignable"}"#);
+
+    tache.abort();
+}
+
+#[tokio::test]
+async fn sans_flux_ouvert_il_n_y_a_rien_a_lire_et_ce_n_est_pas_une_faute() {
+    let (_atelier, autorite, cert, cle) = materiel("poussees-fermees");
+    let (adresse, tache) = lever(cert, cle, FauxAnnuaire).await;
+
+    let reglages = Reglages::nouveaux(vec![annuaire(adresse)], autorite, PLAFOND_MS)
+        .expect("la configuration est bonne");
+    let mut connexion =
+        tokio::time::timeout(Duration::from_secs(10), joindre(&reglages, &|| [0x5A; 16]))
+            .await
+            .expect("elle ne doit pas tourner en rond")
+            .expect("l'annuaire répond");
+
+    assert!(!connexion.ecoute_les_poussees(), "on n'a rien demandé");
+    assert!(connexion.poussees().expect("pas une faute").is_empty());
+
+    // Et l'ouvrir deux fois ne rouvre rien.
+    connexion.ecouter_les_poussees().await.expect("il s'ouvre");
+    connexion.ecouter_les_poussees().await.expect("et reste");
+    assert!(connexion.ecoute_les_poussees());
+
+    tache.abort();
+}
+
+#[tokio::test]
+async fn l_attache_ouvre_le_flux_et_retient_la_derniere_poussee() {
+    // **UN DAEMON QUI S'ANNONCE A DES VERDICTS À APPRENDRE**, et `Attache` existe
+    // pour tenir l'annonce : elle ouvre donc le flux après avoir annoncé. Qui
+    // n'en veut pas emploie `joindre` et conduit sa connexion lui-même.
+    let (_atelier, autorite, cert, cle) = materiel("attache-poussees");
+    let (adresse, tache, pousser) = lever_qui_pousse(cert, cle, FauxAnnuaire).await;
+
+    let reglages = Reglages::nouveaux(vec![annuaire(adresse)], autorite, PLAFOND_MS)
+        .expect("la configuration est bonne");
+    let attache = Attache::annoncer(reglages, identite(), vec![b"{}".to_vec()], alea());
+
+    assert!(
+        jusqu_a(10_000, || attache.etat().attachee).await,
+        "elle aurait dû s'attacher"
+    );
+    // **AUCUNE POUSSÉE N'EST LE CAS ORDINAIRE** : l'annuaire ne pousse que ce
+    // qui a CHANGÉ, et rien n'a encore changé.
+    assert_eq!(attache.etat().poussees, 0);
+    assert!(attache.derniere_poussee().is_none());
+
+    pousser
+        .send(br#"{"verdict":"joignable"}"#.to_vec())
+        .expect("le banc accepte");
+    assert!(
+        jusqu_a(10_000, || attache.etat().poussees >= 1).await,
+        "la poussée aurait dû arriver : {:?}",
+        attache.etat()
+    );
+    assert_eq!(
+        attache.derniere_poussee().as_deref(),
+        Some(br#"{"verdict":"joignable"}"#.as_slice())
+    );
+
+    // **CHACUNE PORTE LA LISTE ENTIÈRE** : la dernière remplace tout ce qui
+    // précède, et en garder une file obligerait à décider quoi faire de celles
+    // qu'on n'a pas lues.
+    pousser
+        .send(br#"{"verdict":"injoignable"}"#.to_vec())
+        .expect("le banc accepte");
+    assert!(
+        jusqu_a(10_000, || attache.etat().poussees >= 2).await,
+        "la seconde aussi"
+    );
+    assert_eq!(
+        attache.derniere_poussee().as_deref(),
+        Some(br#"{"verdict":"injoignable"}"#.as_slice()),
+        "la dernière remplace la précédente"
+    );
+
+    tokio::time::timeout(Duration::from_secs(5), attache.retirer())
+        .await
+        .expect("le retrait ne doit pas pendre");
+    tache.abort();
+}
