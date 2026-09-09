@@ -196,6 +196,18 @@ jobs:
       - name: check-swift
         run: ./scripts/check-swift.sh
 
+      # ── L'INSTALLATION, ET NON LE CODE ──────────────────────────────────
+      #
+      # Toutes les barrières ci-dessus posent `ASL_BIBLIOTHEQUE` ou passent
+      # `-L target/debug` : elles éprouvent les liaisons, jamais leur
+      # installation. Celle-ci retire ces béquilles et vérifie que les cinq
+      # trouvent l'objet sur la seule archive.
+      #
+      # Elle vient APRÈS elles : un échec ici doit vouloir dire « la distribution
+      # est fausse », pas « la liaison est cassée ».
+      - name: check-distribution
+        run: ./scripts/check-distribution.sh
+
       - name: check-format
         run: ./scripts/check-format.sh
 

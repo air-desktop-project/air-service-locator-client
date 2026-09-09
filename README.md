@@ -18,8 +18,11 @@ retrouver un port, ses liaisons vers cinq langages, et l'utilitaire `asl`.
 > L'utilitaire `asl` fait les quatre verbes ; `asl-client-ffi` exporte onze
 > symboles, inscrits au registre et déclarés dans `include/asl.h` ; **les liaisons
 > **les cinq liaisons — Python, Ruby, C++, Kotlin, Swift — sont écrites et
-> éprouvées**, chacune avec sa barrière. Ce qui manque est la distribution du
-> binaire natif, qu'aucun des cinq paquets n'embarque.
+> éprouvées**, chacune avec sa barrière ; et `scripts/construire-natif.sh` en
+> fait UNE archive que les cinq savent consommer, sur les trois systèmes.
+>
+> Ce qui manque est la publication vers les registres — PyPI, RubyGems, Maven
+> Central —, qui demande des secrets et une décision de version.
 
 ## Le problème
 

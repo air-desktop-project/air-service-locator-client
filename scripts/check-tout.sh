@@ -33,7 +33,10 @@
 #   9. `check-cpp`       — le contrat LU PAR UN COMPILATEUR, en C et en C++.
 #  10. `check-kotlin`    — la liaison Kotlin, et les décalages de ses champs.
 #  11. `check-swift`     — la liaison Swift, et ce que le mode Swift 6 refuse.
-#  12. `check-format`    — EN DERNIER (voir ci-dessus).
+#  12. `check-distribution` — les cinq liaisons trouvent-elles l'objet une fois
+#      DISTRIBUÉ, sans `ASL_BIBLIOTHEQUE` ni arbre de sources ? C'est la seule
+#      barrière qui éprouve l'installation plutôt que le code.
+#  13. `check-format`    — EN DERNIER (voir ci-dessus).
 #
 # **`check-abi` A ÉTÉ ÉCRIT AVANT LA PREMIÈRE FONCTION EXPORTÉE, et c'était un
 # choix.** Une barrière ajoutée après coup se découvre cassée le jour où l'on en
@@ -52,6 +55,11 @@
 # C++ et Swift — INCLUENT l'en-tête au lieu de le recopier : leur conformité est
 # rendue par un compilateur, et il n'y a rien à comparer. Les trois autres
 # transcrivent, et comparent chacune à sa façon.
+#
+# **CE QUI N'EST PAS ÉPROUVÉ ICI : LES AUTRES PLATES-FORMES.**
+# `check-distribution` ne voit que celle sur laquelle il tourne.
+# `.github/workflows/natif.yml` construit et vérifie l'archive sur Linux, macOS
+# et Windows — et c'est là, et nulle part ailleurs, que ces deux-là sont jugées.
 
 set -euo pipefail
 
@@ -69,6 +77,7 @@ barrieres=(
     scripts/check-cpp.sh
     scripts/check-kotlin.sh
     scripts/check-swift.sh
+    scripts/check-distribution.sh
     scripts/check-format.sh
 )
 

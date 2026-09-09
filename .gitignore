@@ -45,3 +45,19 @@ desktop.ini
 
 __pycache__/
 *.pyc
+
+# ── L'OBJET NATIF, LÀ OÙ `empaqueter-liaisons.sh` LE POSE ───────────────────
+#
+# Trois liaisons CHARGENT `libasl_client_ffi` et le cherchent à côté de leur
+# paquet. `scripts/empaqueter-liaisons.sh` l'y pose ; il n'y est jamais committé.
+#
+# Un objet natif de plusieurs mébioctets dans un commit se remarque tard, et ne
+# se retire jamais vraiment d'un historique — même raison que pour les `.deb`.
+liaisons/python/asl/libasl_client_ffi.*
+liaisons/python/asl/asl_client_ffi.dll
+liaisons/ruby/lib/libasl_client_ffi.*
+liaisons/ruby/lib/asl_client_ffi.dll
+liaisons/kotlin/src/main/resources/
+
+# Ce que `scripts/construire-natif.sh` produit.
+distribution/

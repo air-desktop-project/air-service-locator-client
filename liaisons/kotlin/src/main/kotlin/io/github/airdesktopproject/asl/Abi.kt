@@ -160,13 +160,63 @@ internal object Abi {
         }
     }
 
+    /** Le couple système-architecture, tel qu'il nomme un répertoire de
+     * ressources.
+     *
+     * **`os.arch` NE DIT PAS LA MÊME CHOSE QUE `rustc`** : la JVM dit `amd64` là
+     * où Rust dit `x86_64`, et `arm64` là où il dit `aarch64`. Les normaliser ici
+     * est ce qui évite de chercher un répertoire qui n'existera jamais.
+     */
+    fun cleDePlateforme(): String {
+        val systeme = System.getProperty("os.name").orEmpty().lowercase()
+        val machine = System.getProperty("os.arch").orEmpty().lowercase()
+        val quel = when {
+            systeme.contains("mac") -> "macos"
+            systeme.contains("win") -> "windows"
+            else -> "linux"
+        }
+        val laquelle = when (machine) {
+            "amd64", "x86_64" -> "x86_64"
+            "aarch64", "arm64" -> "aarch64"
+            else -> machine
+        }
+        return "$quel-$laquelle"
+    }
+
+    /** Extrait l'objet natif du JAR, s'il s'y trouve.
+     *
+     * # POURQUOI IL FAUT EXTRAIRE, ET QUE C'EST LE SEUL CAS DES CINQ
+     *
+     * Python et Ruby posent l'objet À CÔTÉ de leur paquet, et le trouvent par un
+     * chemin. **Un JAR n'est pas un système de fichiers** : une ressource y est
+     * un flux, et `SymbolLookup.libraryLookup` veut un chemin. Il n'y a donc pas
+     * d'autre façon que de l'écrire quelque part.
+     *
+     * Le fichier est temporaire et marqué pour effacement à la sortie de la JVM.
+     * **Le coût est réel** : un mégaoctet écrit et une ouverture de fichier au
+     * premier appel, une fois par processus. C'est le prix d'un JAR autonome, et
+     * un porteur qui ne le veut pas pose `ASL_BIBLIOTHEQUE`.
+     */
+    private fun depuisLesRessources(): Path? {
+        val nom = nomsPossibles().first()
+        val chemin = "/natif/${cleDePlateforme()}/$nom"
+        val flux = Abi::class.java.getResourceAsStream(chemin) ?: return null
+        return flux.use { entrant ->
+            val vers = Files.createTempFile("asl-", "-$nom")
+            vers.toFile().deleteOnExit()
+            Files.copy(entrant, vers, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            vers
+        }
+    }
+
     /** Où chercher, dans l'ordre.
      *
      * **`ASL_BIBLIOTHEQUE` PASSE AVANT TOUT.** C'est ce qui permet d'éprouver
      * cette liaison contre une construction locale sans l'installer, et à un
      * porteur de pointer l'objet qu'il a compilé pour son architecture.
      *
-     * Ensuite `java.library.path`, que la JVM offre déjà pour cela.
+     * Ensuite `java.library.path`, que la JVM offre déjà pour cela. Puis le JAR
+     * lui-même — voir [depuisLesRessources].
      */
     fun cheminsCandidats(): List<Path> {
         val chemins = mutableListOf<Path>()
@@ -181,6 +231,7 @@ internal object Abi {
                 chemins.add(Path.of(repertoire, nom))
             }
         }
+        depuisLesRessources()?.let { chemins.add(it) }
         return chemins
     }
 

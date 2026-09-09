@@ -1,0 +1,89 @@
+# L'objet natif, pour les plates-formes que la CI ordinaire ne voit pas.
+#
+# ── LA QUESTION QUE CE FICHIER RÉPOND ──────────────────────────────────────
+#
+# `liaisons/README.md` la posait sans la trancher : « qui construit pour macOS et
+# Windows, que la CI Linux ne couvre pas ». Personne, jusqu'ici — et un porteur
+# macOS n'avait aucun artefact à installer.
+#
+# ── POURQUOI UN WORKFLOW À PART, ET NON TROIS POSTES DE PLUS ───────────────
+#
+# La CI ordinaire tourne à chaque poussée et juge le CODE. Celle-ci construit un
+# ARTEFACT, sur trois systèmes, et n'a de raison de tourner que lorsque ce qui la
+# concerne bouge. L'attacher à `ci.yml` ferait payer trois constructions
+# complètes à chaque correction de commentaire.
+#
+# ── CE QU'ELLE NE FAIT PAS ─────────────────────────────────────────────────
+#
+# **Elle ne publie rien.** Elle construit, vérifie, et dépose les archives comme
+# artefacts. Publier — sur PyPI, RubyGems, Maven Central — demande des secrets et
+# une décision de version, qui n'appartiennent pas à un déclencheur automatique.
+
+name: natif
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/asl-client-ffi/**"
+      - "scripts/construire-natif.sh"
+      - "scripts/empaqueter-liaisons.sh"
+      - ".github/workflows/natif.yml"
+      - "Cargo.lock"
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  construire:
+    name: ${{ matrix.cible }}
+    runs-on: ${{ matrix.sur }}
+    strategy:
+      # **`fail-fast: false` EST DÉLIBÉRÉ.** Si Windows casse, on veut quand même
+      # savoir si macOS tient : trois échecs distincts sont trois informations,
+      # un seul arrêt n'en est aucune.
+      fail-fast: false
+      matrix:
+        include:
+          - sur: ubuntu-latest
+            cible: linux
+          - sur: macos-latest
+            cible: macos
+          - sur: windows-latest
+            cible: windows
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # `rust-toolchain.toml` épingle la toolchain d'Air (C16) : rustup la lit
+      # tout seul, y compris ici.
+      - name: Toolchain épinglée
+        shell: bash
+        run: |
+          rustup show active-toolchain
+          rustc -vV
+
+      - name: construire-natif
+        shell: bash
+        run: ./scripts/construire-natif.sh
+
+      # **CE QUI EST CONSTRUIT DOIT SE DÉPLIER ET SE VÉRIFIER.** Une archive dont
+      # les empreintes ne correspondraient pas serait pire qu'une absence
+      # d'archive : elle s'installerait.
+      - name: L'archive se vérifie
+        shell: bash
+        run: |
+          archive=$(ls distribution/asl-natif-*.tar.gz)
+          ./scripts/empaqueter-liaisons.sh "$archive"
+
+      - name: Ce que l'archive contient
+        shell: bash
+        run: cat distribution/asl-natif-*/MANIFESTE
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: asl-natif-${{ matrix.cible }}
+          path: distribution/asl-natif-*.tar.gz
+          if-no-files-found: error
