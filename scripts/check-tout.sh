@@ -29,7 +29,8 @@
 #   5. `check-clippy`
 #   6. `cargo test`
 #   7. `check-python`    — la liaison Python contre l'ABI qu'elle transcrit.
-#   8. `check-format`    — EN DERNIER (voir ci-dessus).
+#   8. `check-ruby`      — la liaison Ruby, idem, plus le GVL.
+#   9. `check-format`    — EN DERNIER (voir ci-dessus).
 #
 # **`check-abi` A ÉTÉ ÉCRIT AVANT LA PREMIÈRE FONCTION EXPORTÉE, et c'était un
 # choix.** Une barrière ajoutée après coup se découvre cassée le jour où l'on en
@@ -44,9 +45,9 @@
 # deux côtés, et les constantes, comparées à l'en-tête par un essai dans chaque
 # langage. Le reste tient par la discipline de renommer ce qu'on change.
 #
-# **QUATRE LIAISONS SUR CINQ N'EXISTENT PAS**, et il n'y a donc rien à vérifier
-# pour Ruby, C++, Kotlin et Swift. Le jour où l'une entrera, elle aura besoin de
-# sa propre barrière — celle-ci ne la couvrira pas.
+# **TROIS LIAISONS SUR CINQ N'EXISTENT PAS**, et il n'y a donc rien à vérifier
+# pour C++, Kotlin et Swift. Le jour où l'une entrera, elle aura besoin de sa
+# propre barrière — `check-python` et `check-ruby` ne la couvriront pas.
 
 set -euo pipefail
 
@@ -60,6 +61,7 @@ barrieres=(
     scripts/check-abi.sh
     scripts/check-clippy.sh
     scripts/check-python.sh
+    scripts/check-ruby.sh
     scripts/check-format.sh
 )
 

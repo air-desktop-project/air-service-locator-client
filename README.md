@@ -16,9 +16,9 @@ retrouver un port, ses liaisons vers cinq langages, et l'utilitaire `asl`.
 > `asl-client-tokio`, la seule crate de ce dépôt qui attend.
 >
 > L'utilitaire `asl` fait les quatre verbes ; `asl-client-ffi` exporte onze
-> symboles, inscrits au registre et déclarés dans `include/asl.h` ; **la liaison
-> Python est écrite et sans aucune dépendance.** Ruby, C++, Kotlin et Swift ne le
-> sont pas.
+> symboles, inscrits au registre et déclarés dans `include/asl.h` ; **les liaisons
+> Python et Ruby sont écrites, éprouvées, et sans aucune dépendance.** C++,
+> Kotlin et Swift ne le sont pas.
 
 ## Le problème
 

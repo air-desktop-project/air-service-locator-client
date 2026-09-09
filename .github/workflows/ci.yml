@@ -140,6 +140,20 @@ jobs:
       - name: check-python
         run: ./scripts/check-python.sh
 
+      # ── LA LIAISON RUBY, ET LE GVL ──────────────────────────────────────
+      #
+      # `ruby/setup-ruby` est une dépendance de CI, jamais de la bibliothèque :
+      # la gemme, elle, ne tire rien. On épingle une version parce que `fiddle`
+      # est passé de gemme par défaut à gemme groupée, et qu'un runner qui
+      # changerait de Ruby ferait échouer la barrière pour une raison qui n'a
+      # rien à voir avec notre code.
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+
+      - name: check-ruby
+        run: ./scripts/check-ruby.sh
+
       - name: check-format
         run: ./scripts/check-format.sh
 
