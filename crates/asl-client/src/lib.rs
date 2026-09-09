@@ -81,7 +81,20 @@
 
 #![no_std]
 
-use asl_cle::{ClePublique, CleSecrete, Defi, LiaisonDeCanal, Signature};
+use asl_cle::{ClePublique, CleSecrete, CodeEnrolement, Defi, LiaisonDeCanal, Signature};
+
+/// L'étiquette que les deux camps donnent à leur exportateur TLS.
+///
+/// # ELLE EST RÉEXPORTÉE POUR QUE PERSONNE N'EN INVENTE UNE
+///
+/// La liaison de canal se dérive de la poignée de main (RFC 8446 §7.5), et
+/// **les deux camps doivent employer la même étiquette** : si elles divergeaient
+/// d'un octet, aucune signature ne vérifierait plus, et la panne serait
+/// indiscernable d'une clé fausse.
+///
+/// Un porteur qui écrirait la chaîne à la main dans son propre code aurait une
+/// chance de se tromper, et zéro chance de s'en apercevoir avant la production.
+pub use asl_cle::ETIQUETTE_LIAISON;
 
 /// Les fautes d'`asl-cle`, réexportées pour que l'appelant n'ait pas à dépendre
 /// de cette crate pour lire un refus.
@@ -112,6 +125,12 @@ pub enum Faute {
     },
     /// La composition de l'annonce a été refusée par le protocole.
     Protocole(ErreurProto),
+    /// Le texte donné n'est pas un code d'enrôlement.
+    ///
+    /// Longueur, symbole hors de l'alphabet, tiret égaré. **Le détail vient
+    /// d'`asl-cle`**, parce que c'est là que la grammaire est écrite — et
+    /// qu'elle est écrite une fois, pour les deux camps.
+    CodeRefuse(FauteDeCle),
 }
 
 /// La politique de reconnexion à l'annuaire.
@@ -213,6 +232,156 @@ impl Reprise {
     }
 }
 
+// ── La liaison de canal ─────────────────────────────────────────────────────
+
+/// La liaison de canal de cette connexion, depuis ce que l'exportateur a rendu.
+///
+/// # CE QU'IL FAUT LUI DONNER, ET RIEN D'AUTRE
+///
+/// Les trente-deux octets que la pile TLS de la connexion en cours a exportés
+/// avec [`ETIQUETTE_LIAISON`] et **aucun contexte** :
+///
+/// ```text
+/// connexion.export(asl_client::ETIQUETTE_LIAISON, None)
+/// ```
+///
+/// # POURQUOI CETTE FONCTION EXISTE, PUISQU'ELLE NE FAIT RIEN
+///
+/// Elle ne calcule rien, en effet : elle NOMME. `asl_cle::LiaisonDeCanal::
+/// depuis_octets` accepte n'importe quels trente-deux octets — c'est ce qu'il
+/// faut, puisque cette crate ne peut pas vérifier d'où ils viennent. Ce qu'on
+/// peut faire, c'est mettre l'étiquette et l'appel au même endroit que le type,
+/// pour que le porteur n'ait rien à recopier depuis un document.
+///
+/// **Elle ne peut pas vérifier que ce qu'on lui donne est un exporteur.** Un
+/// condensat de certificat y passerait, et l'authentification échouerait alors
+/// à la première connexion — bruyamment, ce qui est le bon moment.
+#[must_use]
+pub const fn liaison_exportee(octets: [u8; asl_cle::LIAISON_OCTETS]) -> LiaisonDeCanal {
+    LiaisonDeCanal::depuis_octets(octets)
+}
+
+// ── L'enrôlement ────────────────────────────────────────────────────────────
+
+/// Ce qu'occupe le corps de `POST /v1/enrolement`, en octets.
+///
+/// Le code, la clé publique, la preuve de possession : dix, trente-deux,
+/// soixante-quatre. **Trois champs de longueur fixe, aucun préfixe, aucune
+/// ambiguïté** — c'est l'argument d'`asl_cle::message_a_signer`, appliqué au
+/// transport de la preuve.
+pub const ENROLEMENT_OCTETS: usize =
+    asl_cle::CODE_SYMBOLES + asl_cle::CLE_PUBLIQUE_OCTETS + asl_cle::SIGNATURE_OCTETS;
+
+/// Une clé fraîchement générée, qui n'a pas encore de nom.
+///
+/// # POURQUOI CET ÉTAT EXISTE, ET N'EST PAS UNE [`Identite`] INCOMPLÈTE
+///
+/// `POST /v1/enrolement` **ne nomme pas la machine** : le code la désigne, et
+/// personne d'autre ne la désigne — sans quoi l'annuaire croirait sur parole
+/// celui qui la nomme. La machine ne connaît donc son identifiant qu'APRÈS,
+/// dans la réponse.
+///
+/// Entre les deux, elle détient une clé et rien d'autre. Faire porter cet état à
+/// [`Identite`] aurait demandé un identifiant facultatif, c'est-à-dire une
+/// identité qui ne sait pas qui elle est — et un `unwrap` quelque part.
+///
+/// # LA CLÉ EST GÉNÉRÉE ICI, ET ELLE NE SORT PAS
+///
+/// C'est le point de `modele.md` §2.3 : ce qui se tape sur la machine est un
+/// code à usage unique, jamais une clé. Le justificatif durable est la paire, et
+/// sa moitié privée ne quitte pas la machine.
+#[derive(Debug)]
+pub struct Enrolement {
+    secrete: CleSecrete,
+}
+
+impl Enrolement {
+    /// Génère une paire, à partir de trente-deux octets d'entropie.
+    ///
+    /// **L'aléa vient de l'appelant**, et sa qualité est sa responsabilité :
+    /// une clé tirée d'un compteur serait devinable, et toute
+    /// l'authentification du produit repose là-dessus.
+    #[must_use]
+    pub fn nouveau(entropie: [u8; 32]) -> Self {
+        Self {
+            secrete: CleSecrete::depuis_entropie(entropie),
+        }
+    }
+
+    /// La clé publique qu'on va présenter.
+    #[must_use]
+    pub fn publique(&self) -> ClePublique {
+        self.secrete.publique()
+    }
+
+    /// Compose le corps de `POST /v1/enrolement`.
+    ///
+    /// `code` est ce que l'administrateur a tapé — `asl enrole 4K9M2-P7R1T`. Il
+    /// est **canonisé ici** : la casse est indifférente, le tiret d'affichage
+    /// facultatif, et les confusions de Crockford rattrapées. C'est indispensable
+    /// et non commode — l'annuaire cherche par l'empreinte de la forme
+    /// canonique, et un `O` envoyé pour un `0` ne trouverait rien.
+    ///
+    /// `defi` et `liaison` viennent de la connexion en cours : le premier de
+    /// `GET /v1/defi`, la seconde de [`liaison_exportee`].
+    ///
+    /// # LA PREUVE PORTE SUR LA CLÉ, ET NON SUR UN IDENTIFIANT
+    ///
+    /// Elle ne peut pas porter sur un identifiant : il n'existe pas encore.
+    /// Signer la clé qu'on présente prouve exactement ce qu'il faut prouver —
+    /// qu'on en détient la partie privée — et son séparateur de domaine est
+    /// distinct, pour qu'une preuve d'authentification captée ailleurs ne vaille
+    /// jamais preuve de possession ici.
+    ///
+    /// # Erreurs
+    ///
+    /// [`Faute::CodeRefuse`] si le texte n'est pas un code.
+    pub fn corps(
+        &self,
+        code: &str,
+        defi: &Defi,
+        liaison: &LiaisonDeCanal,
+    ) -> Result<[u8; ENROLEMENT_OCTETS], Faute> {
+        let code = CodeEnrolement::analyser(code).map_err(Faute::CodeRefuse)?;
+        let publique = self.secrete.publique().octets();
+        let preuve = self.secrete.prouver_la_possession(defi, liaison);
+
+        let source = code
+            .texte()
+            .as_bytes()
+            .iter()
+            .chain(publique.iter())
+            .chain(preuve.octets().iter());
+
+        let mut corps = [0_u8; ENROLEMENT_OCTETS];
+        for (place, octet) in corps.iter_mut().zip(source) {
+            *place = *octet;
+        }
+        Ok(corps)
+    }
+
+    /// L'annuaire a nommé cette machine : voici son identité.
+    ///
+    /// **LA CLÉ NE CHANGE PAS**, et c'est le point : celle qui vient d'être liée
+    /// est celle qui signera. Fabriquer une identité neuve ici perdrait la paire
+    /// que l'annuaire vient d'accepter.
+    ///
+    /// # Erreurs
+    ///
+    /// [`Faute::PasUneMachine`] si la réponse ne nomme pas une machine.
+    pub fn nommee(self, machine: Identifiant) -> Result<Identite, Faute> {
+        if machine.genre() != Genre::Machine {
+            return Err(Faute::PasUneMachine {
+                obtenu: machine.genre(),
+            });
+        }
+        Ok(Identite {
+            machine,
+            secrete: self.secrete,
+        })
+    }
+}
+
 // ── L'identité d'une machine ────────────────────────────────────────────────
 
 /// Ce qu'une machine détient, et ce qu'elle en fait.
@@ -264,8 +433,11 @@ impl Identite {
 
     /// Répond au défi de l'annuaire.
     ///
-    /// La liaison de canal doit être un *exporter* TLS de la connexion en
-    /// cours ; sans elle, un relais reste possible (`asl_cle`).
+    /// **LA LIAISON EST CELLE DE LA CONNEXION EN COURS**, exportée de sa
+    /// poignée de main — voir [`liaison_exportee`]. C'est elle qui ferme le
+    /// relais : un intermédiaire qui transmettrait le défi du vrai annuaire à
+    /// cette machine, puis la signature en retour, mène SA propre poignée de
+    /// main avec elle, et n'obtient donc pas la même valeur.
     ///
     /// # Erreurs
     ///

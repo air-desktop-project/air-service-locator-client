@@ -219,3 +219,175 @@ fn l_annonce_est_validee_avant_tout_aller_retour_reseau() {
         Err(Faute::Protocole(_))
     ));
 }
+
+// ── L'enrôlement ────────────────────────────────────────────────────────────
+
+use asl_client::{ENROLEMENT_OCTETS, ETIQUETTE_LIAISON, Enrolement, liaison_exportee};
+
+/// Un défi et une liaison, pour les essais.
+fn defi_et_liaison() -> (Defi, LiaisonDeCanal) {
+    (
+        Defi::depuis_octets([0x5A; 32]),
+        liaison_exportee([0x11; 32]),
+    )
+}
+
+#[test]
+fn le_corps_d_un_enrolement_porte_ses_trois_champs_de_longueur_fixe() {
+    let (defi, liaison) = defi_et_liaison();
+    let enrolement = Enrolement::nouveau([0x42; 32]);
+    let corps = enrolement
+        .corps("0123456789", &defi, &liaison)
+        .expect("un code juste");
+
+    assert_eq!(corps.len(), ENROLEMENT_OCTETS);
+    assert_eq!(corps.len(), 10 + 32 + 64);
+    assert_eq!(&corps[..10], b"0123456789", "le code, en forme canonique");
+    assert_eq!(
+        &corps[10..42],
+        &enrolement.publique().octets(),
+        "puis la clé qu'on présente"
+    );
+}
+
+#[test]
+fn la_preuve_prouve_la_possession_de_la_cle_presentee() {
+    // **C'EST TOUT L'OBJET DU TROISIÈME CHAMP.** Sans lui, n'importe qui
+    // pourrait présenter la clé d'un autre avec un code volé.
+    let (defi, liaison) = defi_et_liaison();
+    let enrolement = Enrolement::nouveau([0x42; 32]);
+    let corps = enrolement
+        .corps("0123456789", &defi, &liaison)
+        .expect("un code juste");
+
+    let mut brute = [0_u8; 64];
+    brute.copy_from_slice(&corps[42..]);
+    let signature = asl_cle::Signature::depuis_octets(brute);
+
+    assert!(
+        enrolement
+            .publique()
+            .prouve_sa_possession(&defi, &liaison, &signature),
+        "la preuve doit valoir pour la clé présentée"
+    );
+}
+
+#[test]
+fn une_preuve_faite_pour_une_autre_connexion_ne_vaut_pas() {
+    // **LE RELAIS, DANS LE CHEMIN D'ENRÔLEMENT.** Un intermédiaire qui
+    // rapporterait la preuve d'une autre poignée de main ne passe pas.
+    let (defi, liaison) = defi_et_liaison();
+    let enrolement = Enrolement::nouveau([0x42; 32]);
+    let corps = enrolement
+        .corps("0123456789", &defi, &liaison)
+        .expect("un code juste");
+
+    let mut brute = [0_u8; 64];
+    brute.copy_from_slice(&corps[42..]);
+    let signature = asl_cle::Signature::depuis_octets(brute);
+
+    let ailleurs = liaison_exportee([0x22; 32]);
+    assert!(
+        !enrolement
+            .publique()
+            .prouve_sa_possession(&defi, &ailleurs, &signature),
+        "une preuve faite pour une autre connexion a été acceptée"
+    );
+
+    let autre_defi = Defi::depuis_octets([0x5B; 32]);
+    assert!(
+        !enrolement
+            .publique()
+            .prouve_sa_possession(&autre_defi, &liaison, &signature),
+        "une preuve faite pour un autre défi a été acceptée"
+    );
+}
+
+#[test]
+fn le_code_est_canonise_avant_de_partir() {
+    // **INDISPENSABLE, ET NON COMMODE** : l'annuaire cherche par l'empreinte de
+    // la forme canonique. Un `O` envoyé pour un `0` ne trouverait rien.
+    let (defi, liaison) = defi_et_liaison();
+    let enrolement = Enrolement::nouveau([0x42; 32]);
+
+    let reference = enrolement
+        .corps("0123456789", &defi, &liaison)
+        .expect("un code juste");
+
+    for variante in ["O123456789", "o123456789", "0I23456789", "0l23456789"] {
+        let corps = enrolement
+            .corps(variante, &defi, &liaison)
+            .unwrap_or_else(|_| panic!("{variante} devrait être rattrapé"));
+        assert_eq!(&corps[..10], &reference[..10], "{variante}");
+    }
+}
+
+#[test]
+fn le_tiret_d_affichage_se_retape_ou_s_omet() {
+    // C'est la forme qu'on lit sur l'écran du téléphone.
+    let (defi, liaison) = defi_et_liaison();
+    let enrolement = Enrolement::nouveau([0x42; 32]);
+
+    let sans = enrolement
+        .corps("4K9M2P7R1T", &defi, &liaison)
+        .expect("sans tiret");
+    let avec = enrolement
+        .corps("4K9M2-P7R1T", &defi, &liaison)
+        .expect("avec tiret");
+    assert_eq!(&sans[..10], &avec[..10]);
+    assert_eq!(&sans[..10], b"4K9M2P7R1T");
+}
+
+#[test]
+fn un_code_mal_forme_est_refuse_avant_toute_signature() {
+    let (defi, liaison) = defi_et_liaison();
+    let enrolement = Enrolement::nouveau([0x42; 32]);
+
+    for texte in ["", "012345678", "01234567890", "01234U6789", "4K9M2P-7R1T"] {
+        assert!(
+            matches!(
+                enrolement.corps(texte, &defi, &liaison),
+                Err(asl_client::Faute::CodeRefuse(_))
+            ),
+            "{texte:?} devrait être refusé"
+        );
+    }
+}
+
+#[test]
+fn l_annuaire_nomme_la_machine_et_la_cle_ne_change_pas() {
+    // **C'EST LE POINT DE CETTE TRANSITION.** La clé que l'annuaire vient de
+    // lier est celle qui signera ; en fabriquer une neuve ici la perdrait.
+    let enrolement = Enrolement::nouveau([0x42; 32]);
+    let publique = enrolement.publique();
+
+    let identite = enrolement.nommee(machine()).expect("une machine");
+    assert_eq!(identite.machine(), machine());
+    assert_eq!(identite.publique(), publique, "la clé a survécu au baptême");
+}
+
+#[test]
+fn un_enrolement_ne_se_laisse_pas_nommer_par_autre_chose_qu_une_machine() {
+    for genre in [
+        Genre::Utilisateur,
+        Genre::Appareil,
+        Genre::Service,
+        Genre::Autorisation,
+        Genre::Annuaire,
+    ] {
+        let quoi = Identifiant::depuis_entropie(genre, [7; 16]);
+        assert_eq!(
+            Enrolement::nouveau([0x42; 32]).nommee(quoi).map(|_| ()),
+            Err(asl_client::Faute::PasUneMachine { obtenu: genre }),
+            "{genre:?}"
+        );
+    }
+}
+
+#[test]
+fn l_etiquette_de_liaison_est_celle_du_serveur() {
+    // **RÉEXPORTÉE POUR QUE PERSONNE N'EN INVENTE UNE.** Si les deux camps
+    // n'employaient pas la même, aucune signature ne vérifierait, et la panne
+    // serait indiscernable d'une clé fausse.
+    assert_eq!(ETIQUETTE_LIAISON, asl_cle::ETIQUETTE_LIAISON);
+}

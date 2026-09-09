@@ -71,9 +71,9 @@ repository = "https://github.com/air-desktop-project/air-service-locator-client"
 asl-client = { path = "crates/asl-client", version = "0.1.0" }
 
 # La grammaire, tirée du dépôt qui porte les spécifications.
-asl-id = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "a0795c8ddd6d060c360803737fab12abdc6361a8" }
-asl-proto = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "a0795c8ddd6d060c360803737fab12abdc6361a8" }
-asl-cle = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "a0795c8ddd6d060c360803737fab12abdc6361a8" }
+asl-id = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "e4255cfa91b35f33e6dbee9935e85ddf8323fb33" }
+asl-proto = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "e4255cfa91b35f33e6dbee9935e85ddf8323fb33" }
+asl-cle = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "e4255cfa91b35f33e6dbee9935e85ddf8323fb33" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "forbid"
