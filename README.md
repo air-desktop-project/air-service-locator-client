@@ -17,8 +17,7 @@ retrouver un port, ses liaisons vers cinq langages, et l'utilitaire `asl`.
 >
 > L'utilitaire `asl` fait les quatre verbes ; `asl-client-ffi` exporte onze
 > symboles, inscrits au registre et déclarés dans `include/asl.h` ; **les liaisons
-> Python, Ruby et C++ sont écrites et éprouvées.** Kotlin et Swift ne le sont
-> pas.
+> Python, Ruby, C++ et Kotlin sont écrites et éprouvées.** Swift ne l'est pas.
 
 ## Le problème
 

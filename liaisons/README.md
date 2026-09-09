@@ -31,7 +31,7 @@ utilisateur Python attend une exception, pas un code de retour négatif.
 | [`python/`](python/) | Écrite, éprouvée, sans aucune dépendance. `scripts/check-python.sh`. |
 | [`ruby/`](ruby/) | Écrite, éprouvée, sans aucune dépendance. `scripts/check-ruby.sh`. |
 | [`cpp/`](cpp/) | Écrite, éprouvée. En-tête seul : elle INCLUT le contrat au lieu de le recopier. `scripts/check-cpp.sh`. |
-| `kotlin/` | Rien. |
+| [`kotlin/`](kotlin/) | Écrite, éprouvée, sans aucune dépendance. **JVM seulement — pas Android.** `scripts/check-kotlin.sh`. |
 | `swift/` | Rien. |
 
 
@@ -40,8 +40,8 @@ les déclare avec la RAISON de chacune — pourquoi `asl_client_neuf` n'ouvre au
 connexion, pourquoi un verdict a quatre valeurs et non deux, pourquoi libérer le
 client retire l'annonce.
 
-Ce qui reste à faire, pour chacun des deux langages restants, est ce que le
-tableau ci-dessus exige : traduire les erreurs, envelopper le pointeur opaque,
+Ce qui reste à faire, pour le langage restant, est ce que le tableau ci-dessus
+exige : traduire les erreurs, envelopper le pointeur opaque,
 renommer, et DIRE ce qui tourne en arrière-plan.
 
 **Commencez par l'en-tête, et non par ce fichier-ci** : il est le contrat, et il
@@ -62,7 +62,15 @@ cherchera.
 **Et les réponses diffèrent d'un langage à l'autre.** C++ ne pose PAS de verrou
 là où Python et Ruby en posent un : la convention « objets distincts, sûr ; même
 objet, non sûr » y est universelle, et un verrou rendrait `Client` non déplaçable.
-Recopier la réponse de Python aurait été plus simple que de reposer la question.
+Kotlin en pose un, mais pour une raison encore différente — sur la JVM, un objet
+rangé dans un conteneur d'injection et appelé depuis un pool de fils est le cas
+ORDINAIRE. Recopier la réponse de Python aurait été plus simple que de reposer la
+question trois fois.
+
+**Une troisième question s'est ajoutée : peut-on INCLURE le contrat ?** C++ le
+peut, et n'a donc aucune conformité à vérifier — le compilateur est la barrière.
+Les trois autres recopient `asl.h` et doivent comparer, chacune à sa façon :
+`ctypes.Structure` en Python, `pack` en Ruby, `MemoryLayout` en Kotlin.
 
 ## Ce qui n'est pas décidé
 
