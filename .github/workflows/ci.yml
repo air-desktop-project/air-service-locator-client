@@ -154,6 +154,15 @@ jobs:
       - name: check-ruby
         run: ./scripts/check-ruby.sh
 
+      # ── LE CONTRAT, LU PAR UN COMPILATEUR ───────────────────────────────
+      #
+      # `check-abi` disait ne pas juger le TYPE des arguments. Celui-ci le juge :
+      # il compile `asl.h` en C, puis `asl.hpp` avec `g++` ET `clang++`, en C++17,
+      # C++20 et C++23, et LIE contre la bibliothèque. Aucun paquet à installer :
+      # le runner a les deux compilateurs.
+      - name: check-cpp
+        run: ./scripts/check-cpp.sh
+
       - name: check-format
         run: ./scripts/check-format.sh
 

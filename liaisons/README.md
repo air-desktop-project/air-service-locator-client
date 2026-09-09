@@ -30,7 +30,7 @@ utilisateur Python attend une exception, pas un code de retour négatif.
 |---|---|
 | [`python/`](python/) | Écrite, éprouvée, sans aucune dépendance. `scripts/check-python.sh`. |
 | [`ruby/`](ruby/) | Écrite, éprouvée, sans aucune dépendance. `scripts/check-ruby.sh`. |
-| `cpp/` | Rien — l'en-tête suffit peut-être, et c'est à décider. |
+| [`cpp/`](cpp/) | Écrite, éprouvée. En-tête seul : elle INCLUT le contrat au lieu de le recopier. `scripts/check-cpp.sh`. |
 | `kotlin/` | Rien. |
 | `swift/` | Rien. |
 
@@ -40,7 +40,7 @@ les déclare avec la RAISON de chacune — pourquoi `asl_client_neuf` n'ouvre au
 connexion, pourquoi un verdict a quatre valeurs et non deux, pourquoi libérer le
 client retire l'annonce.
 
-Ce qui reste à faire, pour chacun des trois langages restants, est ce que le
+Ce qui reste à faire, pour chacun des deux langages restants, est ce que le
 tableau ci-dessus exige : traduire les erreurs, envelopper le pointeur opaque,
 renommer, et DIRE ce qui tourne en arrière-plan.
 
@@ -55,8 +55,14 @@ c'est un verrou, parce que personne ne lit le commentaire.
 **Une liaison doit rendre le contrôle à son hôte pendant qu'elle attend.** Vingt
 secondes d'attente réseau, ce sont vingt secondes pendant lesquelles
 l'application qui nous embarque doit continuer de servir. En Python c'est `CDLL`
-plutôt que `PyDLL` ; en Ruby, `need_gvl: false`. Ailleurs, ce sera autre chose —
-mais la question se posera.
+plutôt que `PyDLL` ; en Ruby, `need_gvl: false` ; en C++ la question ne se pose
+pas, et `cpp/README.md` le dit quand même — parce qu'un lecteur venu de Python la
+cherchera.
+
+**Et les réponses diffèrent d'un langage à l'autre.** C++ ne pose PAS de verrou
+là où Python et Ruby en posent un : la convention « objets distincts, sûr ; même
+objet, non sûr » y est universelle, et un verrou rendrait `Client` non déplaçable.
+Recopier la réponse de Python aurait été plus simple que de reposer la question.
 
 ## Ce qui n'est pas décidé
 

@@ -30,7 +30,8 @@
 #   6. `cargo test`
 #   7. `check-python`    — la liaison Python contre l'ABI qu'elle transcrit.
 #   8. `check-ruby`      — la liaison Ruby, idem, plus le GVL.
-#   9. `check-format`    — EN DERNIER (voir ci-dessus).
+#   9. `check-cpp`       — le contrat LU PAR UN COMPILATEUR, en C et en C++.
+#  10. `check-format`    — EN DERNIER (voir ci-dessus).
 #
 # **`check-abi` A ÉTÉ ÉCRIT AVANT LA PREMIÈRE FONCTION EXPORTÉE, et c'était un
 # choix.** Une barrière ajoutée après coup se découvre cassée le jour où l'on en
@@ -40,14 +41,14 @@
 #
 # # CE QUI MANQUE ENCORE
 #
-# Ni `check-abi` ni `check-python` ne jugent le TYPE des arguments. Ce qui les
-# rattrape en partie : les tailles de structures, vérifiées à la compilation des
-# deux côtés, et les constantes, comparées à l'en-tête par un essai dans chaque
-# langage. Le reste tient par la discipline de renommer ce qu'on change.
+# **LE TYPE DES ARGUMENTS EST ENFIN JUGÉ**, et c'est `check-cpp` qui le fait :
+# il compile l'en-tête et LIE contre la bibliothèque. Une signature qui aurait
+# bougé ne compile pas ; un symbole qui aurait disparu ne lie pas. C'est la limite
+# que `check-abi` s'était donnée à lui-même, et elle est levée.
 #
-# **TROIS LIAISONS SUR CINQ N'EXISTENT PAS**, et il n'y a donc rien à vérifier
-# pour C++, Kotlin et Swift. Le jour où l'une entrera, elle aura besoin de sa
-# propre barrière — `check-python` et `check-ruby` ne la couvriront pas.
+# **DEUX LIAISONS SUR CINQ N'EXISTENT PAS**, et il n'y a donc rien à vérifier pour
+# Kotlin et Swift. Le jour où l'une entrera, elle aura besoin de sa propre
+# barrière — les trois qui existent ne la couvriront pas.
 
 set -euo pipefail
 
@@ -62,6 +63,7 @@ barrieres=(
     scripts/check-clippy.sh
     scripts/check-python.sh
     scripts/check-ruby.sh
+    scripts/check-cpp.sh
     scripts/check-format.sh
 )
 
