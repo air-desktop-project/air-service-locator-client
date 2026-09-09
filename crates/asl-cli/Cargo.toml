@@ -7,12 +7,40 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+# **LE BINAIRE S'APPELLE `asl`.** Ce que l'on tape n'a pas à porter le suffixe
+# qui rend le nom de la crate unique dans un registre.
 [[bin]]
 name = "asl"
 path = "src/main.rs"
 
 [dependencies]
 asl-client.workspace = true
+asl-client-tokio.workspace = true
+asl-cle.workspace = true
+asl-id.workspace = true
+asl-proto.workspace = true
+
+# `signal` EN PLUS, ET SEULEMENT ICI. `asl annonce` tient l'annonce au premier
+# plan, et Ctrl-C doit la retirer PROPREMENT — sinon l'annuaire donne une adresse
+# morte pendant une minute. La bibliothèque, elle, ne demande pas cette feature :
+# un daemon a déjà son propre traitement des signaux, et lui en imposer un serait
+# décider à sa place.
+tokio = { workspace = true, features = ["signal"] }
+
+# **AUCUN ANALYSEUR D'ARGUMENTS TIERS.** La grammaire tient en deux cents lignes
+# et n'a ni sous-commandes imbriquées ni complétion ; en tirer une centaine de
+# crates dans le verrou d'un dépôt dont `check-sans-c.sh` inspecte le graphe
+# construit à chaque passage ne se paierait pas. Voir `src/arguments.rs`.
+
+[dev-dependencies]
+# **POUR FABRIQUER UNE RACINE QUE `rustls` SAIT LIRE**, et rien d'autre. Sans
+# elle, l'essai qui doit obtenir le code `4` obtiendrait le code `2` — et
+# prouverait le contraire de ce qu'il cherche.
+#
+# Le certificat est fabriqué à l'essai plutôt que rangé dans le dépôt : un
+# certificat commité expire un jour, et l'essai se met alors à échouer pour une
+# raison qui n'a rien à voir avec ce qu'il éprouve.
+ams-quic-client.workspace = true
 
 [lints]
 workspace = true

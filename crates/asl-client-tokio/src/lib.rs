@@ -372,6 +372,26 @@ impl Connexion {
         self.emettre().await
     }
 
+    /// L'adresse locale que le noyau a choisie pour joindre cet annuaire.
+    ///
+    /// # POURQUOI ELLE VAUT MIEUX QU'UNE ÉNUMÉRATION D'INTERFACES
+    ///
+    /// C'est l'adresse par laquelle cette machine SORT vers cet annuaire, et
+    /// c'est exactement celle qu'il faut annoncer pour que le verdict de NAT ait
+    /// un sens : `derriere_nat` se décide en comparant ce que l'annuaire observe
+    /// à ce qu'on a annoncé (`modele.md` §4.2).
+    ///
+    /// Une machine à six interfaces en annoncerait six, dont cinq qui ne mènent
+    /// nulle part — et il faudrait `getifaddrs`, donc du C, que C4 interdit.
+    /// Le noyau, lui, a déjà tranché en ouvrant la socket.
+    ///
+    /// # Errors
+    ///
+    /// [`Faute::Socket`] si la socket ne sait plus dire où elle est.
+    pub fn locale(&self) -> Result<SocketAddr, Faute> {
+        self.socket.local_addr().map_err(Faute::Socket)
+    }
+
     /// La connexion est-elle encore là ?
     #[must_use]
     pub const fn vivante(&self) -> bool {

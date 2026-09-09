@@ -159,7 +159,13 @@ dependencies = [
 name = "asl-cli"
 version = "0.1.0"
 dependencies = [
+ "ams-quic-client",
+ "asl-cle",
  "asl-client",
+ "asl-client-tokio",
+ "asl-id",
+ "asl-proto",
+ "tokio",
 ]
 
 [[package]]
