@@ -389,3 +389,44 @@ class LaLiaisonNAucuneDependance < Minitest::Test
     assert_equal [], tirees - autorisees, "dépendances hors de la distribution"
   end
 end
+
+class LesVerdictsPousses < Minitest::Test
+  include Aide
+
+  def test_rien_recu_n_est_pas_une_erreur
+    # **`nil` N'EST PAS UNE EXCEPTION**, et c'est délibéré : ne rien avoir reçu
+    # est le cas ORDINAIRE — l'annuaire ne pousse que ce qui a CHANGÉ. Lever ici
+    # obligerait à envelopper d'un `rescue` la boucle qu'on appelle chaque
+    # seconde.
+    Asl::Client.ouvrir do |client|
+      assert_equal 0, client.poussees_recues
+      assert_nil client.derniere_poussee
+    end
+  end
+
+  def test_le_verdict_de_nat_a_trois_valeurs
+    # **ET NON UN BOOLÉEN** : sans adresse locale annoncée, il n'y a rien à
+    # comparer, et répondre « non » serait affirmer ce qu'on n'a pas mesuré.
+    assert_equal 3, Asl::VERDICTS_DE_NAT.size
+    assert_equal %i[non oui indetermine].sort, Asl::VERDICTS_DE_NAT.values.sort
+    refute_includes Asl::VERDICTS_DE_NAT.keys, 0, "zéro n'est pas un verdict"
+  end
+
+  def test_une_poussee_porte_ses_candidats_et_son_nat
+    poussee = Asl::Poussee.new(
+      candidats: [Asl::Candidat.new(protocole: :tcp, adresse: "203.0.113.7", port: 8080,
+                                    origine: :reflexif, verdict: :injoignable)],
+      derriere_nat: :oui
+    )
+
+    assert_equal "203.0.113.7:8080", poussee.candidats.first.to_s
+    assert_equal :oui, poussee.derriere_nat
+  end
+
+  def test_un_client_ferme_le_dit_aussi_pour_les_poussees
+    client = Asl::Client.new
+    client.fermer
+    assert_raises(Asl::Erreur) { client.poussees_recues }
+    assert_raises(Asl::Erreur) { client.derniere_poussee }
+  end
+end

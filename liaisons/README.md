@@ -35,14 +35,14 @@ utilisateur Python attend une exception, pas un code de retour négatif.
 | [`swift/`](swift/) | Écrite, éprouvée. Elle INCLUT le contrat, et le compilateur refuse de partager un client. `scripts/check-swift.sh`. |
 
 
-`crates/asl-client-ffi` exporte onze fonctions, et `crates/asl-client-ffi/include/asl.h`
+`crates/asl-client-ffi` exporte treize fonctions, et `crates/asl-client-ffi/include/asl.h`
 les déclare avec la RAISON de chacune — pourquoi `asl_client_neuf` n'ouvre aucune
 connexion, pourquoi un verdict a quatre valeurs et non deux, pourquoi libérer le
 client retire l'annonce.
 
-Ce qui reste à faire, pour le langage restant, est ce que le tableau ci-dessus
-exige : traduire les erreurs, envelopper le pointeur opaque,
-renommer, et DIRE ce qui tourne en arrière-plan.
+Ce qu'une liaison doit rendre est ce que le tableau ci-dessus exige : traduire les
+erreurs, envelopper le pointeur opaque, renommer, et DIRE ce qui tourne en
+arrière-plan.
 
 **Commencez par l'en-tête, et non par ce fichier-ci** : il est le contrat, et il
 est écrit à la main pour cette raison. Puis regardez `python/` et `ruby/`, qui ont
@@ -66,6 +66,25 @@ Kotlin en pose un, mais pour une raison encore différente — sur la JVM, un ob
 rangé dans un conteneur d'injection et appelé depuis un pool de fils est le cas
 ORDINAIRE. Recopier la réponse de Python aurait été plus simple que de reposer la
 question trois fois.
+
+**Une quatrième s'est posée avec les verdicts poussés : comment dit-on « rien
+n'est arrivé, et ce n'est pas une panne » ?** L'annuaire répond « en cours » à une
+annonce pour ne pas faire attendre un démarrage, puis pousse ce qu'il a mesuré ;
+`asl_derniere_poussee` rend donc `ASL_PAS_DE_POUSSEE` tant qu'il n'a rien poussé,
+et c'est l'état ORDINAIRE des premières secondes d'un daemon.
+
+Les cinq répondent pareil, et pour une raison qui n'a rien à voir avec leurs
+conventions d'erreur : **l'absence est rendue par le vide du langage** — `None`,
+`nil`, `null`, `nil` de Swift — et JAMAIS par une exception, un `Result.failure`
+ou un `throw`. Lever obligerait un porteur à envelopper d'un `rescue` la boucle
+qu'il appelle chaque seconde, et ce `rescue`-là avalerait aussi les fautes qui,
+elles, comptent. C++ est le seul à rendre un code, `Faute::PasDePoussee`, parce
+qu'il n'a pas de type optionnel avant C++17 sans `std::optional` — et il laisse
+alors intact ce que l'appelant avait déjà.
+
+Le verdict de NAT suit la même règle que les verdicts de joignabilité : **trois
+valeurs, jamais un booléen.** Un daemon qui n'a annoncé aucune adresse locale ne
+donne rien à comparer à l'adresse réflexive.
 
 **Une troisième question s'est ajoutée : peut-on INCLURE le contrat ?** C++ le
 peut, et n'a donc aucune conformité à vérifier — le compilateur est la barrière.

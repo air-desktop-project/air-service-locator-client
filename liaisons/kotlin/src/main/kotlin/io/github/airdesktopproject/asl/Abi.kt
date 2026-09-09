@@ -57,6 +57,7 @@ internal object Abi {
     const val INTERNE: Int = -6
     const val PAS_D_IDENTITE: Int = -7
     const val DEJA: Int = -8
+    const val PAS_DE_POUSSEE: Int = -9
 
     const val IDENTIFIANT_OCTETS: Int = 29
     const val GRAINE_OCTETS: Int = 32
@@ -71,6 +72,10 @@ internal object Abi {
     const val INJOIGNABLE_POINT: Int = 2
     const val NON_SONDE: Int = 3
     const val EN_COURS: Int = 4
+
+    const val NAT_NON: Int = 1
+    const val NAT_OUI: Int = 2
+    const val NAT_INDETERMINE: Int = 3
 
     // ── LES DISPOSITIONS ────────────────────────────────────────────────────
     //
@@ -133,7 +138,7 @@ internal object Abi {
     private val ENTIER = ValueLayout.JAVA_INT
     private val ADRESSE = ValueLayout.ADDRESS
 
-    /** Les onze fonctions, avec leur signature. */
+    /** Les treize fonctions, avec leur signature. */
     private val SIGNATURES: Map<String, FunctionDescriptor> = mapOf(
         "asl_version" to FunctionDescriptor.ofVoid(ADRESSE, ADRESSE, ADRESSE),
         "asl_faute_texte" to FunctionDescriptor.of(ADRESSE, ENTIER),
@@ -147,6 +152,10 @@ internal object Abi {
         "asl_etat" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE),
         "asl_ou" to FunctionDescriptor.of(
             ENTIER, ADRESSE, ADRESSE, ADRESSE, ADRESSE, TAILLE, ADRESSE,
+        ),
+        "asl_poussees_recues" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE),
+        "asl_derniere_poussee" to FunctionDescriptor.of(
+            ENTIER, ADRESSE, ADRESSE, TAILLE, ADRESSE, ADRESSE,
         ),
     )
 
@@ -241,7 +250,7 @@ internal object Abi {
             table[nom] ?: error("`$nom` n'a pas été lié : ce n'est pas censé arriver")
     }
 
-    /** Charge la bibliothèque native et lie ses onze fonctions.
+    /** Charge la bibliothèque native et lie ses treize fonctions.
      *
      * L'`Arena.global()` n'est pas un oubli : cette bibliothèque vit aussi
      * longtemps que la JVM. La décharger demanderait de garantir qu'aucun fil

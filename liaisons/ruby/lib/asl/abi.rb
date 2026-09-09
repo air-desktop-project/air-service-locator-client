@@ -45,6 +45,7 @@ module Asl
     INTERNE = -6
     PAS_D_IDENTITE = -7
     DEJA = -8
+    PAS_DE_POUSSEE = -9
 
     IDENTIFIANT_OCTETS = 29
     GRAINE_OCTETS = 32
@@ -59,6 +60,10 @@ module Asl
     INJOIGNABLE_POINT = 2
     NON_SONDE = 3
     EN_COURS = 4
+
+    NAT_NON = 1
+    NAT_OUI = 2
+    NAT_INDETERMINE = 3
 
     # ── LES DISPOSITIONS ────────────────────────────────────────────────────
 
@@ -150,7 +155,7 @@ module Asl
       chemins
     end
 
-    # Les onze fonctions, une fois chargées.
+    # Les treize fonctions, une fois chargées.
     #
     # **CHAQUE SIGNATURE EST DÉCLARÉE À LA MAIN.** C'est le prix de `fiddle`, et
     # il est réel : une déclaration fausse ne se voit pas au chargement, elle
@@ -174,7 +179,11 @@ module Asl
       asl_etat: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP], Fiddle::TYPE_INT32_T],
       asl_ou: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP,
                 Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T, Fiddle::TYPE_VOIDP],
-               Fiddle::TYPE_INT32_T]
+               Fiddle::TYPE_INT32_T],
+      asl_poussees_recues: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP], Fiddle::TYPE_INT32_T],
+      asl_derniere_poussee: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T,
+                              Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP],
+                             Fiddle::TYPE_INT32_T]
     }.freeze
 
     # Charge la bibliothèque native et rend ses fonctions, par nom.

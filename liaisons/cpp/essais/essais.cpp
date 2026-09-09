@@ -155,6 +155,11 @@ void un_client_par_defaut_refuse_au_lieu_de_dereferencer_le_neant() {
     asl::Identite obtenue;
     VERIFIE(vide.enroler("4K9M2P7R1T", obtenue) == asl::Faute::Argument);
 
+    std::uint64_t poussees = 7;
+    VERIFIE(vide.poussees_recues(poussees) == asl::Faute::Argument);
+    asl::Poussee poussee;
+    VERIFIE(vide.derniere_poussee(poussee) == asl::Faute::Argument);
+
     vide.fermer();
     vide.fermer();
 }
@@ -308,6 +313,63 @@ void un_candidat_v6_porte_ses_crochets() {
     VERIFIE(quatre.texte() == "203.0.113.7:8080");
 }
 
+// ── LES VERDICTS POUSSÉS ────────────────────────────────────────────────────
+
+void rien_de_pousse_n_est_pas_une_panne() {
+    // **C'EST L'ÉTAT ORDINAIRE**, et non une faute à rapporter : un daemon qui
+    // vient d'annoncer n'a pas encore de verdict, l'annuaire sonde. Le distinguer
+    // d'`Injoignable` est tout l'intérêt d'avoir un code à soi — sans lui, un
+    // porteur qui journalise ses fautes crierait à chaque tour de boucle.
+    asl::Client client;
+    VERIFIE(asl::Client::ouvrir(client) == asl::Faute::Ok);
+
+    std::uint64_t combien = 42;
+    VERIFIE(client.poussees_recues(combien) == asl::Faute::Ok);
+    VERIFIE(combien == 0);
+
+    asl::Poussee poussee;
+    poussee.candidats.push_back(asl::Candidat{});
+    VERIFIE(client.derniere_poussee(poussee) == asl::Faute::PasDePoussee);
+    // **CE QU'ON AVAIT N'EST PAS EFFACÉ** : un porteur qui garde la dernière
+    // poussée connue dans la même variable ne la perd pas en redemandant.
+    VERIFIE(poussee.candidats.size() == 1);
+}
+
+void le_verdict_de_nat_a_trois_valeurs_et_pas_deux() {
+    // Un `bool` n'aurait pas de place pour « je n'ai rien mesuré », et forcerait
+    // à répondre « non » quand aucune adresse locale n'a été annoncée.
+    static_assert(static_cast<std::uint8_t>(asl::VerdictNat::Non) == ASL_NAT_NON, "");
+    static_assert(static_cast<std::uint8_t>(asl::VerdictNat::Oui) == ASL_NAT_OUI, "");
+    static_assert(
+        static_cast<std::uint8_t>(asl::VerdictNat::Indetermine) == ASL_NAT_INDETERMINE, "");
+    static_assert(static_cast<std::uint8_t>(asl::VerdictNat::Non) != 0,
+                  "zéro n'est pas un verdict, et un champ oublié vaut zéro");
+
+    // Le défaut d'une `Poussee` n'affirme donc rien.
+    VERIFIE(asl::Poussee{}.derriere_nat == asl::VerdictNat::Indetermine);
+    VERIFIE(asl::Poussee{}.candidats.empty());
+}
+
+void une_poussee_se_deplace_avec_ses_candidats() {
+    // `derniere_poussee` rend par `std::move` ; si `Poussee` cessait d'être
+    // déplaçable, la copie passerait inaperçue à la lecture mais pas ici.
+    asl::Poussee poussee;
+    asl::Candidat candidat;
+    candidat.famille = 4;
+    candidat.port = 8080;
+    candidat.adresse[0] = 203;
+    candidat.adresse[2] = 113;
+    candidat.adresse[3] = 7;
+    candidat.verdict = asl::Verdict::Joignable;
+    poussee.candidats.push_back(candidat);
+    poussee.derriere_nat = asl::VerdictNat::Oui;
+
+    const asl::Poussee deplacee = std::move(poussee);
+    VERIFIE(deplacee.candidats.size() == 1);
+    VERIFIE(deplacee.candidats.front().texte() == "203.0.113.7:8080");
+    VERIFIE(deplacee.derriere_nat == asl::VerdictNat::Oui);
+}
+
 // ── LE CONTRAT, LU PAR LE COMPILATEUR ──────────────────────────────────────
 
 void les_enums_valent_les_macros_de_l_entete() {
@@ -322,6 +384,8 @@ void les_enums_valent_les_macros_de_l_entete() {
     static_assert(static_cast<std::uint8_t>(asl::Verdict::EnCours) == ASL_EN_COURS, "");
     static_assert(static_cast<std::uint8_t>(asl::Origine::Reflexif) == ASL_REFLEXIF, "");
     static_assert(sizeof(asl::Identite{}.graine) == ASL_GRAINE_OCTETS, "");
+    static_assert(static_cast<std::int32_t>(asl::Faute::PasDePoussee) == ASL_PAS_DE_POUSSEE,
+                  "");
     VERIFIE(true);
 }
 
@@ -342,6 +406,9 @@ int main() {
     un_client_deplace_laisse_l_original_vide();
     une_affectation_par_deplacement_ferme_ce_qu_elle_remplace();
     un_candidat_v6_porte_ses_crochets();
+    rien_de_pousse_n_est_pas_une_panne();
+    le_verdict_de_nat_a_trois_valeurs_et_pas_deux();
+    une_poussee_se_deplace_avec_ses_candidats();
     les_enums_valent_les_macros_de_l_entete();
 
     std::printf("%d vérifications, %d échec(s)\n", verifications, echecs);

@@ -87,6 +87,13 @@ pub const ASL_INTERNE: i32 = -6;
 pub const ASL_PAS_D_IDENTITE: i32 = -7;
 /// Ce client annonce déjà.
 pub const ASL_DEJA: i32 = -8;
+/// L'annuaire n'a encore rien poussé.
+///
+/// **CE N'EST PAS UNE PANNE, C'EST LE CAS ORDINAIRE** : il ne pousse que ce qui
+/// a CHANGÉ, et un service dont les sondes confirment ce qu'il disait déjà n'en
+/// produit aucune. Le distinguer d'une liste vide évite de faire croire à un
+/// porteur que ses points sont devenus injoignables.
+pub const ASL_PAS_DE_POUSSEE: i32 = -9;
 
 /// Combien d'octets écrit `asl_enroler` dans son tampon de machine, NUL compris.
 pub const ASL_IDENTIFIANT_OCTETS: usize = asl_id::LONGUEUR + 1;
@@ -111,6 +118,18 @@ pub const ASL_INJOIGNABLE_POINT: u8 = 2;
 pub const ASL_NON_SONDE: u8 = 3;
 /// La sonde n'a pas encore rendu son verdict.
 pub const ASL_EN_COURS: u8 = 4;
+
+/// L'adresse observée figure parmi celles que le daemon a annoncées.
+pub const ASL_NAT_NON: u8 = 1;
+/// Elle ne figure dans aucune.
+pub const ASL_NAT_OUI: u8 = 2;
+/// **Rien à comparer**, et l'affirmer serait mentir.
+///
+/// Le daemon n'a annoncé aucune adresse locale. Un booléen forcerait à répondre
+/// « non », c'est-à-dire à affirmer une chose qu'on n'a pas mesurée — et un
+/// daemon derrière un NAT qui lirait « non » chercherait la panne partout sauf
+/// là où elle est.
+pub const ASL_NAT_INDETERMINE: u8 = 3;
 
 // ── LES STRUCTURES QUI TRAVERSENT ───────────────────────────────────────────
 //
@@ -745,6 +764,102 @@ pub unsafe extern "C" fn asl_ou(
     })
 }
 
+/// Combien de poussées de verdict sont arrivées depuis le départ.
+///
+/// **ZÉRO N'EST PAS UNE ANOMALIE** : l'annuaire ne pousse que ce qui a CHANGÉ.
+///
+/// # Safety
+///
+/// `sortie` vise un `uint64_t` inscriptible.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn asl_poussees_recues(client: *const AslClient, sortie: *mut u64) -> i32 {
+    protege(|| {
+        // SAFETY : contrat de la fonction.
+        let Some(client) = (unsafe { client.as_ref() }) else {
+            return ASL_ARGUMENT;
+        };
+        if sortie.is_null() {
+            return ASL_ARGUMENT;
+        }
+        let combien = client
+            .attache
+            .as_ref()
+            .map_or(0, |attache| attache.etat().poussees);
+        // SAFETY : `sortie` est non nul.
+        unsafe { sortie.write(combien) };
+        ASL_OK
+    })
+}
+
+/// Ce que l'annuaire a MESURÉ depuis, et poussé sur la connexion tenue.
+///
+/// # POURQUOI CETTE PORTE EXISTE, ALORS QUE `asl_ou` REND DÉJÀ DES CANDIDATS
+///
+/// `asl_ou` dit où joindre le service D'UN AUTRE. Celle-ci dit ce que l'annuaire
+/// pense des NÔTRES — et surtout, elle dit ce qu'il a appris APRÈS avoir répondu.
+///
+/// L'annuaire répond `en_cours` à une annonce pour ne pas faire attendre un
+/// démarrage le temps d'une sonde. **Sans cette porte, un daemon reste à croire
+/// que sa joignabilité est en cours de mesure**, pour toujours.
+///
+/// # ELLE PORTE LA LISTE ENTIÈRE, ET NON UN DELTA
+///
+/// La dernière poussée remplace tout ce qui précède. L'appeler deux fois rend
+/// deux fois la même chose tant qu'aucune autre n'est arrivée.
+///
+/// # Safety
+///
+/// `candidats`, s'il n'est pas nul, vise `combien` [`AslCandidat`] inscriptibles ;
+/// `ecrit` vise un `size_t` inscriptible ; `derriere_nat`, s'il n'est pas nul, un
+/// `uint8_t`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn asl_derniere_poussee(
+    client: *const AslClient,
+    candidats: *mut AslCandidat,
+    combien: usize,
+    ecrit: *mut usize,
+    derriere_nat: *mut u8,
+) -> i32 {
+    protege(|| {
+        // SAFETY : contrat de la fonction.
+        let Some(client) = (unsafe { client.as_ref() }) else {
+            return ASL_ARGUMENT;
+        };
+        if ecrit.is_null() {
+            return ASL_ARGUMENT;
+        }
+        let Some(octets) = client
+            .attache
+            .as_ref()
+            .and_then(asl_client_tokio::Attache::derniere_poussee)
+        else {
+            return ASL_PAS_DE_POUSSEE;
+        };
+        let Some((trouves, nat)) = candidats_d_une_poussee(&octets) else {
+            return ASL_INTERNE;
+        };
+
+        // SAFETY : `ecrit` est non nul.
+        unsafe { ecrit.write(trouves.len()) };
+        // SAFETY : l'appelant garantit que `derriere_nat`, s'il n'est pas nul,
+        // vise un octet qu'il possède.
+        unsafe {
+            if !derriere_nat.is_null() {
+                derriere_nat.write(nat);
+            }
+        }
+        if candidats.is_null() || combien < trouves.len() {
+            return ASL_TAMPON_TROP_PETIT;
+        }
+        // SAFETY : l'appelant garantit `combien` places, et l'on vient de
+        // vérifier qu'il y en a assez.
+        unsafe {
+            core::ptr::copy_nonoverlapping(trouves.as_ptr(), candidats, trouves.len());
+        }
+        ASL_OK
+    })
+}
+
 // ── CE QUI NE TRAVERSE PAS ──────────────────────────────────────────────────
 
 /// Rattrape tout, y compris ce qui n'aurait pas dû arriver.
@@ -820,6 +935,31 @@ fn graine_du_noyau<const N: usize>() -> Option<[u8; N]> {
     Some(octets)
 }
 
+/// Les candidats d'une POUSSÉE, ordonnés, et son verdict de NAT.
+///
+/// # POURQUOI CE N'EST PAS [`candidats_de`]
+///
+/// Une poussée n'a **ni service ni bail** (`protocole.md` §1.4) : la connexion
+/// détermine déjà le premier, et le second est accordé une fois, à l'annonce.
+/// Elle n'a donc pas la forme d'une `Reponse`, et un décodeur unique aurait dû
+/// rendre facultatif ce qui est obligatoire dans l'autre.
+///
+/// Ce qu'elles ont en commun — `vu_depuis` et la liste de verdicts — est ce qui
+/// produit les candidats, et cette partie-là est écrite une fois.
+fn candidats_d_une_poussee(octets: &[u8]) -> Option<(Vec<AslCandidat>, u8)> {
+    let mut tampons = asl_proto::cadrage::TamponsReponse::nouveaux();
+    let lue = asl_proto::Poussee::decoder(octets, &mut tampons).ok()?;
+    let nat = match lue.derriere_nat {
+        asl_proto::VerdictNat::Non => ASL_NAT_NON,
+        asl_proto::VerdictNat::Oui => ASL_NAT_OUI,
+        asl_proto::VerdictNat::Indetermine => ASL_NAT_INDETERMINE,
+    };
+    Some((
+        ordonner_les_candidats(lue.vu_depuis.adresse, lue.joignabilite),
+        nat,
+    ))
+}
+
 /// Les candidats d'une réponse d'annuaire, ordonnés.
 ///
 /// # POURQUOI CETTE FONCTION EST À PART, ET NON DANS `asl_ou`
@@ -831,16 +971,29 @@ fn graine_du_noyau<const N: usize>() -> Option<[u8; N]> {
 fn candidats_de(corps: &[u8]) -> Option<Vec<AslCandidat>> {
     let mut tampons = asl_proto::cadrage::TamponsReponse::nouveaux();
     let lue = asl_proto::Reponse::decoder(corps, &mut tampons).ok()?;
+    Some(ordonner_les_candidats(
+        lue.vu_depuis.adresse,
+        lue.joignabilite,
+    ))
+}
 
-    let mut bruts: Vec<asl_proto::Candidat> = lue
-        .joignabilite
+/// Les candidats que produit une liste de verdicts, ordonnés.
+///
+/// **ÉCRIT UNE FOIS, EMPLOYÉ DEUX** — par une réponse et par une poussée. Deux
+/// copies de ce tri finiraient par diverger, et c'est celle qu'on oublie de
+/// corriger qui rendrait un ordre faux.
+fn ordonner_les_candidats(
+    observee: core::net::IpAddr,
+    verdicts: &[asl_proto::Joignabilite],
+) -> Vec<AslCandidat> {
+    let mut bruts: Vec<asl_proto::Candidat> = verdicts
         .iter()
         .map(|entree| match entree.verdict {
             // **CELUI QU'UNE SONDE A MESURÉ PASSE AVANT CELUI QU'ON DÉDUIT.**
             asl_proto::Verdict::Joignable { candidat, .. } => candidat,
             _ => asl_proto::Candidat {
                 protocole: entree.point.protocole,
-                adresse: lue.vu_depuis.adresse,
+                adresse: observee,
                 port: entree.point.port,
                 origine: asl_proto::Origine::Reflexif,
             },
@@ -848,8 +1001,7 @@ fn candidats_de(corps: &[u8]) -> Option<Vec<AslCandidat>> {
         .collect();
 
     // Les verdicts suivent les candidats dans leur tri : on les apparie AVANT.
-    let mut verdicts: Vec<u8> = lue
-        .joignabilite
+    let mut rendus: Vec<u8> = verdicts
         .iter()
         .map(|entree| match entree.verdict {
             asl_proto::Verdict::Joignable { .. } => ASL_JOIGNABLE,
@@ -860,7 +1012,7 @@ fn candidats_de(corps: &[u8]) -> Option<Vec<AslCandidat>> {
         .collect();
 
     let mut ensemble: Vec<(asl_proto::Candidat, u8)> =
-        bruts.drain(..).zip(verdicts.drain(..)).collect();
+        bruts.drain(..).zip(rendus.drain(..)).collect();
     // `ordonner` trie des candidats seuls ; on trie ici la paire sur la même
     // clé, pour qu'aucun verdict ne se retrouve sur le candidat du voisin.
     ensemble.sort_by_key(|(candidat, _)| {
@@ -868,39 +1020,37 @@ fn candidats_de(corps: &[u8]) -> Option<Vec<AslCandidat>> {
         (famille, origine, candidat.port.valeur())
     });
 
-    Some(
-        ensemble
-            .into_iter()
-            .map(|(candidat, verdict)| {
-                let (famille, adresse) = match candidat.adresse {
-                    core::net::IpAddr::V6(quoi) => (6_u8, quoi.octets()),
-                    core::net::IpAddr::V4(quoi) => {
-                        let mut place = [0_u8; 16];
-                        place
-                            .get_mut(..4)
-                            .unwrap_or_default()
-                            .copy_from_slice(&quoi.octets());
-                        (4_u8, place)
-                    }
-                };
-                AslCandidat {
-                    adresse,
-                    port: candidat.port.valeur(),
-                    protocole: match candidat.protocole {
-                        asl_proto::Protocole::Tcp => ASL_TCP,
-                        asl_proto::Protocole::Udp => ASL_UDP,
-                    },
-                    famille,
-                    origine: match candidat.origine {
-                        asl_proto::Origine::Reflexif => ASL_REFLEXIF,
-                        asl_proto::Origine::Annonce => ASL_ANNONCE,
-                    },
-                    verdict,
-                    reserve: [0; 2],
+    ensemble
+        .into_iter()
+        .map(|(candidat, verdict)| {
+            let (famille, adresse) = match candidat.adresse {
+                core::net::IpAddr::V6(quoi) => (6_u8, quoi.octets()),
+                core::net::IpAddr::V4(quoi) => {
+                    let mut place = [0_u8; 16];
+                    place
+                        .get_mut(..4)
+                        .unwrap_or_default()
+                        .copy_from_slice(&quoi.octets());
+                    (4_u8, place)
                 }
-            })
-            .collect(),
-    )
+            };
+            AslCandidat {
+                adresse,
+                port: candidat.port.valeur(),
+                protocole: match candidat.protocole {
+                    asl_proto::Protocole::Tcp => ASL_TCP,
+                    asl_proto::Protocole::Udp => ASL_UDP,
+                },
+                famille,
+                origine: match candidat.origine {
+                    asl_proto::Origine::Reflexif => ASL_REFLEXIF,
+                    asl_proto::Origine::Annonce => ASL_ANNONCE,
+                },
+                verdict,
+                reserve: [0; 2],
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

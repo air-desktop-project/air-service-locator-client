@@ -46,6 +46,11 @@ extern "C" {
 #define ASL_INTERNE           -6
 #define ASL_PAS_D_IDENTITE    -7
 #define ASL_DEJA              -8
+/* Pas une panne : l'annuaire ne pousse que ce qui a CHANGÉ, et un service dont
+ * les sondes confirment ce qu'il disait déjà n'en produit aucune. Le distinguer
+ * d'une liste vide évite de faire croire que les points sont devenus
+ * injoignables. */
+#define ASL_PAS_DE_POUSSEE    -9
 
 /* Tailles de tampons que l'appelant doit fournir. */
 #define ASL_IDENTIFIANT_OCTETS 29
@@ -71,6 +76,19 @@ extern "C" {
 #define ASL_INJOIGNABLE_POINT 2
 #define ASL_NON_SONDE         3
 #define ASL_EN_COURS          4
+
+/* Le daemon est-il derrière un NAT ?
+ *
+ * TROIS VALEURS, ET NON UN BOOLÉEN. L'annuaire tranche en comparant ce qu'il
+ * OBSERVE à ce que le daemon ANNONCE ; si le daemon n'a annoncé aucune adresse
+ * locale, il n'y a rien à comparer. Un booléen forcerait à répondre « non »,
+ * c'est-à-dire à affirmer une chose qu'on n'a pas mesurée — et un daemon
+ * derrière un NAT qui lirait « non » chercherait la panne partout sauf là où
+ * elle est.
+ */
+#define ASL_NAT_NON          1
+#define ASL_NAT_OUI          2
+#define ASL_NAT_INDETERMINE  3
 
 /* ── LES STRUCTURES ─────────────────────────────────────────────────────────
  *
@@ -215,6 +233,32 @@ int32_t asl_etat(const asl_client *client, asl_etat_t *sortie);
  */
 int32_t asl_ou(asl_client *client, const char *machine, const char *service,
                asl_candidat *candidats, size_t combien, size_t *ecrit);
+
+/* Combien de poussées de verdict sont arrivées depuis le départ.
+ *
+ * ZÉRO N'EST PAS UNE ANOMALIE : l'annuaire ne pousse que ce qui a CHANGÉ.
+ */
+int32_t asl_poussees_recues(const asl_client *client, uint64_t *sortie);
+
+/* Ce que l'annuaire a MESURÉ depuis, et poussé sur la connexion tenue.
+ *
+ * L'annuaire répond `en_cours` à une annonce pour ne pas faire attendre un
+ * démarrage le temps d'une sonde vers une machine qui peut ne jamais répondre.
+ * SANS CETTE PORTE, un daemon reste à croire que sa joignabilité est en cours de
+ * mesure, pour toujours.
+ *
+ * Elle porte la LISTE ENTIÈRE, et non un delta : la dernière poussée remplace
+ * tout ce qui précède, et l'appeler deux fois rend deux fois la même chose tant
+ * qu'aucune autre n'est arrivée.
+ *
+ * `derriere_nat` peut être nul si l'appelant ne s'y intéresse pas. Le tampon se
+ * dimensionne en deux temps, comme pour asl_ou.
+ *
+ * Rend ASL_PAS_DE_POUSSEE tant que rien n'a été poussé.
+ */
+int32_t asl_derniere_poussee(const asl_client *client,
+                             asl_candidat *candidats, size_t combien,
+                             size_t *ecrit, uint8_t *derriere_nat);
 
 #ifdef __cplusplus
 } /* extern "C" */

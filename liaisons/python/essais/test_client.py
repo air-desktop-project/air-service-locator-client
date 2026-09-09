@@ -266,3 +266,46 @@ class LaLiaisonNAucuneDependance(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LesVerdictsPousses(unittest.TestCase):
+    def test_rien_recu_n_est_pas_une_erreur(self):
+        # **`None` N'EST PAS UNE EXCEPTION**, et c'est délibéré : ne rien avoir
+        # reçu est le cas ORDINAIRE — l'annuaire ne pousse que ce qui a CHANGÉ.
+        # Lever ici obligerait à envelopper d'un `try` la boucle qu'on appelle
+        # chaque seconde.
+        with asl.Client() as client:
+            self.assertEqual(client.poussees_recues(), 0)
+            self.assertIsNone(client.derniere_poussee())
+
+    def test_le_verdict_de_nat_a_trois_valeurs(self):
+        # **ET NON UN BOOLÉEN** : sans adresse locale annoncée, il n'y a rien à
+        # comparer, et répondre « non » serait affirmer ce qu'on n'a pas mesuré.
+        self.assertEqual(len(asl.VerdictNat), 3)
+        self.assertEqual(
+            {v.value for v in asl.VerdictNat}, {1, 2, 3}, "aucune n'est zéro"
+        )
+
+    def test_une_poussee_porte_ses_candidats_et_son_nat(self):
+        poussee = asl.Poussee(
+            candidats=[
+                asl.Candidat(
+                    protocole=asl.Protocole.TCP,
+                    adresse=ipaddress.IPv4Address("203.0.113.7"),
+                    port=8080,
+                    origine=asl.Origine.REFLEXIF,
+                    verdict=asl.Verdict.INJOIGNABLE,
+                )
+            ],
+            derriere_nat=asl.VerdictNat.OUI,
+        )
+        self.assertEqual(str(poussee.candidats[0]), "203.0.113.7:8080")
+        self.assertIs(poussee.derriere_nat, asl.VerdictNat.OUI)
+
+    def test_un_client_ferme_le_dit_aussi_pour_les_poussees(self):
+        client = asl.Client()
+        client.fermer()
+        with self.assertRaises(asl.Erreur):
+            client.poussees_recues()
+        with self.assertRaises(asl.Erreur):
+            client.derniere_poussee()

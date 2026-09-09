@@ -20,6 +20,12 @@
 // d'aucun réseau. Une barrière qui téléchargerait ne serait pas une barrière.
 
 import Asl
+// **UN PORTEUR N'IMPORTE PAS `CAsl`, ET LES ESSAIS SI.** C'est ce qui permet de
+// comparer les valeurs brutes des `enum` aux macros d'`asl.h` — le pendant des
+// `static_assert` de la liaison C++. Sans lui, la transcription serait une
+// seconde source, comme en Python et en Ruby, mais sans la barrière qui les
+// compare.
+import CAsl
 
 #if canImport(Glibc)
   import Glibc
@@ -92,7 +98,7 @@ func chaqueFauteASaPhraseEtAucuneNEstPartagee() {
   // l'appelant lirait pareil.
   let codes: [Faute] = [
     .argument, .configuration, .injoignable, .refuse,
-    .tamponTropPetit, .interne, .pasDIdentite, .deja, .ferme,
+    .tamponTropPetit, .interne, .pasDIdentite, .deja, .pasDePoussee, .ferme,
   ]
   var vues: [String] = []
   for code in codes {
@@ -256,6 +262,11 @@ func unClientFermeLeveAuLieuDeDereferencerLeNeant() throws {
     fauteDe { try client.ajouterAnnuaire("127.0.0.1:1", nom: "x") }, .ferme, "un annuaire")
   verifieEgal(fauteDe { _ = try client.ou(machine: machineDEssai, service: "d") }, .ferme, "où")
   verifieEgal(fauteDe { _ = try client.enroler(code: "4K9M2P7R1T") }, .ferme, "l'enrôlement")
+  // **ET NON `nil`** : un client fermé n'est pas un client qui attend son premier
+  // verdict, et les rendre pareil ferait chercher une sonde là où il y a un
+  // `fermer()` de trop.
+  verifieEgal(fauteDe { _ = try client.pousseesRecues() }, .ferme, "les poussées")
+  verifieEgal(fauteDe { _ = try client.dernierePoussee() }, .ferme, "la dernière poussée")
 }
 
 // ── CE QUI TRAVERSE ────────────────────────────────────────────────────────
@@ -285,6 +296,50 @@ func leVerdictGardeSesQuatreValeurs() {
   verifieEgal(Set(toutes.map(\.rawValue)).count, 4, "quatre valeurs distinctes")
 }
 
+// ── LES VERDICTS POUSSÉS ───────────────────────────────────────────────────
+
+func rienDePousseNEstPasUnePanne() throws {
+  // **C'EST L'ÉTAT ORDINAIRE**, et non une faute : un daemon qui vient d'annoncer
+  // n'a pas de verdict, l'annuaire sonde encore. Rendre `nil` plutôt que lever
+  // épargne à un porteur d'écrire `try?` autour de ce qu'il appelle chaque
+  // seconde — et de gober du même coup les fautes qui, elles, comptent.
+  let client = try Client()
+  verifieEgal(try client.pousseesRecues(), 0, "aucune poussée au départ")
+  verifieEgal(try client.dernierePoussee(), nil, "rien à rendre")
+  verifie(fauteDe { _ = try client.dernierePoussee() } == nil, "l'absence n'est pas une faute")
+}
+
+func leVerdictDeNatATroisValeursEtPasDeux() {
+  // Un `Bool` n'aurait pas de place pour « je n'ai rien mesuré », et forcerait à
+  // répondre `false` quand aucune adresse locale n'a été annoncée.
+  let toutes: [VerdictNat] = [.non, .oui, .indetermine]
+  verifieEgal(Set(toutes.map(\.rawValue)).count, 3, "trois valeurs distinctes")
+  verifie(!toutes.map(\.rawValue).contains(0), "zéro n'est pas un verdict")
+
+  // Les valeurs viennent de l'en-tête, et non d'ici : Swift, comme C++, INCLUT le
+  // contrat au lieu de le recopier.
+  verifieEgal(VerdictNat.non.rawValue, UInt8(ASL_NAT_NON), "ASL_NAT_NON")
+  verifieEgal(VerdictNat.oui.rawValue, UInt8(ASL_NAT_OUI), "ASL_NAT_OUI")
+  verifieEgal(
+    VerdictNat.indetermine.rawValue, UInt8(ASL_NAT_INDETERMINE), "ASL_NAT_INDETERMINE")
+  verifieEgal(Faute.pasDePoussee.rawValue, ASL_PAS_DE_POUSSEE, "ASL_PAS_DE_POUSSEE")
+}
+
+func unePousseePorteSesCandidatsEtSonNat() {
+  let poussee = Poussee(
+    candidats: [
+      Candidat(
+        protocole: .tcp, adresse: "203.0.113.7", port: 8080,
+        origine: .reflexif, verdict: .injoignable)
+    ],
+    derriereNat: .oui)
+  verifieEgal(String(describing: poussee.candidats[0]), "203.0.113.7:8080", "le candidat")
+  verifieEgal(poussee.derriereNat, .oui, "le NAT")
+  // `Equatable` sans le rédiger : c'est ce qui permet à un porteur de comparer la
+  // poussée d'avant à celle d'après pour savoir si quelque chose a bougé.
+  verifieEgal(poussee, poussee, "une poussée s'égale à elle-même")
+}
+
 @main
 struct Essais {
   static func main() throws {
@@ -307,6 +362,9 @@ struct Essais {
     unCandidatV6PorteSesCrochets()
     try unPointSeLitCommeOnLEcritDansAsl()
     leVerdictGardeSesQuatreValeurs()
+    try rienDePousseNEstPasUnePanne()
+    leVerdictDeNatATroisValeursEtPasDeux()
+    unePousseePorteSesCandidatsEtSonNat()
 
     print("\(verifications) vérifications, \(echecs) échec(s)")
     if echecs != 0 { exit(1) }

@@ -96,6 +96,12 @@ enum class Faute : std::int32_t {
     PasDIdentite = ASL_PAS_D_IDENTITE,
     /// Ce client annonce déjà.
     Deja = ASL_DEJA,
+    /// L'annuaire n'a encore rien poussé. **Ce n'est pas une panne.**
+    ///
+    /// C'est l'état ordinaire d'un daemon qui vient d'annoncer : la sonde n'a pas
+    /// fini. Un porteur qui appelle [`Client::derniere_poussee`] dans sa boucle la
+    /// verra à chaque tour jusqu'au premier verdict, puis plus jamais.
+    PasDePoussee = ASL_PAS_DE_POUSSEE,
 };
 
 /// Ce que la bibliothèque NATIVE dit d'une faute.
@@ -154,6 +160,20 @@ enum class Verdict : std::uint8_t {
     Injoignable = ASL_INJOIGNABLE_POINT,
     NonSonde = ASL_NON_SONDE,
     EnCours = ASL_EN_COURS,
+};
+
+/// Cette machine est-elle derrière un NAT ?
+///
+/// **TROIS VALEURS, ET NON UN BOOLÉEN.** Un daemon qui n'a annoncé aucune adresse
+/// locale ne donne rien à comparer à l'adresse réflexive, et répondre « non »
+/// serait affirmer ce qui n'a pas été mesuré.
+enum class VerdictNat : std::uint8_t {
+    /// L'adresse sous laquelle l'annuaire nous voit est une des nôtres.
+    Non = ASL_NAT_NON,
+    /// Elle n'en est aucune : quelque chose traduit entre nous et lui.
+    Oui = ASL_NAT_OUI,
+    /// Rien à comparer. **Aucune conclusion n'en découle.**
+    Indetermine = ASL_NAT_INDETERMINE,
 };
 
 /// Un point d'écoute à annoncer.
@@ -243,6 +263,17 @@ struct Etat {
     bool abandonnee = false;
 };
 
+/// Ce que l'annuaire a mesuré APRÈS coup, et poussé.
+///
+/// **ELLE N'A NI SERVICE NI BAIL** — elle ne répond à aucune question, elle
+/// corrige ce qu'une réponse antérieure disait « en cours ». C'est pourquoi elle
+/// n'a pas la forme de ce que rend [`Client::ou`].
+struct Poussee {
+    /// La liste ENTIÈRE des candidats, dans l'ordre, et non un delta.
+    std::vector<Candidat> candidats;
+    VerdictNat derriere_nat = VerdictNat::Indetermine;
+};
+
 /// L'identité rendue par un enrôlement. **Conservez les deux.**
 ///
 /// La clé est générée sur cette machine et sa moitié privée n'en sort pas ; ce
@@ -270,6 +301,21 @@ constexpr std::size_t kCandidatsDEmblee = 8;
 /// Un NUL au milieu est refusé plutôt que transmis : le C s'arrêterait au
 /// premier, et l'annuaire recevrait un nom plus court que celui qu'on croit lui
 /// avoir donné.
+/// Ce qu'on rend d'un `asl_candidat` brut.
+///
+/// Factorisé parce que [`Client::ou`] et [`Client::derniere_poussee`] rendent la
+/// MÊME chose : deux recopies divergeraient au premier champ ajouté.
+[[nodiscard]] inline Candidat candidat(const asl_candidat& lu) {
+    Candidat rendu;
+    rendu.protocole = static_cast<Protocole>(lu.protocole);
+    std::memcpy(rendu.adresse.data(), lu.adresse, rendu.adresse.size());
+    rendu.famille = lu.famille;
+    rendu.port = lu.port;
+    rendu.origine = static_cast<Origine>(lu.origine);
+    rendu.verdict = static_cast<Verdict>(lu.verdict);
+    return rendu;
+}
+
 [[nodiscard]] inline bool chaine(const std::string& texte, std::string& sortie) {
     if (texte.find('\0') != std::string::npos) {
         return false;
@@ -508,16 +554,57 @@ public:
         sortie.clear();
         sortie.reserve(combien);
         for (std::size_t rang = 0; rang < combien; ++rang) {
-            const asl_candidat& lu = bruts[rang];
-            Candidat rendu;
-            rendu.protocole = static_cast<Protocole>(lu.protocole);
-            std::memcpy(rendu.adresse.data(), lu.adresse, rendu.adresse.size());
-            rendu.famille = lu.famille;
-            rendu.port = lu.port;
-            rendu.origine = static_cast<Origine>(lu.origine);
-            rendu.verdict = static_cast<Verdict>(lu.verdict);
-            sortie.push_back(rendu);
+            sortie.push_back(interne::candidat(bruts[rang]));
         }
+        return Faute::Ok;
+    }
+
+    /// Combien de poussées sont arrivées depuis le départ.
+    ///
+    /// **C'EST LE COMPTEUR QU'ON SURVEILLE, PAS LE CONTENU.** Une poussée porte
+    /// toute la liste : la relire sans qu'il ait bougé rend deux fois la même
+    /// chose. Le voir croître est le seul signal qu'il y a du neuf.
+    [[nodiscard]] Faute poussees_recues(std::uint64_t& sortie) const noexcept {
+        if (brut_ == nullptr) {
+            return Faute::Argument;
+        }
+        return static_cast<Faute>(asl_poussees_recues(brut_, &sortie));
+    }
+
+    /// Ce que l'annuaire a mesuré depuis, et poussé sur la connexion tenue.
+    ///
+    /// **`Faute::PasDePoussee` N'EST PAS UNE PANNE** : tant que la sonde n'a rien
+    /// conclu, il n'y a rien à rendre, et c'est le cas au démarrage de tout
+    /// daemon. `sortie` n'est alors pas touchée.
+    ///
+    /// Comme pour [`ou`], `Faute::TamponTropPetit` ne remonte pas.
+    [[nodiscard]] Faute derniere_poussee(Poussee& sortie) const noexcept {
+        if (brut_ == nullptr) {
+            return Faute::Argument;
+        }
+
+        std::vector<asl_candidat> bruts(interne::kCandidatsDEmblee);
+        std::size_t combien = 0;
+        std::uint8_t nat = ASL_NAT_INDETERMINE;
+        auto issue = static_cast<Faute>(
+            asl_derniere_poussee(brut_, bruts.data(), bruts.size(), &combien, &nat));
+
+        if (issue == Faute::TamponTropPetit) {
+            bruts.assign(combien == 0 ? 1 : combien, asl_candidat{});
+            issue = static_cast<Faute>(
+                asl_derniere_poussee(brut_, bruts.data(), bruts.size(), &combien, &nat));
+        }
+        if (issue != Faute::Ok) {
+            return issue;
+        }
+
+        Poussee rendue;
+        rendue.derriere_nat = static_cast<VerdictNat>(nat);
+        rendue.candidats.reserve(combien);
+        for (std::size_t rang = 0; rang < combien; ++rang) {
+            rendue.candidats.push_back(interne::candidat(bruts[rang]));
+        }
+        sortie = std::move(rendue);
         return Faute::Ok;
     }
 

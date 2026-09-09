@@ -26,10 +26,12 @@ use std::ptr;
 use asl_client_ffi::{
     ASL_ANNONCE, ASL_ARGUMENT, ASL_CONFIGURATION, ASL_DEJA, ASL_EN_COURS, ASL_GRAINE_OCTETS,
     ASL_IDENTIFIANT_OCTETS, ASL_INJOIGNABLE, ASL_INJOIGNABLE_POINT, ASL_INTERNE, ASL_JOIGNABLE,
-    ASL_NON_SONDE, ASL_OK, ASL_PAS_D_IDENTITE, ASL_REFLEXIF, ASL_REFUSE, ASL_TAMPON_TROP_PETIT,
-    ASL_TCP, ASL_UDP, AslCandidat, AslClient, AslEtat, AslPoint, asl_annoncer, asl_client_annuaire,
-    asl_client_identite, asl_client_libere, asl_client_neuf, asl_client_racines, asl_enroler,
-    asl_etat, asl_faute_texte, asl_ou, asl_version,
+    ASL_NAT_INDETERMINE, ASL_NAT_NON, ASL_NAT_OUI, ASL_NON_SONDE, ASL_OK, ASL_PAS_D_IDENTITE,
+    ASL_PAS_DE_POUSSEE, ASL_REFLEXIF, ASL_REFUSE, ASL_TAMPON_TROP_PETIT, ASL_TCP, ASL_UDP,
+    AslCandidat, AslClient, AslEtat, AslPoint, asl_annoncer, asl_client_annuaire,
+    asl_client_identite, asl_client_libere, asl_client_neuf, asl_client_racines,
+    asl_derniere_poussee, asl_enroler, asl_etat, asl_faute_texte, asl_ou, asl_poussees_recues,
+    asl_version,
 };
 use asl_id::{Genre, Identifiant};
 
@@ -87,6 +89,7 @@ fn chaque_code_a_sa_phrase_et_aucune_n_est_partagee() {
         ASL_INTERNE,
         ASL_PAS_D_IDENTITE,
         ASL_DEJA,
+        ASL_PAS_DE_POUSSEE,
     ];
     let mut vues = std::collections::BTreeSet::new();
     for code in codes {
@@ -140,6 +143,22 @@ fn un_pointeur_nul_rend_un_code_et_n_emporte_pas_le_processus() {
     );
     assert_eq!(
         unsafe { asl_etat(ptr::null(), ptr::null_mut()) },
+        ASL_ARGUMENT
+    );
+    assert_eq!(
+        unsafe { asl_poussees_recues(ptr::null(), ptr::null_mut()) },
+        ASL_ARGUMENT
+    );
+    assert_eq!(
+        unsafe {
+            asl_derniere_poussee(
+                ptr::null(),
+                ptr::null_mut(),
+                0,
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        },
         ASL_ARGUMENT
     );
     assert_eq!(
@@ -396,7 +415,7 @@ fn les_constantes_de_l_en_tete_sont_celles_de_rust() {
         declarees.insert(format!("ASL_{nom}"), valeur);
     }
 
-    let attendues: [(&str, i64); 19] = [
+    let attendues: [(&str, i64); 23] = [
         ("ASL_OK", ASL_OK.into()),
         ("ASL_ARGUMENT", ASL_ARGUMENT.into()),
         ("ASL_CONFIGURATION", ASL_CONFIGURATION.into()),
@@ -406,6 +425,10 @@ fn les_constantes_de_l_en_tete_sont_celles_de_rust() {
         ("ASL_INTERNE", ASL_INTERNE.into()),
         ("ASL_PAS_D_IDENTITE", ASL_PAS_D_IDENTITE.into()),
         ("ASL_DEJA", ASL_DEJA.into()),
+        ("ASL_PAS_DE_POUSSEE", ASL_PAS_DE_POUSSEE.into()),
+        ("ASL_NAT_NON", ASL_NAT_NON.into()),
+        ("ASL_NAT_OUI", ASL_NAT_OUI.into()),
+        ("ASL_NAT_INDETERMINE", ASL_NAT_INDETERMINE.into()),
         (
             "ASL_IDENTIFIANT_OCTETS",
             i64::try_from(ASL_IDENTIFIANT_OCTETS).expect("il tient"),
@@ -487,4 +510,57 @@ fn l_identite_survit_a_l_annonce() {
     assert_eq!(code, ASL_CONFIGURATION, "{code}");
 
     unsafe { asl_client_libere(client) };
+}
+
+// ── LES VERDICTS POUSSÉS ────────────────────────────────────────────────────
+
+#[test]
+fn un_client_qui_n_a_rien_recu_le_dit_autrement_qu_une_liste_vide() {
+    // **ZÉRO POUSSÉE N'EST PAS UNE ANOMALIE** : l'annuaire ne pousse que ce qui
+    // a CHANGÉ. Le confondre avec une liste vide ferait croire à un porteur que
+    // ses points sont devenus injoignables.
+    let client = client();
+    let mut combien = 7_u64;
+    assert_eq!(
+        unsafe { asl_poussees_recues(client, &raw mut combien) },
+        ASL_OK
+    );
+    assert_eq!(combien, 0);
+
+    let mut ecrit = 7_usize;
+    let mut nat = 7_u8;
+    assert_eq!(
+        unsafe { asl_derniere_poussee(client, ptr::null_mut(), 0, &raw mut ecrit, &raw mut nat) },
+        ASL_PAS_DE_POUSSEE,
+        "rien n'a été poussé, et ce n'est pas un tampon trop petit"
+    );
+
+    // Un `ecrit` nul est refusé : sans lui, l'appelant ne saurait pas combien
+    // dimensionner.
+    assert_eq!(
+        unsafe {
+            asl_derniere_poussee(client, ptr::null_mut(), 0, ptr::null_mut(), ptr::null_mut())
+        },
+        ASL_ARGUMENT
+    );
+
+    unsafe { asl_client_libere(client) };
+}
+
+#[test]
+fn les_trois_verdicts_de_nat_sont_trois_valeurs_distinctes() {
+    // **ET NON UN BOOLÉEN** : un daemon derrière un NAT qui lirait « non »
+    // chercherait la panne partout sauf là où elle est.
+    let toutes = [ASL_NAT_NON, ASL_NAT_OUI, ASL_NAT_INDETERMINE];
+    assert_eq!(
+        toutes
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        3
+    );
+    assert!(
+        toutes.iter().all(|quoi| *quoi != 0),
+        "zéro n'est pas un verdict"
+    );
 }

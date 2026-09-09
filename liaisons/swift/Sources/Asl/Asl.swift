@@ -81,6 +81,12 @@ public enum Faute: Int32, Error, Sendable {
   case pasDIdentite = -7
   /// Ce client annonce déjà.
   case deja = -8
+  /// L'annuaire n'a encore rien poussé. **Ce n'est pas une panne.**
+  ///
+  /// **`dernierePoussee` NE LA LÈVE PAS** — elle rend `nil`. Ce cas est nommé ici
+  /// pour que le code brut ne se confonde pas avec `.interne` s'il remontait
+  /// d'ailleurs, et pour que sa phrase vienne de la bibliothèque comme les autres.
+  case pasDePoussee = -9
   /// Ce client a été fermé.
   ///
   /// **CELLE-CI N'EST PAS UN CODE DE L'ABI** : elle est levée avant de traverser
@@ -144,6 +150,20 @@ public enum Verdict: UInt8, Sendable {
   case enCours = 4
 }
 
+/// Cette machine est-elle derrière un NAT ?
+///
+/// **TROIS VALEURS, ET NON UN `Bool`.** Un daemon qui n'a annoncé aucune adresse
+/// locale ne donne rien à comparer à l'adresse réflexive, et répondre `false`
+/// serait affirmer ce qui n'a pas été mesuré.
+public enum VerdictNat: UInt8, Sendable {
+  /// L'adresse sous laquelle l'annuaire nous voit est une des nôtres.
+  case non = 1
+  /// Elle n'en est aucune : quelque chose traduit entre nous et lui.
+  case oui = 2
+  /// Rien à comparer. **Aucune conclusion n'en découle.**
+  case indetermine = 3
+}
+
 /// Un point d'écoute à annoncer.
 public struct Point: Sendable, Equatable {
   public let protocole: Protocole
@@ -192,6 +212,24 @@ extension Candidat: CustomStringConvertible {
   /// port ou un groupe d'adresse ?
   public var description: String {
     adresse.contains(":") ? "[\(adresse)]:\(port)" : "\(adresse):\(port)"
+  }
+}
+
+/// Ce que l'annuaire a mesuré APRÈS coup, et poussé sur la connexion tenue.
+///
+/// **ELLE N'A NI SERVICE NI BAIL** — elle ne répond à aucune question, elle corrige
+/// ce qu'une réponse antérieure disait « en cours ». C'est pourquoi elle n'a pas la
+/// forme de ce que rend `ou`.
+public struct Poussee: Sendable, Equatable {
+  /// La liste ENTIÈRE des candidats, dans l'ordre, et non un delta.
+  public let candidats: [Candidat]
+  public let derriereNat: VerdictNat
+
+  /// **PUBLIC, ALORS QUE SEULE LA BIBLIOTHÈQUE EN FABRIQUE**, pour la même raison
+  /// que celui de `Candidat` : un porteur doit pouvoir écrire un cas d'essai.
+  public init(candidats: [Candidat], derriereNat: VerdictNat) {
+    self.candidats = candidats
+    self.derriereNat = derriereNat
   }
 }
 
@@ -506,6 +544,64 @@ public final class Client {
     try Faute.verifier(code)
 
     return bruts.prefix(ecrit).map(Self.decoder)
+  }
+
+  /// Combien de poussées de verdict sont arrivées depuis le départ.
+  ///
+  /// **ZÉRO N'EST PAS UNE ANOMALIE** : l'annuaire ne pousse que ce qui a CHANGÉ,
+  /// et un service dont les sondes confirment ce qu'il disait déjà n'en produit
+  /// aucune.
+  ///
+  /// **C'EST LE COMPTEUR QU'ON SURVEILLE, PAS LE CONTENU** : une poussée porte
+  /// toute la liste, donc relire `dernierePoussee` sans que celui-ci ait bougé
+  /// rend deux fois la même chose.
+  ///
+  /// - Throws: `Faute`.
+  public func pousseesRecues() throws -> UInt64 {
+    let vivant = try exige()
+    var combien: UInt64 = 0
+    try Faute.verifier(asl_poussees_recues(vivant, &combien))
+    return combien
+  }
+
+  /// Le dernier verdict poussé, ou `nil` si rien ne l'a encore été.
+  ///
+  /// **`nil` N'EST PAS UNE FAUTE, ET C'EST POURQUOI CE N'EST PAS UN `throw`.** Ne
+  /// rien avoir reçu est le cas ordinaire au démarrage — l'annuaire répond « en
+  /// cours » avant d'avoir sondé —, et lever ici obligerait un porteur à écrire un
+  /// `try?` autour de ce qu'il appelle chaque seconde, ce qui lui ferait avaler
+  /// aussi les fautes qui, elles, comptent.
+  ///
+  /// Comme pour `ou`, `tamponTropPetit` ne remonte pas.
+  ///
+  /// - Throws: `Faute`.
+  public func dernierePoussee() throws -> Poussee? {
+    let vivant = try exige()
+
+    var place = candidatsDEmblee
+    var ecrit = 0
+    var nat = UInt8(ASL_NAT_INDETERMINE)
+    var code = ASL_TAMPON_TROP_PETIT
+    var bruts = [asl_candidat]()
+
+    for tour in 0..<2 {
+      bruts = [asl_candidat](repeating: asl_candidat(), count: max(place, 1))
+      code = bruts.withUnsafeMutableBufferPointer { tampon in
+        asl_derniere_poussee(vivant, tampon.baseAddress, place, &ecrit, &nat)
+      }
+      if code != ASL_TAMPON_TROP_PETIT { break }
+      if tour == 0 { place = max(ecrit, 1) }
+    }
+    if code == ASL_PAS_DE_POUSSEE { return nil }
+    try Faute.verifier(code)
+
+    return Poussee(
+      candidats: bruts.prefix(ecrit).map(Self.decoder),
+      // **UN OCTET INCONNU DEVIENT `.indetermine`, ET NON UNE FAUTE.** Une
+      // bibliothèque native plus récente qui ajouterait une quatrième valeur ne
+      // doit pas faire échouer un programme déjà déployé : ne rien conclure est
+      // exactement ce que ce verdict veut dire.
+      derriereNat: VerdictNat(rawValue: nat) ?? .indetermine)
   }
 
   // ── Ce qui ne traverse pas ──────────────────────────────────────────────

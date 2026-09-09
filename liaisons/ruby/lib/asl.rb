@@ -127,6 +127,16 @@ module Asl
 
   PROTOCOLES = { Abi::TCP => :tcp, Abi::UDP => :udp }.freeze
   ORIGINES = { Abi::REFLEXIF => :reflexif, Abi::ANNONCE => :annonce }.freeze
+  # **TROIS VALEURS, ET NON UN BOOLÉEN.** Sans adresse locale annoncée, il n'y a
+  # rien à comparer — et répondre « non » serait affirmer ce qu'on n'a pas
+  # mesuré. Un daemon derrière un NAT qui lirait « non » chercherait la panne
+  # partout sauf là où elle est.
+  VERDICTS_DE_NAT = {
+    Abi::NAT_NON => :non,
+    Abi::NAT_OUI => :oui,
+    Abi::NAT_INDETERMINE => :indetermine
+  }.freeze
+
   VERDICTS = {
     Abi::JOIGNABLE => :joignable,
     Abi::INJOIGNABLE_POINT => :injoignable,
@@ -171,6 +181,12 @@ module Asl
       adresse.include?(":") ? "[#{adresse}]:#{port}" : "#{adresse}:#{port}"
     end
   end
+
+  # Ce que l'annuaire a MESURÉ depuis, et poussé sur la connexion tenue.
+  #
+  # **ELLE PORTE LA LISTE ENTIÈRE, ET NON UN DELTA** : la dernière remplace tout
+  # ce qui précède.
+  Poussee = Data.define(:candidats, :derriere_nat)
 
   # Ce que l'annonce a fait jusqu'ici.
   Etat = Data.define(:attachee, :attaches, :ruptures, :abandonnee) do
@@ -469,6 +485,49 @@ module Asl
         (0...combien).map do |rang|
           decoder_candidat(tampon[rang * Abi::TAILLE_CANDIDAT, Abi::TAILLE_CANDIDAT])
         end
+      end
+    end
+
+    # Combien de poussées de verdict sont arrivées depuis le départ.
+    #
+    # **ZÉRO N'EST PAS UNE ANOMALIE** : l'annuaire ne pousse que ce qui a CHANGÉ.
+    def poussees_recues
+      tampon = Fiddle::Pointer.malloc(8, Fiddle::RUBY_FREE)
+      appeler(:asl_poussees_recues, tampon)
+      tampon[0, 8].unpack1("Q")
+    end
+
+    # Le dernier verdict poussé, ou `nil` si rien n'a encore été poussé.
+    #
+    # **`nil` N'EST PAS UNE ERREUR, ET C'EST POURQUOI CE N'EST PAS UNE
+    # EXCEPTION.** Ne rien avoir reçu est le cas ordinaire ; lever ici
+    # obligerait un porteur à envelopper d'un `rescue` la boucle qu'il appelle
+    # chaque seconde.
+    def derniere_poussee
+      ecrit = Fiddle::Pointer.malloc(Fiddle::SIZEOF_SIZE_T, Fiddle::RUBY_FREE)
+      nat = Fiddle::Pointer.malloc(1, Fiddle::RUBY_FREE)
+
+      @verrou.synchronize do
+        brut = exige
+        place = CANDIDATS_D_EMBLEE
+        tampon = Fiddle::Pointer.malloc(place * Abi::TAILLE_CANDIDAT, Fiddle::RUBY_FREE)
+        code = @fonctions[:asl_derniere_poussee].call(brut, tampon, place, ecrit, nat)
+
+        if code == Abi::TAMPON_TROP_PETIT
+          place = [ecrit[0, Fiddle::SIZEOF_SIZE_T].unpack1("J"), 1].max
+          tampon = Fiddle::Pointer.malloc(place * Abi::TAILLE_CANDIDAT, Fiddle::RUBY_FREE)
+          code = @fonctions[:asl_derniere_poussee].call(brut, tampon, place, ecrit, nat)
+        end
+        return nil if code == Abi::PAS_DE_POUSSEE
+
+        Asl.verifier(code)
+        combien = ecrit[0, Fiddle::SIZEOF_SIZE_T].unpack1("J")
+        Poussee.new(
+          candidats: (0...combien).map do |rang|
+            decoder_candidat(tampon[rang * Abi::TAILLE_CANDIDAT, Abi::TAILLE_CANDIDAT])
+          end,
+          derriere_nat: VERDICTS_DE_NAT.fetch(nat[0, 1].unpack1("C"))
+        )
       end
     end
 

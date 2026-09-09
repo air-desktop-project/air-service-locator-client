@@ -36,8 +36,10 @@ import io.github.airdesktopproject.asl.Nettoyage
 import io.github.airdesktopproject.asl.Origine
 import io.github.airdesktopproject.asl.PasDIdentite
 import io.github.airdesktopproject.asl.Point
+import io.github.airdesktopproject.asl.Poussee
 import io.github.airdesktopproject.asl.Protocole
 import io.github.airdesktopproject.asl.Verdict
+import io.github.airdesktopproject.asl.VerdictNat
 import io.github.airdesktopproject.asl.version
 import java.lang.foreign.MemorySegment
 import java.lang.invoke.MethodHandles
@@ -123,11 +125,14 @@ private fun lEnteteEstLaReference() {
         "INJOIGNABLE" to Abi.INJOIGNABLE, "REFUSE" to Abi.REFUSE,
         "TAMPON_TROP_PETIT" to Abi.TAMPON_TROP_PETIT, "INTERNE" to Abi.INTERNE,
         "PAS_D_IDENTITE" to Abi.PAS_D_IDENTITE, "DEJA" to Abi.DEJA,
+        "PAS_DE_POUSSEE" to Abi.PAS_DE_POUSSEE,
         "IDENTIFIANT_OCTETS" to Abi.IDENTIFIANT_OCTETS, "GRAINE_OCTETS" to Abi.GRAINE_OCTETS,
         "TCP" to Abi.TCP, "UDP" to Abi.UDP,
         "REFLEXIF" to Abi.REFLEXIF, "ANNONCE" to Abi.ANNONCE,
         "JOIGNABLE" to Abi.JOIGNABLE, "INJOIGNABLE_POINT" to Abi.INJOIGNABLE_POINT,
         "NON_SONDE" to Abi.NON_SONDE, "EN_COURS" to Abi.EN_COURS,
+        "NAT_NON" to Abi.NAT_NON, "NAT_OUI" to Abi.NAT_OUI,
+        "NAT_INDETERMINE" to Abi.NAT_INDETERMINE,
     )
 
     for ((nom, valeur) in declarees) {
@@ -407,6 +412,47 @@ private fun leVerdictGardeSesQuatreValeurs() {
     )
 }
 
+// ── LES VERDICTS POUSSÉS ────────────────────────────────────────────────────
+
+private fun rienDePousseNEstPasUnePanne() {
+    // **C'EST L'ÉTAT ORDINAIRE**, et non une faute : un daemon qui vient
+    // d'annoncer n'a pas de verdict, l'annuaire sonde encore. Rendre `null` plutôt
+    // qu'un `Result.failure` épargne à un porteur d'écrire `onFailure { }` autour
+    // de ce qu'il appelle chaque seconde.
+    Client.ouvrir().getOrThrow().use { client ->
+        verifieEgal(client.pousseesRecues().getOrThrow(), 0L, "aucune poussée au départ")
+        verifieEgal(client.dernierePoussee().getOrThrow(), null, "rien à rendre")
+        verifie(client.dernierePoussee().isSuccess, "l'absence n'est pas un échec")
+    }
+}
+
+private fun unClientFermeLeDitAussiPourLesPoussees() {
+    // Et le dit par un `Ferme`, comme les autres verbes — pas par un `null`, qui
+    // ferait passer un client fermé pour un client qui attend son premier verdict.
+    val client = Client.ouvrir().getOrThrow()
+    client.close()
+    verifie(client.pousseesRecues().exceptionOrNull() is Ferme, "pousseesRecues sur un fermé")
+    verifie(client.dernierePoussee().exceptionOrNull() is Ferme, "dernierePoussee sur un fermé")
+}
+
+private fun leVerdictDeNatATroisValeursEtPasDeux() {
+    // Un `Boolean` n'aurait pas de place pour « je n'ai rien mesuré », et forcerait
+    // à répondre `false` quand aucune adresse locale n'a été annoncée.
+    verifieEgal(VerdictNat.entries.size, 3, "le verdict de NAT")
+    verifie(VerdictNat.entries.none { it.brut == 0 }, "zéro n'est pas un verdict")
+
+    // Une poussée porte la liste ENTIÈRE, et le dit dans son type : `List`, et non
+    // un delta qu'il faudrait appliquer.
+    val poussee = Poussee(
+        candidats = listOf(
+            Candidat(Protocole.TCP, "203.0.113.7", 8080, Origine.REFLEXIF, Verdict.JOIGNABLE),
+        ),
+        derriereNat = VerdictNat.OUI,
+    )
+    verifieEgal(poussee.candidats.first().toString(), "203.0.113.7:8080", "le candidat poussé")
+    verifieEgal(poussee.derriereNat, VerdictNat.OUI, "le NAT")
+}
+
 private fun laLiaisonNaAucuneDependance() {
     // **CE QU'ELLE TIRE, SES PORTEURS L'INSTALLENT.** Un daemon qui embarque
     // cette liaison ne doit hériter d'aucune bibliothèque — et surtout pas de JNA,
@@ -454,6 +500,9 @@ fun main() {
     leNettoyageLibereUneFoisEtUneSeule()
     unCandidatV6PorteSesCrochets()
     leVerdictGardeSesQuatreValeurs()
+    rienDePousseNEstPasUnePanne()
+    unClientFermeLeDitAussiPourLesPoussees()
+    leVerdictDeNatATroisValeursEtPasDeux()
 
     println("$verifications vérifications, $echecs échec(s)")
     if (echecs != 0) {

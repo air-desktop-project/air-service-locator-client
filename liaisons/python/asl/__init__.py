@@ -52,6 +52,8 @@ from ._abi import BibliothequeIntrouvable
 
 __all__ = [
     "BibliothequeIntrouvable",
+    "Poussee",
+    "VerdictNat",
     "Candidat",
     "Client",
     "Configuration",
@@ -212,6 +214,21 @@ class Origine(enum.IntEnum):
     """Le daemon l'a annoncée lui-même."""
 
 
+class VerdictNat(enum.IntEnum):
+    """Le daemon est-il derrière un NAT ?
+
+    **TROIS VALEURS, ET NON UN BOOLÉEN.** L'annuaire tranche en comparant ce
+    qu'il OBSERVE à ce que le daemon ANNONCE ; sans adresse locale annoncée, il
+    n'y a rien à comparer. Un booléen forcerait à répondre « non », c'est-à-dire
+    à affirmer une chose qu'on n'a pas mesurée — et un daemon derrière un NAT qui
+    lirait « non » chercherait la panne partout sauf là où elle est.
+    """
+
+    NON = _abi.ASL_NAT_NON
+    OUI = _abi.ASL_NAT_OUI
+    INDETERMINE = _abi.ASL_NAT_INDETERMINE
+
+
 class Verdict(enum.IntEnum):
     """Ce que l'annuaire sait d'un point d'écoute.
 
@@ -267,6 +284,22 @@ class Candidat:
         if self.adresse.version == 6:
             return f"[{self.adresse}]:{self.port}"
         return f"{self.adresse}:{self.port}"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class Poussee:
+    """Ce que l'annuaire a MESURÉ depuis, et poussé sur la connexion tenue.
+
+    L'annuaire répond `en_cours` à une annonce pour ne pas faire attendre un
+    démarrage le temps d'une sonde. **Sans les poussées, un daemon reste à croire
+    que sa joignabilité est en cours de mesure**, pour toujours.
+
+    **Elle porte la liste ENTIÈRE, et non un delta** : la dernière remplace tout
+    ce qui précède.
+    """
+
+    candidats: list[Candidat]
+    derriere_nat: VerdictNat
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -509,6 +542,49 @@ class Client:
             attaches=int(brut.attaches),
             ruptures=int(brut.ruptures),
             abandonnee=bool(brut.abandonnee),
+        )
+
+    def poussees_recues(self) -> int:
+        """Combien de poussées de verdict sont arrivées depuis le départ.
+
+        **ZÉRO N'EST PAS UNE ANOMALIE** : l'annuaire ne pousse que ce qui a
+        CHANGÉ, et un service dont les sondes confirment ce qu'il disait déjà n'en
+        produit aucune.
+        """
+        combien = ctypes.c_uint64()
+        with self._verrou:
+            _verifier(self._lib.asl_poussees_recues(self._exige(), ctypes.byref(combien)))
+        return int(combien.value)
+
+    def derniere_poussee(self) -> Poussee | None:
+        """Le dernier verdict poussé, ou `None` si rien n'a encore été poussé.
+
+        **`None` N'EST PAS UNE ERREUR, ET C'EST POURQUOI CE N'EST PAS UNE
+        EXCEPTION.** Ne rien avoir reçu est le cas ordinaire ; lever ici
+        obligerait un porteur à envelopper d'un `try` la boucle qu'il appelle
+        chaque seconde.
+        """
+        place = _CANDIDATS_D_EMBLEE
+        combien = ctypes.c_size_t(0)
+        nat = ctypes.c_uint8(_abi.ASL_NAT_INDETERMINE)
+        with self._verrou:
+            brut = self._exige()
+            tableau = (_abi.Candidat * place)()
+            code = self._lib.asl_derniere_poussee(
+                brut, tableau, place, ctypes.byref(combien), ctypes.byref(nat)
+            )
+            if code == _abi.ASL_TAMPON_TROP_PETIT:
+                place = combien.value
+                tableau = (_abi.Candidat * max(place, 1))()
+                code = self._lib.asl_derniere_poussee(
+                    brut, tableau, place, ctypes.byref(combien), ctypes.byref(nat)
+                )
+            if code == _abi.ASL_PAS_DE_POUSSEE:
+                return None
+            _verifier(code)
+        return Poussee(
+            candidats=[_candidat(tableau[rang]) for rang in range(combien.value)],
+            derriere_nat=VerdictNat(nat.value),
         )
 
     def ou(self, machine: str, service: str) -> list[Candidat]:

@@ -29,3 +29,7 @@ asl_enroler
 asl_annoncer
 asl_etat
 asl_ou
+
+# ── LES VERDICTS, POUSSÉS SUR LA CONNEXION TENUE ────────────────────────────
+asl_poussees_recues
+asl_derniere_poussee

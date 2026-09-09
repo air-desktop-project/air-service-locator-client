@@ -47,6 +47,7 @@ ASL_TAMPON_TROP_PETIT = -5
 ASL_INTERNE = -6
 ASL_PAS_D_IDENTITE = -7
 ASL_DEJA = -8
+ASL_PAS_DE_POUSSEE = -9
 
 ASL_IDENTIFIANT_OCTETS = 29
 ASL_GRAINE_OCTETS = 32
@@ -61,6 +62,10 @@ ASL_JOIGNABLE = 1
 ASL_INJOIGNABLE_POINT = 2
 ASL_NON_SONDE = 3
 ASL_EN_COURS = 4
+
+ASL_NAT_NON = 1
+ASL_NAT_OUI = 2
+ASL_NAT_INDETERMINE = 3
 
 
 # ── LES STRUCTURES ──────────────────────────────────────────────────────────
@@ -186,7 +191,7 @@ def charger(chemin: str | os.PathLike[str] | None = None) -> ctypes.CDLL:
 
 
 def _declarer(lib: ctypes.CDLL) -> ctypes.CDLL:
-    """Pose `argtypes` et `restype` sur les onze fonctions.
+    """Pose `argtypes` et `restype` sur les treize fonctions.
 
     **SANS CELA, `ctypes` DEVINE, ET IL DEVINE `int`.** Un pointeur de
     soixante-quatre bits passé en `int` de trente-deux est tronqué, et le
@@ -257,5 +262,17 @@ def _declarer(lib: ctypes.CDLL) -> ctypes.CDLL:
         ctypes.POINTER(ctypes.c_size_t),
     ]
     lib.asl_ou.restype = i32
+
+    lib.asl_poussees_recues.argtypes = [opaque, ctypes.POINTER(ctypes.c_uint64)]
+    lib.asl_poussees_recues.restype = i32
+
+    lib.asl_derniere_poussee.argtypes = [
+        opaque,
+        ctypes.POINTER(Candidat),
+        ctypes.c_size_t,
+        ctypes.POINTER(ctypes.c_size_t),
+        ctypes.POINTER(ctypes.c_uint8),
+    ]
+    lib.asl_derniere_poussee.restype = i32
 
     return lib

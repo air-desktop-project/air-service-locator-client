@@ -150,6 +150,23 @@ public enum class Verdict(internal val brut: Int) {
     EN_COURS(Abi.EN_COURS),
 }
 
+/** Cette machine est-elle derrière un NAT ?
+ *
+ * **TROIS VALEURS, ET NON UN `Boolean`.** Un daemon qui n'a annoncé aucune adresse
+ * locale ne donne rien à comparer à l'adresse réflexive, et répondre `false`
+ * serait affirmer ce qui n'a pas été mesuré.
+ */
+public enum class VerdictNat(internal val brut: Int) {
+    /** L'adresse sous laquelle l'annuaire nous voit est une des nôtres. */
+    NON(Abi.NAT_NON),
+
+    /** Elle n'en est aucune : quelque chose traduit entre nous et lui. */
+    OUI(Abi.NAT_OUI),
+
+    /** Rien à comparer. **Aucune conclusion n'en découle.** */
+    INDETERMINE(Abi.NAT_INDETERMINE),
+}
+
 /** Un point d'écoute à annoncer. */
 public data class Point(val protocole: Protocole, val port: Int) {
     init {
@@ -196,6 +213,18 @@ public data class Etat(
      * humain doit être averti.
      */
     val abandonnee: Boolean,
+)
+
+/** Ce que l'annuaire a mesuré APRÈS coup, et poussé sur la connexion tenue.
+ *
+ * **ELLE N'A NI SERVICE NI BAIL** — elle ne répond à aucune question, elle corrige
+ * ce qu'une réponse antérieure disait « en cours ». C'est pourquoi elle n'a pas la
+ * forme de ce que rend [Client.ou].
+ */
+public data class Poussee(
+    /** La liste ENTIÈRE des candidats, dans l'ordre, et non un delta. */
+    val candidats: List<Candidat>,
+    val derriereNat: VerdictNat,
 )
 
 /** L'identité d'une machine. **Conservez les deux.**
@@ -555,6 +584,69 @@ public class Client private constructor(brut: MemorySegment) : AutoCloseable {
         }
     }
 
+    /** Combien de poussées de verdict sont arrivées depuis le départ.
+     *
+     * **ZÉRO N'EST PAS UNE ANOMALIE** : l'annuaire ne pousse que ce qui a CHANGÉ,
+     * et un service dont les sondes confirment ce qu'il disait déjà n'en produit
+     * aucune.
+     *
+     * **C'EST LE COMPTEUR QU'ON SURVEILLE, PAS LE CONTENU** : une poussée porte
+     * toute la liste, donc relire [dernierePoussee] sans que celui-ci ait bougé
+     * rend deux fois la même chose.
+     */
+    public fun pousseesRecues(): Result<Long> = verrou.withLock {
+        val brut = boite.get() ?: return Result.failure(Ferme("ce client est fermé"))
+        Arena.ofConfined().use { arene ->
+            val combien = arene.allocate(ValueLayout.JAVA_LONG)
+            val code = fonctions["asl_poussees_recues"].invoke(brut, combien) as Int
+            issue(code) { combien.get(ValueLayout.JAVA_LONG, 0) }
+        }
+    }
+
+    /** Le dernier verdict poussé, ou `null` si rien ne l'a encore été.
+     *
+     * **`null` N'EST PAS UNE FAUTE, ET C'EST POURQUOI CE N'EST PAS UN
+     * `Result.failure`.** Ne rien avoir reçu est le cas ordinaire au démarrage —
+     * l'annuaire répond « en cours » avant d'avoir sondé —, et échouer ici
+     * obligerait un porteur à traiter comme une panne ce qu'il verra à chaque tour
+     * de sa boucle pendant les premières secondes.
+     *
+     * Comme pour [ou], `TAMPON_TROP_PETIT` ne remonte pas.
+     */
+    public fun dernierePoussee(): Result<Poussee?> = verrou.withLock {
+        val brut = boite.get() ?: return Result.failure(Ferme("ce client est fermé"))
+        Arena.ofConfined().use { arene ->
+            val ecrit = arene.allocate(Abi.TAILLE)
+            val nat = arene.allocate(ValueLayout.JAVA_BYTE)
+            nat.set(ValueLayout.JAVA_BYTE, 0, Abi.NAT_INDETERMINE.toByte())
+
+            var place = CANDIDATS_D_EMBLEE
+            var tampon = arene.allocate(Abi.CANDIDAT, place)
+            var code = fonctions["asl_derniere_poussee"]
+                .invoke(brut, tampon, place, ecrit, nat) as Int
+
+            if (code == Abi.TAMPON_TROP_PETIT) {
+                place = lireTaille(ecrit).coerceAtLeast(1L)
+                tampon = arene.allocate(Abi.CANDIDAT, place)
+                code = fonctions["asl_derniere_poussee"]
+                    .invoke(brut, tampon, place, ecrit, nat) as Int
+            }
+            if (code == Abi.PAS_DE_POUSSEE) {
+                return@use Result.success(null)
+            }
+
+            val fige = tampon
+            issue(code) {
+                Poussee(
+                    candidats = (0 until lireTaille(ecrit)).map { rang ->
+                        decoderCandidat(fige, rang)
+                    },
+                    derriereNat = verdictNat(nat.get(ValueLayout.JAVA_BYTE, 0).toInt()),
+                )
+            }
+        }
+    }
+
     // ── La fin ──────────────────────────────────────────────────────────────
 
     /** Ferme le client, **et retire l'annonce en le faisant**.
@@ -588,6 +680,16 @@ public class Client private constructor(brut: MemorySegment) : AutoCloseable {
         8L -> segment.get(ValueLayout.JAVA_LONG, 0)
         else -> segment.get(ValueLayout.JAVA_INT, 0).toLong() and 0xFFFF_FFFFL
     }
+
+    /** L'octet rendu par l'ABI, en verdict.
+     *
+     * **UN OCTET INCONNU DEVIENT `INDETERMINE`, ET NON UNE EXCEPTION.** Une
+     * bibliothèque native plus récente qui ajouterait une quatrième valeur ne doit
+     * pas faire tomber un programme déjà déployé : ne rien conclure est
+     * exactement ce que ce verdict veut dire.
+     */
+    private fun verdictNat(brut: Int): VerdictNat =
+        VerdictNat.entries.firstOrNull { it.brut == brut } ?: VerdictNat.INDETERMINE
 
     private fun decoderCandidat(tampon: MemorySegment, rang: Long): Candidat {
         val base = rang * Abi.CANDIDAT.byteSize()
