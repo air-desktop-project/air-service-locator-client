@@ -37,9 +37,11 @@ use asl_client::Identite;
 use asl_id::Identifiant;
 use tokio::net::UdpSocket;
 
+mod attache;
 mod pont;
 mod reponse;
 
+pub use attache::{Annuaire, Attache, Etat, Reglages, joindre};
 pub use pont::Pont;
 pub use reponse::Reponse;
 
@@ -69,6 +71,14 @@ pub enum Faute {
     SansLiaison,
     /// La configuration TLS ne se monte pas.
     Tls(String),
+    /// Il n'y a aucun annuaire à essayer.
+    ///
+    /// **CE N'EST PAS UNE PANNE, C'EST UNE CONFIGURATION**, et c'est pourquoi
+    /// elle est rendue au lieu d'être réessayée : un daemon sans annuaire
+    /// tournerait en rond en silence, et son porteur croirait qu'il cherche.
+    SansAnnuaire,
+    /// Le plafond de recul est nul : la reprise tournerait en boucle serrée.
+    PlafondNul,
 }
 
 impl core::fmt::Display for Faute {
@@ -82,6 +92,8 @@ impl core::fmt::Display for Faute {
             Self::Illisible => write!(f, "la réponse de l'annuaire ne se lit pas"),
             Self::SansLiaison => write!(f, "la liaison de canal ne s'exporte pas"),
             Self::Tls(quoi) => write!(f, "la configuration TLS : {quoi}"),
+            Self::SansAnnuaire => write!(f, "aucun annuaire à qui parler"),
+            Self::PlafondNul => write!(f, "un plafond de recul nul"),
         }
     }
 }
@@ -172,7 +184,7 @@ impl Connexion {
         annuaire: SocketAddr,
         nom: &str,
         racines: &[u8],
-        alea: &dyn Fn() -> [u8; 16],
+        alea: &(dyn Fn() -> [u8; 16] + Sync),
     ) -> Result<Self, Faute> {
         let config = configuration_tls(racines)?;
         let serveur = rustls::pki_types::ServerName::try_from(nom.to_owned())
@@ -365,6 +377,30 @@ impl Connexion {
     pub const fn vivante(&self) -> bool {
         !self.quic.is_closed()
     }
+
+    /// Retire l'annonce, en fermant proprement.
+    ///
+    /// # C'EST LE RETRAIT, ET IL N'Y EN A PAS D'AUTRE
+    ///
+    /// `protocole.md` §1.2 : la connexion EST le bail, donc la fermer EST le
+    /// retrait. Il n'y a pas de `DELETE` à écrire.
+    ///
+    /// **LA DIFFÉRENCE ENTRE FERMER ET DISPARAÎTRE SE MESURE EN MINUTE.** Un
+    /// daemon qui s'arrête en lâchant sa socket reste annoncé jusqu'à
+    /// l'expiration d'inactivité — [`INACTIVITE_US`], soit une minute pendant
+    /// laquelle ses clients reçoivent une adresse où plus rien n'écoute. Une
+    /// trame `CONNECTION_CLOSE` coûte un datagramme et supprime cette minute.
+    ///
+    /// # Errors
+    ///
+    /// [`Faute::Socket`], [`Faute::Quic`]. **Elles ne changent rien** : la
+    /// connexion est fermée de notre côté quoi qu'il arrive, et le pair finira
+    /// par l'apprendre par son propre délai d'inactivité.
+    pub async fn fermer(&mut self) -> Result<(), Faute> {
+        // `H3_NO_ERROR` (§8.1 de RFC 9114) : on part, et rien n'a mal tourné.
+        self.quic.close_with(0x0100, maintenant());
+        self.emettre().await
+    }
 }
 
 // ── Les verbes de l'annuaire ────────────────────────────────────────────────
@@ -456,16 +492,32 @@ impl Connexion {
     ///
     /// Celles de [`Connexion::requete`], plus [`Faute::Statut`].
     pub async fn annoncer(&mut self, annonce: &asl_proto::Annonce<'_>) -> Result<Vec<u8>, Faute> {
-        let mut sortie = vec![0_u8; asl_proto::cadrage::MESSAGE_MAX];
-        let combien = annonce.encoder(&mut sortie).map_err(|_| Faute::Illisible)?;
-        sortie.truncate(combien);
+        self.annoncer_encodee(&encoder(annonce)?).await
+    }
 
+    /// La même chose, à partir d'une annonce déjà encodée.
+    ///
+    /// # POURQUOI CETTE PORTE EXISTE
+    ///
+    /// `asl_proto::Annonce` EMPRUNTE son nom de service, ses points d'écoute et
+    /// ses adresses. Une tâche de fond qui la garderait pour la répéter à chaque
+    /// reconnexion devrait donc emprunter tout cela pour toujours.
+    ///
+    /// Encoder une fois, dans la main de l'appelant, résout les deux problèmes à
+    /// la fois : la tâche ne porte que des octets, et **une annonce invalide est
+    /// une faute rendue tout de suite** plutôt qu'une faute découverte dans une
+    /// tâche que personne ne regarde. Voir [`Attache::annoncer`].
+    ///
+    /// # Errors
+    ///
+    /// Celles de [`Connexion::requete`], plus [`Faute::Statut`].
+    pub async fn annoncer_encodee(&mut self, annonce: &[u8]) -> Result<Vec<u8>, Faute> {
         let reponse = self
             .requete(
                 b"POST",
                 b"/v1/annonce",
                 &[(b"content-type", b"application/json")],
-                &sortie,
+                annonce,
             )
             .await?;
         reponse.exige(200)?;
@@ -483,6 +535,22 @@ impl Connexion {
         reponse.exige(200)?;
         Ok(reponse.corps)
     }
+}
+
+/// Encode une annonce, telle qu'elle partira sur le fil.
+///
+/// **L'ENCODAGE EST UNE VALIDATION.** `asl_proto::Annonce::nouvelle` a déjà
+/// refusé ce qui ne se dit pas ; ce qui reste ici est la mise en octets, et elle
+/// se fait pendant que l'appelant peut encore en lire le refus.
+///
+/// # Errors
+///
+/// [`Faute::Illisible`] si l'annonce ne tient pas dans un message.
+pub fn encoder(annonce: &asl_proto::Annonce<'_>) -> Result<Vec<u8>, Faute> {
+    let mut sortie = vec![0_u8; asl_proto::cadrage::MESSAGE_MAX];
+    let combien = annonce.encoder(&mut sortie).map_err(|_| Faute::Illisible)?;
+    sortie.truncate(combien);
+    Ok(sortie)
 }
 
 /// Monte la configuration TLS cliente.

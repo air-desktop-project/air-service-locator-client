@@ -70,8 +70,10 @@
 //!
 //! # Ce qui est écrit, et ce qui ne l'est pas
 //!
-//! **Écrit** : [`Reprise`], la politique de reconnexion — et [`Identite`], ce
-//! qu'une machine détient et ce qu'elle en fait.
+//! **Écrit** : [`Reprise`], le recul entre deux tentatives ; [`Tournee`], le
+//! parcours des annuaires qui l'emploie — IPv6 d'abord, l'attente entre les
+//! TOURS et non entre les annuaires ; [`Identite`], ce qu'une machine détient et
+//! ce qu'elle en fait ; et [`Enrolement`], comment elle acquiert tout cela.
 //!
 //! **Pas écrit** : le transport. Tant que la pile QUIC n'est pas câblée, cette
 //! crate ne fait aucune entrée-sortie et reste `no_std`. Ce n'est pas un état
@@ -101,7 +103,7 @@ pub use asl_cle::ETIQUETTE_LIAISON;
 pub use asl_cle::Faute as FauteDeCle;
 use asl_id::{Genre, Identifiant};
 use asl_proto::{Annonce, Erreur as ErreurProto, NomService, PointEcoute};
-use core::net::IpAddr;
+use core::net::{IpAddr, SocketAddr};
 
 // ── La reprise ──────────────────────────────────────────────────────────────
 
@@ -229,6 +231,147 @@ impl Reprise {
     #[must_use]
     pub const fn essais(&self) -> u32 {
         self.essais
+    }
+}
+
+// ── La tournée des annuaires ────────────────────────────────────────────────
+
+/// La place, dans la liste, du `rang`-ième annuaire à essayer.
+///
+/// # IPv6 D'ABORD, ET C'EST UNE DÉCISION DE PRODUIT
+///
+/// `annuaires.md` §1 : ce service existe pour des daemons qui n'ont pas de port
+/// fixe, et la moitié d'entre eux vivront derrière un NAT qu'IPv6 supprime. Un
+/// client qui essaierait IPv4 en premier prendrait le chemin dégradé chaque fois
+/// que les deux existent — c'est-à-dire toujours, puisque les annuaires racines
+/// publient les deux.
+///
+/// **L'ORDRE EST STABLE À L'INTÉRIEUR DE CHAQUE FAMILLE.** L'opérateur a écrit
+/// sa liste dans un ordre, et cet ordre est sa préférence ; la seule chose qui
+/// la réécrit est la règle ci-dessus.
+///
+/// # POURQUOI CETTE FONCTION VIT ICI, ET NON DANS LE TRANSPORT
+///
+/// Parce que c'est une DÉCISION, pas une entrée-sortie. Écrite dans la boucle
+/// asynchrone, elle ne s'éprouverait qu'avec deux annuaires réels dont l'un est
+/// éteint ; écrite ici, elle s'éprouve sur une liste littérale.
+///
+/// Rend `None` quand `rang` est au-delà de la liste — c'est ce qui dit à
+/// [`Tournee`] qu'un tour complet vient d'échouer.
+#[must_use]
+pub fn place_en_ordre(annuaires: &[SocketAddr], rang: usize) -> Option<usize> {
+    let combien_v6 = annuaires.iter().filter(|ou| ou.is_ipv6()).count();
+    let (cherche_v6, mut reste) = match rang.checked_sub(combien_v6) {
+        // Au-delà des IPv6 : on cherche la `apres`-ième IPv4.
+        Some(apres) => (false, apres),
+        // Encore dans les IPv6.
+        None => (true, rang),
+    };
+    for (place, ou) in annuaires.iter().enumerate() {
+        if ou.is_ipv6() == cherche_v6 {
+            if reste == 0 {
+                return Some(place);
+            }
+            reste = reste.saturating_sub(1);
+        }
+    }
+    None
+}
+
+/// Ce qu'une tournée dit de faire : attendre, puis essayer celui-là.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Etape {
+    /// La place, dans la liste qu'on a passée, de l'annuaire à essayer.
+    pub place: usize,
+    /// Combien de millisecondes attendre AVANT de l'essayer.
+    ///
+    /// **Zéro tant que le tour n'est pas bouclé** — voir [`Tournee::prochaine`].
+    pub attendre_ms: u64,
+}
+
+/// Le parcours des annuaires, et le recul entre deux tours.
+///
+/// # LE RECUL SÉPARE LES TOURS, ET NON LES ANNUAIRES
+///
+/// C'est la décision qui donne à ce type sa raison d'exister. Reculer après
+/// chaque annuaire rendrait la bascule vers le second annuaire racine plus lente
+/// que la panne du premier : le daemon attendrait une seconde, puis deux, avant
+/// d'essayer une machine qui, elle, répond tout de suite.
+///
+/// On essaie donc TOUS les annuaires d'affilée, sans attendre, et l'on ne recule
+/// qu'une fois le tour bouclé — c'est-à-dire une fois établi que le service
+/// entier est injoignable, ce qui est le seul cas où attendre a un sens.
+///
+/// # ELLE REPART DU HAUT APRÈS CHAQUE RÉUSSITE, ET CELA COÛTE
+///
+/// Quand le premier annuaire est éteint et le second répond, chaque
+/// reconnexion recommence par le premier et perd le délai de poignée de main
+/// avant d'arriver au second.
+///
+/// **C'est le prix de l'ordre annoncé, et il est payé exprès.** Une tournée qui
+/// resterait sur le second parce qu'il a marché une fois ferait de « IPv6
+/// d'abord, puis l'ordre de l'opérateur » une phrase fausse dès la première
+/// panne — et personne ne s'en apercevrait, puisque tout marcherait.
+///
+/// # ELLE N'ABANDONNE JAMAIS
+///
+/// Elle rend `None` dans un seul cas : une liste vide. Ce n'est pas un échec de
+/// connexion, c'est une CONFIGURATION — un daemon sans annuaire doit
+/// l'apprendre, pas tourner en rond en silence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tournee {
+    reprise: Reprise,
+    rang: usize,
+}
+
+impl Tournee {
+    /// Une tournée qui recule selon cette politique.
+    #[must_use]
+    pub const fn nouvelle(reprise: Reprise) -> Self {
+        Self { reprise, rang: 0 }
+    }
+
+    /// L'annuaire suivant, et ce qu'il faut attendre avant de l'essayer.
+    ///
+    /// `alea` est fourni par l'appelant, comme pour [`Reprise::prochain_delai`] :
+    /// cette crate ne tire rien elle-même.
+    ///
+    /// Rend `None` si, et seulement si, la liste est vide.
+    pub fn prochaine(&mut self, annuaires: &[SocketAddr], alea: u16) -> Option<Etape> {
+        if annuaires.is_empty() {
+            return None;
+        }
+
+        // Le tour est bouclé : c'est ici, et nulle part ailleurs, qu'on attend.
+        let attendre_ms = if self.rang >= annuaires.len() {
+            self.rang = 0;
+            self.reprise.prochain_delai(alea)
+        } else {
+            0
+        };
+
+        let place = place_en_ordre(annuaires, self.rang).expect(
+            "le rang vient d'être ramené sous la longueur, et la liste n'est pas vide : \
+             `place_en_ordre` rend toujours une place pour un rang qui est dans la liste",
+        );
+        self.rang = self.rang.saturating_add(1);
+        Some(Etape { place, attendre_ms })
+    }
+
+    /// La connexion a abouti : le recul repart de zéro, et le tour du haut.
+    pub const fn reussite(&mut self) {
+        self.rang = 0;
+        self.reprise.reussite();
+    }
+
+    /// Le nombre de TOURS complets qui ont échoué.
+    ///
+    /// Ce n'est pas le nombre d'annuaires essayés : c'est le nombre de fois où
+    /// le service entier s'est révélé injoignable, ce qui est la grandeur dont
+    /// dépend le recul.
+    #[must_use]
+    pub const fn tours_perdus(&self) -> u32 {
+        self.reprise.essais()
     }
 }
 

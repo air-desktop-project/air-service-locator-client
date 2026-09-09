@@ -391,3 +391,183 @@ fn l_etiquette_de_liaison_est_celle_du_serveur() {
     // serait indiscernable d'une clé fausse.
     assert_eq!(ETIQUETTE_LIAISON, asl_cle::ETIQUETTE_LIAISON);
 }
+
+// ── La tournée des annuaires ────────────────────────────────────────────────
+
+use asl_client::{Etape, Tournee, place_en_ordre};
+use core::net::{Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+
+/// Un annuaire en IPv4, reconnaissable à son dernier octet.
+fn v4(marque: u8) -> SocketAddr {
+    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, marque), 6630))
+}
+
+/// Un annuaire en IPv6, reconnaissable à son dernier groupe.
+fn v6(marque: u16) -> SocketAddr {
+    SocketAddr::V6(SocketAddrV6::new(
+        Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, marque),
+        6630,
+        0,
+        0,
+    ))
+}
+
+/// La liste dans l'ordre où la tournée la parcourt.
+fn parcours(annuaires: &[SocketAddr]) -> Vec<SocketAddr> {
+    (0..annuaires.len())
+        .map(|rang| annuaires[place_en_ordre(annuaires, rang).expect("dans la liste")])
+        .collect()
+}
+
+#[test]
+fn l_ipv6_passe_avant_l_ipv4_quel_que_soit_l_ordre_ecrit() {
+    // **LA DÉCISION DE PRODUIT** : les annuaires racines publient les deux
+    // familles, donc « les deux existent » est le cas ordinaire, et essayer
+    // l'IPv4 d'abord prendrait le chemin dégradé à chaque fois.
+    let ecrit = [v4(1), v6(1), v4(2), v6(2)];
+    assert_eq!(parcours(&ecrit), vec![v6(1), v6(2), v4(1), v4(2)]);
+
+    // Écrite dans l'autre sens, la liste se parcourt pareil.
+    let inverse = [v6(1), v6(2), v4(1), v4(2)];
+    assert_eq!(parcours(&inverse), vec![v6(1), v6(2), v4(1), v4(2)]);
+}
+
+#[test]
+fn l_ordre_de_l_operateur_survit_a_l_interieur_de_chaque_famille() {
+    // Sa liste est sa préférence ; la seule chose qui la réécrit est IPv6.
+    let ecrit = [v4(9), v4(3), v4(7)];
+    assert_eq!(parcours(&ecrit), vec![v4(9), v4(3), v4(7)]);
+
+    let six = [v6(9), v6(3), v6(7)];
+    assert_eq!(parcours(&six), vec![v6(9), v6(3), v6(7)]);
+}
+
+#[test]
+fn un_rang_hors_de_la_liste_ne_designe_personne() {
+    // C'est ce qui dit à la tournée qu'un tour complet vient d'échouer.
+    let annuaires = [v6(1), v4(1)];
+    assert_eq!(place_en_ordre(&annuaires, 2), None);
+    assert_eq!(place_en_ordre(&annuaires, 400), None);
+    assert_eq!(place_en_ordre(&[], 0), None);
+
+    // Et sur une liste d'une seule famille, des deux côtés de la coupure.
+    assert_eq!(place_en_ordre(&[v6(1)], 1), None);
+    assert_eq!(place_en_ordre(&[v4(1)], 1), None);
+}
+
+#[test]
+fn une_liste_vide_est_une_configuration_et_non_un_echec() {
+    // **Un daemon sans annuaire doit l'apprendre, pas tourner en rond.**
+    let mut tournee = Tournee::nouvelle(Reprise::nouvelle(PLAFOND).unwrap());
+    assert_eq!(tournee.prochaine(&[], 0), None);
+    // Et rien n'a bougé : ce n'est pas un échec, donc pas un tour perdu.
+    assert_eq!(tournee.tours_perdus(), 0);
+}
+
+#[test]
+fn le_tour_s_enchaine_sans_attendre_puis_recule() {
+    // **LA DÉCISION QUI DONNE À CE TYPE SA RAISON D'EXISTER.** Reculer entre
+    // deux annuaires rendrait la bascule vers le second annuaire racine plus
+    // lente que la panne du premier.
+    let annuaires = [v6(1), v4(1), v4(2)];
+    let mut tournee = Tournee::nouvelle(Reprise::nouvelle(PLAFOND).unwrap());
+
+    for attendu in 0..3_usize {
+        let etape = tournee.prochaine(&annuaires, 0).expect("un annuaire");
+        assert_eq!(
+            etape,
+            Etape {
+                place: attendu,
+                attendre_ms: 0
+            },
+            "le tour ne doit RIEN attendre"
+        );
+    }
+    assert_eq!(tournee.tours_perdus(), 0, "le tour n'est pas encore bouclé");
+
+    // Le tour est bouclé : c'est ici, et nulle part ailleurs, qu'on attend.
+    let etape = tournee.prochaine(&annuaires, u16::MAX / 2).expect("encore");
+    assert_eq!(etape.place, 0, "et l'on repart du premier");
+    assert!(etape.attendre_ms >= 1, "le tour bouclé doit reculer");
+    assert_eq!(tournee.tours_perdus(), 1);
+}
+
+#[test]
+fn le_recul_ne_compte_que_les_tours_et_non_les_annuaires() {
+    // La grandeur dont dépend le recul est « le service entier est
+    // injoignable », pas « une machine n'a pas répondu ».
+    let quatre = [v6(1), v6(2), v4(1), v4(2)];
+    let mut tournee = Tournee::nouvelle(Reprise::nouvelle(PLAFOND).unwrap());
+    for _ in 0..12 {
+        let _ = tournee.prochaine(&quatre, 0).expect("un annuaire");
+    }
+    assert_eq!(tournee.tours_perdus(), 2, "douze essais, trois tours");
+
+    // Avec un seul annuaire, chaque essai EST un tour.
+    let seul = [v6(1)];
+    let mut tournee = Tournee::nouvelle(Reprise::nouvelle(PLAFOND).unwrap());
+    for _ in 0..12 {
+        let etape = tournee.prochaine(&seul, 0).expect("le seul");
+        assert_eq!(etape.place, 0);
+    }
+    assert_eq!(tournee.tours_perdus(), 11);
+}
+
+#[test]
+fn une_reussite_repart_du_haut_et_remet_le_recul_a_zero() {
+    // **LE PRIX DE L'ORDRE ANNONCÉ, PAYÉ EXPRÈS.** Rester sur le second parce
+    // qu'il a marché une fois ferait de « IPv6 d'abord » une phrase fausse dès
+    // la première panne, sans que personne s'en aperçoive.
+    let annuaires = [v6(1), v4(1)];
+    let mut tournee = Tournee::nouvelle(Reprise::nouvelle(PLAFOND).unwrap());
+
+    // Le premier est éteint, le second répond.
+    assert_eq!(tournee.prochaine(&annuaires, 0).unwrap().place, 0);
+    let deuxieme = tournee.prochaine(&annuaires, 0).unwrap();
+    assert_eq!(deuxieme.place, 1);
+    tournee.reussite();
+
+    // La connexion tombe : on recommence par le premier, et sans attendre.
+    let apres = tournee.prochaine(&annuaires, 0).expect("on repart");
+    assert_eq!(
+        apres,
+        Etape {
+            place: 0,
+            attendre_ms: 0
+        }
+    );
+    assert_eq!(tournee.tours_perdus(), 0);
+}
+
+#[test]
+fn elle_n_abandonne_jamais_et_le_recul_reste_borne() {
+    // Le pendant, pour la tournée, de ce que `Reprise` garantit seule.
+    let annuaires = [v6(1), v4(1)];
+    let mut tournee = Tournee::nouvelle(Reprise::nouvelle(PLAFOND).unwrap());
+    let maximum = PLAFOND * (100 + BRUIT_CENTIEMES) / 100;
+
+    for _ in 0..10_000 {
+        let etape = tournee
+            .prochaine(&annuaires, u16::MAX)
+            .expect("jamais None");
+        assert!(etape.place < annuaires.len());
+        assert!(etape.attendre_ms <= maximum);
+    }
+    assert_eq!(tournee.tours_perdus(), 4_999);
+}
+
+#[test]
+fn la_liste_peut_changer_de_taille_entre_deux_tours() {
+    // Un annuaire retiré de la configuration ne doit pas faire sortir la
+    // tournée de la liste — le rang est ramené dans les bornes à chaque tour.
+    let mut tournee = Tournee::nouvelle(Reprise::nouvelle(PLAFOND).unwrap());
+    let quatre = [v6(1), v6(2), v4(1), v4(2)];
+    for _ in 0..3 {
+        let _ = tournee.prochaine(&quatre, 0).expect("un annuaire");
+    }
+
+    let un_seul = [v4(1)];
+    let etape = tournee.prochaine(&un_seul, 0).expect("le seul");
+    assert_eq!(etape.place, 0);
+    assert!(etape.attendre_ms >= 1, "le rang était hors de la liste");
+}
