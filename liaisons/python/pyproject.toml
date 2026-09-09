@@ -1,0 +1,47 @@
+# Le paquet Python d'air-service-locator.
+#
+# ── IL VIT DANS LE DÉPÔT DU CLIENT, ET C'EST PROVISOIRE ─────────────────────
+#
+# `liaisons/README.md` posait la question sans la trancher : un dépôt par
+# liaison, ou tout ici ? Ici, pour l'instant, parce que la liaison et l'ABI
+# qu'elle transcrit doivent bouger DANS LE MÊME COMMIT — `essais/test_abi.py` lit
+# `crates/asl-client-ffi/include/asl.h`, et il ne le pourrait pas d'ailleurs.
+#
+# **CE QUI DÉCLENCHERA LA SÉPARATION** : le jour où il faudra publier des roues
+# par plate-forme et par architecture. Cette CI-là n'a rien à voir avec celle
+# d'un workspace Rust, et l'empiler ici ferait tourner huit constructions à
+# chaque changement d'une ligne de Rust.
+#
+# ── CE PAQUET NE CONTIENT PAS ENCORE L'OBJET NATIF ──────────────────────────
+#
+# Il est donc `py3-none-any` : du Python pur qui CHERCHE la bibliothèque. Une
+# vraie distribution embarquerait `libasl_client_ffi.so` dans la roue, une par
+# plate-forme. En attendant, `ASL_BIBLIOTHEQUE` pointe l'objet qu'on a construit,
+# et l'erreur le dit quand il manque plutôt que de rendre un `OSError` nu.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "asl-client"
+version = "0.1.0"
+description = "Annoncer un service et retrouver un port, par l'annuaire air-service-locator."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MPL-2.0"
+authors = [{ name = "air-service-locator contributors" }]
+
+# **AUCUNE DÉPENDANCE, ET CE N'EST PAS UN OUBLI.**
+#
+# `ctypes`, `dataclasses`, `enum`, `ipaddress` et `threading` sont dans la
+# bibliothèque standard. `cffi` serait plus rapide et attraperait davantage de
+# fautes à la construction — et il serait une dépendance qu'un daemon tiers
+# hériterait de nous. Ce que cette bibliothèque tire, ses porteurs l'installent.
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/air-desktop-project/air-service-locator-client"
+
+[tool.setuptools]
+packages = ["asl"]

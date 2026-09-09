@@ -129,6 +129,17 @@ jobs:
       - name: check-abi
         run: ./scripts/check-abi.sh
 
+      # ── LA LIAISON PYTHON CONTRE L'ABI QU'ELLE TRANSCRIT ─────────────────
+      #
+      # `liaisons/python/asl/_abi.py` recopie `include/asl.h` À LA MAIN, et rien
+      # dans les deux langages ne relie ces fichiers. Une divergence ne plante
+      # pas : elle fait lever `Refuse` là où l'ABI disait `Injoignable`.
+      #
+      # Aucun `setup-python` : le runner en a un, et cette liaison n'a AUCUNE
+      # dépendance — un essai le prouve en lisant ses propres sources.
+      - name: check-python
+        run: ./scripts/check-python.sh
+
       - name: check-format
         run: ./scripts/check-format.sh
 

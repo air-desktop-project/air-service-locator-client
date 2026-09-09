@@ -28,22 +28,25 @@
 #   4. `check-abi`       — la surface exportée, lue dans le BINAIRE.
 #   5. `check-clippy`
 #   6. `cargo test`
-#   7. `check-format`    — EN DERNIER (voir ci-dessus).
+#   7. `check-python`    — la liaison Python contre l'ABI qu'elle transcrit.
+#   8. `check-format`    — EN DERNIER (voir ci-dessus).
 #
-# **`check-abi` EXISTE AVANT LA PREMIÈRE FONCTION EXPORTÉE, et c'est un choix.**
-# On aurait pu attendre : comparer une surface vide à un registre vide n'atteste
-# de rien. Mais une barrière ajoutée après coup se découvre cassée le jour où
-# l'on en a besoin — et surtout, le registre `abi.txt` doit exister AVANT la
-# première fonction, sinon celle-ci entrera sans que rien ne l'inscrive.
-#
-# Le contrôle DIT qu'il n'a rien comparé, plutôt que de rendre un OK muet.
+# **`check-abi` A ÉTÉ ÉCRIT AVANT LA PREMIÈRE FONCTION EXPORTÉE, et c'était un
+# choix.** Une barrière ajoutée après coup se découvre cassée le jour où l'on en
+# a besoin — et le registre `abi.txt` devait exister AVANT la première fonction,
+# sinon celle-ci serait entrée sans que rien ne l'inscrive. Il compare
+# aujourd'hui trois sources : le binaire, le registre, et `include/asl.h`.
 #
 # # CE QUI MANQUE ENCORE
 #
-# `check-abi` ne juge pas les SIGNATURES : changer un `int32_t` en `int64_t` sans
-# renommer la fonction casse les cinq liaisons sans qu'il bronche. Le jour où la
-# première fonction existera, il faudra soit un en-tête committé en plus, soit la
-# discipline de renommer ce qu'on change.
+# Ni `check-abi` ni `check-python` ne jugent le TYPE des arguments. Ce qui les
+# rattrape en partie : les tailles de structures, vérifiées à la compilation des
+# deux côtés, et les constantes, comparées à l'en-tête par un essai dans chaque
+# langage. Le reste tient par la discipline de renommer ce qu'on change.
+#
+# **QUATRE LIAISONS SUR CINQ N'EXISTENT PAS**, et il n'y a donc rien à vérifier
+# pour Ruby, C++, Kotlin et Swift. Le jour où l'une entrera, elle aura besoin de
+# sa propre barrière — celle-ci ne la couvrira pas.
 
 set -euo pipefail
 
@@ -56,6 +59,7 @@ barrieres=(
     scripts/check-sans-c.sh
     scripts/check-abi.sh
     scripts/check-clippy.sh
+    scripts/check-python.sh
     scripts/check-format.sh
 )
 
