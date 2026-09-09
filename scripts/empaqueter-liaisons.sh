@@ -60,17 +60,41 @@ echo "cible   : $cible"
 # **LES EMPREINTES SONT VÉRIFIÉES AVANT DE POSER QUOI QUE CE SOIT.** Une archive
 # abîmée en transit poserait un objet natif que cinq liaisons chargeraient dans
 # le processus de quelqu'un d'autre.
+#
+# ── ON RECALCULE ET ON COMPARE, PLUTÔT QUE D'EMPLOYER `--check` ─────────────
+#
+# `sha256sum --check --quiet` est une invention de GNU. macOS a bien un
+# `sha256sum`, et il ne connaît que `[-bctwz]` : la vérification y échouait avec
+# un « usage: » et un manifeste déclaré faux alors qu'il était juste. **Le
+# workflow `natif` l'a trouvé ; aucune barrière locale ne pouvait le voir.**
+#
+# Recalculer la liste exactement comme `construire-natif.sh` l'a écrite, puis
+# comparer les deux textes, ne demande QUE de savoir hacher — ce que les trois
+# plates-formes savent faire, chacune avec son outil.
 if command -v sha256sum >/dev/null 2>&1; then
-    verifier() { sha256sum --check --quiet; }
+    outil_empreinte="sha256sum"
 elif command -v shasum >/dev/null 2>&1; then
-    verifier() { shasum -a 256 --check --quiet; }
+    outil_empreinte="shasum -a 256"
 else
     echo "ÉCHEC : ni \`sha256sum\` ni \`shasum\` — les empreintes ne peuvent PAS être vérifiées."
     exit 1
 fi
 
-if ! (cd "$racine" && grep -vE '^(#|$)|^(version|cible|rustc) = ' MANIFESTE | verifier); then
+attendues=$(grep -vE '^(#|$)|^(version|cible|rustc) = ' "$racine/MANIFESTE")
+obtenues=$(
+    cd "$racine"
+    find . -type f ! -name MANIFESTE -print0 \
+        | LC_ALL=C sort -z \
+        | xargs -0 $outil_empreinte \
+        | sed 's|  \./|  |'
+)
+
+if [ "$attendues" != "$obtenues" ]; then
     echo "ÉCHEC : les empreintes du MANIFESTE ne correspondent pas."
+    echo "  attendu :"
+    printf '%s\n' "$attendues" | sed 's/^/    /'
+    echo "  obtenu :"
+    printf '%s\n' "$obtenues" | sed 's/^/    /'
     exit 1
 fi
 echo "empreintes : vérifiées"
