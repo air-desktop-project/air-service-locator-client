@@ -1,0 +1,46 @@
+[package]
+name = "asl-client-tokio"
+description = "Le transport du client : QUIC, HTTP/3 et une socket. La seule crate de ce dépôt qui attend."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+asl-client.workspace = true
+asl-cle.workspace = true
+asl-id.workspace = true
+asl-proto.workspace = true
+
+# LA PILE QUIC ET HTTP/3 D'`air-mail-server` (C15), et JAMAIS UNE AUTRE.
+#
+# Elle est en Rust pur — `check-sans-c.sh` le vérifie —, ce qui est la condition
+# pour qu'un daemon tiers l'embarque : une pile qui lierait sa propre libcrypto
+# entrerait en conflit avec celle du processus hôte.
+ams-h3.workspace = true
+ams-proto-h3.workspace = true
+ams-proto-quic.workspace = true
+ams-quic.workspace = true
+ams-quic-tls.workspace = true
+ams-tls.workspace = true
+
+rustls.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+# **LE SERVEUR D'EN FACE EST LE VRAI.** Un faux serveur dirait ce que nous
+# croyons qu'un annuaire dit ; celui-ci refuse une trame hors de son flux, une
+# section qui ne fait pas une requête, un ALPN qui n'est pas le nôtre.
+#
+# `ams-quic-client` n'est PAS une bibliothèque cliente — c'est le harnais
+# d'essai d'`air-mail-server`, et c'est à ce titre qu'il est ici : il sait
+# fabriquer un certificat de banc avec `openssl`, ce que rien dans ce dépôt ne
+# sait faire.
+ams-proto-http.workspace = true
+ams-quic-client.workspace = true
+asl-cle.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
+[lints]
+workspace = true

@@ -41,6 +41,7 @@
 resolver = "3"
 members = [
     "crates/asl-client",
+    "crates/asl-client-tokio",
     "crates/asl-client-ffi",
     "crates/asl-cli",
 ]
@@ -69,11 +70,50 @@ repository = "https://github.com/air-desktop-project/air-service-locator-client"
 
 [workspace.dependencies]
 asl-client = { path = "crates/asl-client", version = "0.1.0" }
+asl-client-tokio = { path = "crates/asl-client-tokio", version = "0.1.0" }
 
 # La grammaire, tirée du dépôt qui porte les spécifications.
 asl-id = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "e4255cfa91b35f33e6dbee9935e85ddf8323fb33" }
 asl-proto = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "e4255cfa91b35f33e6dbee9935e85ddf8323fb33" }
 asl-cle = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "e4255cfa91b35f33e6dbee9935e85ddf8323fb33" }
+
+# ── LA PILE QUIC ET HTTP/3, EMPRUNTÉE À `air-mail-server` (C15) ─────────────
+#
+# **Elle n'est réécrite ni ici ni ailleurs, et aucune pile tierce n'entre** :
+# `scripts/check-pile.sh` le vérifie sur le graphe RÉSOLU, donc y compris sur ce
+# que personne n'a déclaré.
+#
+# Elle est en Rust pur, et c'est la condition qui l'a fait retenir : cette
+# bibliothèque est chargée dans des interpréteurs Python et Ruby, où une pile
+# qui lierait sa propre libcrypto entrerait en conflit avec celle du processus
+# hôte. `scripts/check-sans-c.sh` le vérifie.
+#
+# **La moitié CLIENTE de cette pile a été écrite pour ce dépôt-ci** — une
+# connexion QUIC qui se connecte, un conducteur HTTP/3 qui émet des requêtes —
+# et elle vit là-bas, à côté de la moitié serveur. Deux moitiés séparées
+# finiraient par ne plus se parler.
+#
+# Épinglées sur un COMMIT, jamais sur une branche : une branche qui avance
+# changerait le code compilé ici sans qu'une ligne de ce dépôt ait bougé.
+ams-h3 = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "88b36a22cbea7a1ca342fb6ea07fbbf0e76e4abe" }
+ams-proto-http = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "88b36a22cbea7a1ca342fb6ea07fbbf0e76e4abe" }
+ams-quic-client = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "88b36a22cbea7a1ca342fb6ea07fbbf0e76e4abe" }
+ams-proto-h3 = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "88b36a22cbea7a1ca342fb6ea07fbbf0e76e4abe" }
+ams-proto-quic = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "88b36a22cbea7a1ca342fb6ea07fbbf0e76e4abe" }
+ams-quic = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "88b36a22cbea7a1ca342fb6ea07fbbf0e76e4abe" }
+ams-quic-tls = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "88b36a22cbea7a1ca342fb6ea07fbbf0e76e4abe" }
+ams-tls = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "88b36a22cbea7a1ca342fb6ea07fbbf0e76e4abe" }
+
+# `rustls` POUR LA CONFIGURATION CLIENTE, et rien d'autre : les racines à qui
+# l'on fait confiance, et le nom qu'on exige du certificat. Le chiffrement, lui,
+# vient du fournisseur d'`ams-tls`, en Rust pur.
+rustls = { version = "0.23", default-features = false, features = ["std"] }
+
+# `tokio` POUR UNE SOCKET ET UN DÉLAI. Rien de plus : pas de `net` complet, pas
+# de système de fichiers. Un daemon tiers qui embarque cette bibliothèque hérite
+# de ce qu'elle tire, et chaque feature de plus est une décision qu'on prend à
+# sa place.
+tokio = { version = "1", default-features = false, features = ["net", "time", "rt"] }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "forbid"
