@@ -23,12 +23,24 @@
 # C'est aussi ce qui évite d'imposer `cbindgen` au graphe de dépendances pour
 # rendre un service que `nm` rend déjà.
 #
-# # CE QUE CE CONTRÔLE N'EST PAS
+# # TROIS SOURCES, ET ELLES DOIVENT DIRE LA MÊME CHOSE
 #
-# **Il ne juge pas les SIGNATURES.** Changer un `int32_t` en `int64_t` sans
-# renommer la fonction casse les cinq liaisons sans que ce script bronche. C'est
-# une limite réelle, et le jour où la première fonction existera il faudra soit
-# un en-tête committé en plus, soit la discipline de renommer ce qu'on change.
+# Le binaire dit ce qui est exporté. `abi.txt` dit ce qu'on s'est engagé à
+# exporter. `include/asl.h` dit ce que les cinq liaisons compilent. **Deux
+# suffiraient à se contredire sans que personne s'en aperçoive** : un symbole
+# exporté qu'aucun en-tête ne déclare n'est atteignable par personne, et une
+# déclaration sans symbole derrière est une erreur d'édition de liens chez le
+# consommateur, jamais chez nous.
+#
+# # CE QUE CE CONTRÔLE N'EST TOUJOURS PAS
+#
+# **Il ne juge pas le TYPE des arguments.** Changer un `int32_t` en `int64_t`
+# dans l'en-tête ET dans le code Rust, sans renommer la fonction, casse les cinq
+# liaisons sans que ce script bronche. Ce qui l'attrape est ailleurs : les
+# tailles des structures sont vérifiées à la compilation (`const _: () =
+# assert!`), et les constantes de l'en-tête sont comparées aux constantes Rust
+# par un essai. Le type des paramètres, lui, reste tenu par la discipline de
+# renommer ce qu'on change.
 
 set -euo pipefail
 
@@ -75,8 +87,21 @@ attendu=$(grep -vE '^\s*(#|$)' "$registre" | sort -u || true)
 nb_actuel=$(printf '%s\n' "$actuel" | grep -c . || true)
 nb_attendu=$(printf '%s\n' "$attendu" | grep -c . || true)
 
+# Les fonctions déclarées dans l'en-tête : ce que les cinq liaisons compilent.
+entete="crates/asl-client-ffi/include/asl.h"
+if [ ! -f "$entete" ]; then
+    echo "ÉCHEC : $entete est absent."
+    echo "        L'en-tête EST le contrat, au même titre que le registre."
+    exit 1
+fi
+declares=$(grep -oE "\\b${prefixe}[a-z0-9_]+\\s*\\(" "$entete" \
+    | sed -E "s/[[:space:]]*\\(\$//" \
+    | sort -u || true)
+nb_declares=$(printf '%s\n' "$declares" | grep -c . || true)
+
 echo "exportés par le binaire : $nb_actuel"
 echo "inscrits au registre    : $nb_attendu"
+echo "déclarés dans l'en-tête : $nb_declares"
 echo
 
 # UN REGISTRE VIDE COMPARÉ À UNE SURFACE VIDE N'ATTESTE DE RIEN, ET ON LE DIT.
@@ -113,9 +138,31 @@ if [ -n "$ajoutes" ]; then
     violations=$((violations + 1))
 fi
 
+# ── L'EN-TÊTE, TROISIÈME VOIX ───────────────────────────────────────────────
+sans_entete=$(comm -23 <(printf '%s\n' "$attendu") <(printf '%s\n' "$declares") | grep -v '^$' || true)
+sans_registre=$(comm -13 <(printf '%s\n' "$attendu") <(printf '%s\n' "$declares") | grep -v '^$' || true)
+
+if [ -n "$sans_entete" ]; then
+    echo "INATTEIGNABLE — au registre, mais absents de l'en-tête :"
+    printf '  %s\n' $sans_entete
+    echo
+    echo "  Un symbole qu'aucun en-tête ne déclare n'est atteignable par personne."
+    echo "  Déclarez-les dans $entete."
+    violations=$((violations + 1))
+fi
+
+if [ -n "$sans_registre" ]; then
+    echo "PROMESSE SANS SYMBOLE — déclarés dans l'en-tête, absents du registre :"
+    printf '  %s\n' $sans_registre
+    echo
+    echo "  Une déclaration sans symbole derrière est une erreur d'édition de liens"
+    echo "  chez le consommateur, jamais chez nous — c'est-à-dire au pire endroit."
+    violations=$((violations + 1))
+fi
+
 if [ "$violations" -gt 0 ]; then
-    echo "ÉCHEC : la surface exportée et le registre divergent."
+    echo "ÉCHEC : le binaire, le registre et l'en-tête ne disent pas la même chose."
     exit 1
 fi
 
-echo "OK : $nb_actuel symbole(s) exporté(s), tous au registre."
+echo "OK : $nb_actuel symbole(s) exporté(s), tous au registre et tous déclarés."

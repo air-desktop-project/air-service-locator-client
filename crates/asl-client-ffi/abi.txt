@@ -5,15 +5,27 @@
 # que nous ne voyons pas, et elles ne se mettent pas à jour au même rythme.
 #
 # `scripts/check-abi.sh` compare cette liste aux symboles RÉELLEMENT exportés par
-# `libasl_client_ffi.so`. Un ajout est libre mais doit être inscrit ici dans le
-# même commit ; UN RETRAIT EST UNE RUPTURE MAJEURE et appartient à une version
-# majeure, avec sa raison dans le message de commit.
+# `libasl_client_ffi.so`, ET aux fonctions déclarées dans `include/asl.h`. Un
+# ajout est libre mais doit être inscrit ici dans le même commit ; UN RETRAIT EST
+# UNE RUPTURE MAJEURE et appartient à une version majeure, avec sa raison dans le
+# message de commit.
 #
 # Une ligne par symbole. Les lignes vides et celles commençant par `#` sont
 # ignorées.
-#
-# ── VIDE, ET C'EST LA VÉRITÉ ────────────────────────────────────────────────
-#
-# `asl-client-ffi` n'exporte rien : `asl-client` n'a aucune fonction à exposer.
-# Le contrôle le dit lui-même plutôt que de rendre un OK qui n'aurait rien
-# comparé.
+
+# ── CE QUI NE TOUCHE À RIEN ─────────────────────────────────────────────────
+asl_version
+asl_faute_texte
+
+# ── LA CONSTRUCTION ─────────────────────────────────────────────────────────
+asl_client_neuf
+asl_client_annuaire
+asl_client_racines
+asl_client_identite
+asl_client_libere
+
+# ── LES VERBES ──────────────────────────────────────────────────────────────
+asl_enroler
+asl_annoncer
+asl_etat
+asl_ou

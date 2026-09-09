@@ -19,6 +19,17 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 asl-client.workspace = true
+asl-client-tokio.workspace = true
+asl-id.workspace = true
+asl-proto.workspace = true
+
+# `rt-multi-thread` EN PLUS, ET SEULEMENT ICI. L'annonce est tenue par une
+# connexion : elle doit progresser pendant que l'hôte fait autre chose. Un
+# ordonnanceur à un seul fil ne progresse que lorsque quelqu'un l'attend — ce
+# dont l'utilitaire `asl` peut se contenter, mais pas une bibliothèque chargée
+# dans le processus d'un tiers. Un seul fil de travail : ce client ne tient
+# qu'une connexion.
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [lints]
 workspace = true

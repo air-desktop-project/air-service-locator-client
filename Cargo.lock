@@ -182,6 +182,10 @@ name = "asl-client-ffi"
 version = "0.1.0"
 dependencies = [
  "asl-client",
+ "asl-client-tokio",
+ "asl-id",
+ "asl-proto",
+ "tokio",
 ]
 
 [[package]]

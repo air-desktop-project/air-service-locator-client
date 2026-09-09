@@ -9,14 +9,15 @@ retrouver un port, ses liaisons vers cinq langages, et l'utilitaire `asl`.
 > **`asl-client` porte la politique de reprise et l'identité d'une machine**,
 > couvertes à 100 % et éprouvées par le fuzz.
 >
-> **Le transport n'est pas câblé.** Tant que la pile QUIC ne l'est pas, cette
-> crate ne fait aucune entrée-sortie et reste `no_std`. Ce n'est pas un état
-> subi : c'est ce qui permet d'éprouver la reprise sans attendre une seconde de
-> délai — soixante-dix échecs consécutifs coûtent une boucle, là où un vrai
-> recul exponentiel y mettrait des années.
+> **`asl-client` ne fait toujours aucune entrée-sortie, et reste `no_std`.** Ce
+> n'est pas un état subi : c'est ce qui permet d'éprouver la reprise sans
+> attendre une seconde de délai — dix mille tours coûtent une boucle, là où un
+> vrai recul exponentiel y mettrait des jours. Le transport vit à côté, dans
+> `asl-client-tokio`, la seule crate de ce dépôt qui attend.
 >
-> `asl-client-ffi` n'exporte encore rien, et `asl` le dit quand on le lance
-> plutôt que de promettre des commandes qui n'existent pas.
+> L'utilitaire `asl` fait les quatre verbes ; `asl-client-ffi` exporte onze
+> symboles, inscrits au registre et déclarés dans `include/asl.h`. **Les cinq
+> liaisons, elles, ne sont pas écrites.**
 
 ## Le problème
 
@@ -141,10 +142,16 @@ scripts/check-dco.sh      # après avoir committé
 une crate qui lierait du C s'exécuterait sur nos machines ; ici, elle serait
 chargée dans le processus de quelqu'un d'autre.
 
-`check-abi.sh` existe et **ne compare encore rien** : `asl-client-ffi` n'exporte
-aucune fonction, et il le dit plutôt que de rendre un OK muet. Le registre
-`abi.txt` existe déjà pour que la première fonction ne puisse pas entrer sans
-être inscrite.
+`check-abi.sh` compare **trois sources qui doivent dire la même chose** : les
+symboles que `libasl_client_ffi.so` exporte vraiment, le registre `abi.txt`, et
+les fonctions déclarées dans `include/asl.h`. Deux suffiraient à se contredire
+sans que personne s'en aperçoive — un symbole qu'aucun en-tête ne déclare n'est
+atteignable par personne, et une déclaration sans symbole derrière est une erreur
+d'édition de liens chez le consommateur, jamais chez nous.
+
+Un ajout est libre mais doit être inscrit dans le même commit ; **un retrait est
+une rupture majeure**, pour cinq écosystèmes à la fois qui ne se mettent pas à
+jour au même rythme.
 
 ## Les quatre dépôts
 

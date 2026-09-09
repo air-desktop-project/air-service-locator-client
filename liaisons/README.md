@@ -24,8 +24,19 @@ utilisateur Python attend une exception, pas un code de retour négatif.
 
 ## État
 
-**Rien n'est écrit.** `asl-client` n'expose encore aucune fonction, et une
-liaison vers une surface vide ne se vérifierait pas.
+**L'ABI est là ; aucune liaison ne l'est.**
+
+`crates/asl-client-ffi` exporte onze fonctions, et `crates/asl-client-ffi/include/asl.h`
+les déclare avec la RAISON de chacune — pourquoi `asl_client_neuf` n'ouvre aucune
+connexion, pourquoi un verdict a quatre valeurs et non deux, pourquoi libérer le
+client retire l'annonce.
+
+Ce qui reste à faire, pour chacun des cinq langages, est ce que le tableau
+ci-dessus exige : traduire les erreurs, envelopper le pointeur opaque, renommer,
+et DIRE ce qui tourne en arrière-plan.
+
+**Commencez par l'en-tête, et non par ce fichier-ci** : il est le contrat, et il
+est écrit à la main pour cette raison.
 
 ## Ce qui n'est pas décidé
 
