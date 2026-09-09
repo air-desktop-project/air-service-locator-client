@@ -32,7 +32,8 @@
 #   8. `check-ruby`      — la liaison Ruby, idem, plus le GVL.
 #   9. `check-cpp`       — le contrat LU PAR UN COMPILATEUR, en C et en C++.
 #  10. `check-kotlin`    — la liaison Kotlin, et les décalages de ses champs.
-#  11. `check-format`    — EN DERNIER (voir ci-dessus).
+#  11. `check-swift`     — la liaison Swift, et ce que le mode Swift 6 refuse.
+#  12. `check-format`    — EN DERNIER (voir ci-dessus).
 #
 # **`check-abi` A ÉTÉ ÉCRIT AVANT LA PREMIÈRE FONCTION EXPORTÉE, et c'était un
 # choix.** Une barrière ajoutée après coup se découvre cassée le jour où l'on en
@@ -47,9 +48,10 @@
 # bougé ne compile pas ; un symbole qui aurait disparu ne lie pas. C'est la limite
 # que `check-abi` s'était donnée à lui-même, et elle est levée.
 #
-# **UNE LIAISON SUR CINQ N'EXISTE PAS**, et il n'y a donc rien à vérifier pour
-# Swift. Le jour où elle entrera, elle aura besoin de sa propre barrière — les
-# quatre qui existent ne la couvriront pas.
+# **LES CINQ LIAISONS EXISTENT**, et chacune a sa barrière. Deux d'entre elles —
+# C++ et Swift — INCLUENT l'en-tête au lieu de le recopier : leur conformité est
+# rendue par un compilateur, et il n'y a rien à comparer. Les trois autres
+# transcrivent, et comparent chacune à sa façon.
 
 set -euo pipefail
 
@@ -66,6 +68,7 @@ barrieres=(
     scripts/check-ruby.sh
     scripts/check-cpp.sh
     scripts/check-kotlin.sh
+    scripts/check-swift.sh
     scripts/check-format.sh
 )
 

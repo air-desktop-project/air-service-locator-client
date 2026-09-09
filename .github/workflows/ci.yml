@@ -184,6 +184,18 @@ jobs:
       - name: check-cpp
         run: ./scripts/check-cpp.sh
 
+      # ── LA LIAISON SWIFT ────────────────────────────────────────────────
+      #
+      # Le mode Swift 6, parce que c'est lui qui fait REFUSER le partage d'un
+      # `Client` entre domaines d'isolement — ce qui remplace le verrou que les
+      # liaisons Python, Ruby et Kotlin posent à l'exécution.
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.0"
+
+      - name: check-swift
+        run: ./scripts/check-swift.sh
+
       - name: check-format
         run: ./scripts/check-format.sh
 

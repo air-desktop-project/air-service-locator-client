@@ -17,14 +17,14 @@ utilisateur Python attend une exception, pas un code de retour négatif.
 
 | | |
 |---|---|
-| **Les erreurs** | Traduites dans la forme du langage — une exception en Python et en Ruby, un `Result` en Swift et en Kotlin, un code en C++. Jamais un entier négatif rendu tel quel. |
+| **Les erreurs** | Traduites dans la forme du langage — une exception en Python et en Ruby, un `Result` en Kotlin, un code `[[nodiscard]]` en C++, un `throw` en Swift. Jamais un entier négatif rendu tel quel. |
 | **La mémoire** | Rien de ce que la bibliothèque alloue n'est libéré par l'hôte. Chaque liaison enveloppe les pointeurs opaques dans le mécanisme de son langage. |
 | **Le nommage** | Celui du langage d'accueil, pas celui de l'ABI. |
 | **Le fil d'exécution** | La connexion est tenue et le keepalive tourne : une liaison doit dire clairement ce qui tourne en arrière-plan, et ce qu'il faut fermer. |
 
 ## État
 
-**L'ABI est là. Python l'est. Les quatre autres, non.**
+**Les cinq sont écrites et éprouvées**, chacune avec sa barrière.
 
 | | |
 |---|---|
@@ -32,7 +32,7 @@ utilisateur Python attend une exception, pas un code de retour négatif.
 | [`ruby/`](ruby/) | Écrite, éprouvée, sans aucune dépendance. `scripts/check-ruby.sh`. |
 | [`cpp/`](cpp/) | Écrite, éprouvée. En-tête seul : elle INCLUT le contrat au lieu de le recopier. `scripts/check-cpp.sh`. |
 | [`kotlin/`](kotlin/) | Écrite, éprouvée, sans aucune dépendance. **JVM seulement — pas Android.** `scripts/check-kotlin.sh`. |
-| `swift/` | Rien. |
+| [`swift/`](swift/) | Écrite, éprouvée. Elle INCLUT le contrat, et le compilateur refuse de partager un client. `scripts/check-swift.sh`. |
 
 
 `crates/asl-client-ffi` exporte onze fonctions, et `crates/asl-client-ffi/include/asl.h`

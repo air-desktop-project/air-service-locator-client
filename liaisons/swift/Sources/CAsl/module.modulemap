@@ -1,0 +1,19 @@
+// La carte de module qui fait entrer `asl.h` dans Swift.
+//
+// **ELLE POINTE L'EN-TÊTE ORIGINAL, ET NON UNE COPIE.**
+//
+// Swift, comme C++, sait INCLURE le contrat : il n'y a donc pas de transcription
+// à faire diverger, et pas de barrière de conformité à écrire. Python, Ruby et
+// Kotlin doivent recopier `asl.h` et comparer ; ici le compilateur lit la source.
+//
+// Recopier l'en-tête sous `Sources/CAsl/include/` aurait été plus conventionnel
+// pour SwiftPM. Cela aurait aussi créé la seconde source que tout ce dépôt
+// s'emploie à éviter.
+//
+// `link` demande à l'éditeur de liens `-lasl_client_ffi` : un porteur n'a que le
+// répertoire à indiquer.
+module CAsl {
+    header "../../../../crates/asl-client-ffi/include/asl.h"
+    link "asl_client_ffi"
+    export *
+}
