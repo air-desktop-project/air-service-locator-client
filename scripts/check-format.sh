@@ -20,13 +20,30 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-echo 'check-format — le workspace'
+echo 'check-format — le workspace, et `fuzz/` qui n'"'"'en fait pas partie'
 echo
 
+violations=0
+
 if cargo fmt --all -- --check; then
-    echo 'OK : le workspace passe `cargo fmt --check`.'
+    echo "workspace : formaté"
 else
-    echo
     echo "ÉCHEC : le workspace n'est pas formaté (\`cargo fmt --all\` le corrige)."
+    violations=$((violations + 1))
+fi
+
+if (cd fuzz && cargo fmt -- --check); then
+    echo "fuzz/     : formaté"
+else
+    echo "ÉCHEC : \`fuzz/\` n'est pas formaté (\`cd fuzz && cargo fmt\` le corrige)."
+    violations=$((violations + 1))
+fi
+
+if [ "$violations" -gt 0 ]; then
+    echo
+    echo "ÉCHEC : $violations portée(s) mal formatée(s)."
     exit 1
 fi
+
+echo
+echo 'OK : les deux portées passent `cargo fmt --check`.'

@@ -92,6 +92,13 @@ jobs:
       - name: check-pile
         run: ./scripts/check-pile.sh
 
+      # ── AUCUNE LIGNE DE C (C4) ───────────────────────────────────────────
+      #
+      # Elle compte davantage ici que dans le dépôt serveur : une crate qui
+      # lierait du C serait chargée dans le processus de quelqu'un d'autre.
+      - name: check-sans-c
+        run: ./scripts/check-sans-c.sh
+
       - name: check-clippy
         run: ./scripts/check-clippy.sh
 
@@ -124,3 +131,46 @@ jobs:
 
       - name: check-format
         run: ./scripts/check-format.sh
+
+  # ── Le 100 % de couverture sur la logique du client (C2) ──────────────────
+  #
+  # JOB SÉPARÉ : il installe un outil et recompile tout sous instrumentation.
+  couverture:
+    name: couverture 100 % (C2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Toolchain épinglée
+        run: rustup show active-toolchain
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: check-couverture
+        run: ./scripts/check-couverture.sh
+
+  # ── Smoke-fuzz borné (C3) ─────────────────────────────────────────────────
+  #
+  # UN DÉTECTEUR DE RÉGRESSION, PAS UNE CAMPAGNE. Aucun nightly à installer :
+  # ce dépôt est déjà sur celui d'Air (C16), et `rust-toolchain.toml` s'applique
+  # aussi à `fuzz/` — rustup remonte l'arborescence.
+  fuzz:
+    name: smoke-fuzz (C3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Toolchain épinglée
+        run: rustup show active-toolchain
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
+      - name: cargo-fuzz est bien là
+        run: cargo fuzz --version
+
+      - name: smoke-fuzz de toutes les cibles
+        run: scripts/check-fuzz.sh --smoke

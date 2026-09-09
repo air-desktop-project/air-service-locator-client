@@ -68,6 +68,235 @@
 //! prévoirait un chemin de repli « sans authentification » coderait une porte
 //! que le serveur n'ouvre pas.
 //!
-//! # État
+//! # Ce qui est écrit, et ce qui ne l'est pas
 //!
-//! Vide. Spécifié, pas écrit.
+//! **Écrit** : [`Reprise`], la politique de reconnexion — et [`Identite`], ce
+//! qu'une machine détient et ce qu'elle en fait.
+//!
+//! **Pas écrit** : le transport. Tant que la pile QUIC n'est pas câblée, cette
+//! crate ne fait aucune entrée-sortie et reste `no_std`. Ce n'est pas un état
+//! provisoire subi : c'est ce qui permet d'éprouver la politique de reprise sans
+//! attendre une seconde de délai, comme l'étage 2 du serveur éprouve une
+//! expiration sans attendre quarante-cinq secondes.
+
+#![no_std]
+
+use asl_cle::{ClePublique, CleSecrete, Defi, LiaisonDeCanal, Signature};
+
+/// Les fautes d'`asl-cle`, réexportées pour que l'appelant n'ait pas à dépendre
+/// de cette crate pour lire un refus.
+pub use asl_cle::Faute as FauteDeCle;
+use asl_id::{Genre, Identifiant};
+use asl_proto::{Annonce, Erreur as ErreurProto, NomService, PointEcoute};
+use core::net::IpAddr;
+
+// ── La reprise ──────────────────────────────────────────────────────────────
+
+/// Le délai avant le premier réessai, en millisecondes.
+pub const RECUL_INITIAL_MS: u64 = 1_000;
+
+/// Le bruit appliqué au délai, en centièmes.
+///
+/// ±20 % : le délai rendu vaut entre 80 % et 120 % du délai calculé.
+pub const BRUIT_CENTIEMES: u64 = 20;
+
+/// Ce qui peut clocher dans la construction d'une reprise ou d'une identité.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Faute {
+    /// Le plafond de recul est nul : la reprise tournerait en boucle serrée.
+    PlafondNul,
+    /// L'identifiant fourni n'est pas celui d'une machine.
+    PasUneMachine {
+        /// Le genre fourni.
+        obtenu: Genre,
+    },
+    /// La composition de l'annonce a été refusée par le protocole.
+    Protocole(ErreurProto),
+}
+
+/// La politique de reconnexion à l'annuaire.
+///
+/// # CE CODE N'EST PAS DU CODE DE REPRISE, C'EST LE MÉCANISME DE HAUTE DISPONIBILITÉ
+///
+/// L'état vivant n'est délibérément pas répliqué entre les annuaires racines
+/// (`annuaires.md` §3) : quand l'un tombe, le daemon se reconnecte à l'autre et
+/// réannonce, et l'état se reconstruit en un keepalive. **Il n'y a pas d'autre
+/// bascule à écrire — c'est celle-ci.** Ce qui ressemble à de la robustesse
+/// d'appoint est en réalité la moitié du plan de continuité du produit.
+///
+/// # LE BRUIT N'EST PAS DU RAFFINEMENT
+///
+/// Sans lui, mille daemons dont l'annuaire vient de tomber réessaient à la même
+/// seconde et le remettent à terre à l'instant où il se relève. Il coûte une
+/// ligne, et il est ce qui distingue une reprise d'une attaque par déni de
+/// service que l'on s'inflige à soi-même.
+///
+/// # ELLE N'ABANDONNE JAMAIS
+///
+/// Un daemon qui tourne depuis un mois doit se réannoncer tout seul quand
+/// l'annuaire revient. Le compteur d'essais SATURE au lieu de déborder : après
+/// soixante-quatre échecs, un décalage non saturé rendrait un délai nul, et la
+/// reprise deviendrait la boucle serrée qu'elle existe pour éviter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reprise {
+    plafond_ms: u64,
+    essais: u32,
+}
+
+impl Reprise {
+    /// Une politique de reprise, plafonnée à la cadence de keepalive.
+    ///
+    /// **Le plafond vient du serveur** : c'est lui qui annonce la cadence
+    /// attendue (`modele.md` §4.1). Le figer ici exigerait de mettre à jour tous
+    /// les daemons installés chez des tiers le jour où elle changera.
+    ///
+    /// # Erreurs
+    ///
+    /// [`Faute::PlafondNul`].
+    pub const fn nouvelle(plafond_ms: u64) -> Result<Self, Faute> {
+        if plafond_ms == 0 {
+            return Err(Faute::PlafondNul);
+        }
+        Ok(Self {
+            plafond_ms,
+            essais: 0,
+        })
+    }
+
+    /// Le délai avant le prochain essai, en millisecondes.
+    ///
+    /// `alea` est **fourni par l'appelant** : cette crate ne tire rien
+    /// elle-même, ce qui la garde éprouvable et sans entrée-sortie. N'importe
+    /// quelle valeur convient — le bruit n'a pas besoin d'être imprévisible,
+    /// seulement d'être réparti.
+    #[must_use]
+    pub fn prochain_delai(&mut self, alea: u16) -> u64 {
+        // `1_000 * 2^essais`, sans jamais déborder : au-delà du plafond, la
+        // valeur exacte n'a plus d'importance.
+        let brut = RECUL_INITIAL_MS
+            .checked_shl(self.essais)
+            .unwrap_or(u64::MAX)
+            .min(self.plafond_ms);
+
+        self.essais = self.essais.saturating_add(1);
+
+        // Le bruit, en arithmétique entière : de 80 % à 120 %.
+        //
+        // **L'ORDRE DES OPÉRATIONS COMPTE.** Multiplier avant de diviser garde
+        // la précision ; l'inverse ramènerait tous les petits délais à zéro, et
+        // un délai nul est la boucle serrée qu'on évite.
+        let centiemes = 100_u64.saturating_sub(BRUIT_CENTIEMES).saturating_add(
+            u64::from(alea)
+                .saturating_mul(BRUIT_CENTIEMES.saturating_mul(2))
+                .checked_div(u64::from(u16::MAX))
+                .unwrap_or(0),
+        );
+        let bruite = brut
+            .saturating_mul(centiemes)
+            .checked_div(100)
+            .unwrap_or(brut);
+
+        // **JAMAIS ZÉRO.** Un délai nul ferait tourner la reprise en boucle
+        // serrée, ce qui est exactement l'inverse de ce qu'elle protège.
+        bruite.max(1)
+    }
+
+    /// La connexion a abouti : le recul repart de zéro.
+    pub const fn reussite(&mut self) {
+        self.essais = 0;
+    }
+
+    /// Le nombre d'échecs consécutifs.
+    #[must_use]
+    pub const fn essais(&self) -> u32 {
+        self.essais
+    }
+}
+
+// ── L'identité d'une machine ────────────────────────────────────────────────
+
+/// Ce qu'une machine détient, et ce qu'elle en fait.
+///
+/// # LA CLÉ EST GÉNÉRÉE ICI, ET ELLE NE SORT PAS
+///
+/// L'annuaire ne connaît que la partie publique (`modele.md` §2.3). **Aucun
+/// secret partagé n'est posé sur la machine** : ce qui s'y tape est un code
+/// d'enrôlement à usage unique, qui n'ouvre qu'une opération — lier cette clé.
+#[derive(Debug)]
+pub struct Identite {
+    machine: Identifiant,
+    secrete: CleSecrete,
+}
+
+impl Identite {
+    /// Fabrique une identité à partir de trente-deux octets d'entropie.
+    ///
+    /// **L'aléa vient de l'appelant**, et sa qualité est sa responsabilité :
+    /// une clé tirée d'un compteur serait devinable, et toute
+    /// l'authentification du produit repose là-dessus.
+    ///
+    /// # Erreurs
+    ///
+    /// [`Faute::PasUneMachine`].
+    pub fn nouvelle(machine: Identifiant, entropie: [u8; 32]) -> Result<Self, Faute> {
+        if machine.genre() != Genre::Machine {
+            return Err(Faute::PasUneMachine {
+                obtenu: machine.genre(),
+            });
+        }
+        Ok(Self {
+            machine,
+            secrete: CleSecrete::depuis_entropie(entropie),
+        })
+    }
+
+    /// L'identifiant de la machine.
+    #[must_use]
+    pub const fn machine(&self) -> Identifiant {
+        self.machine
+    }
+
+    /// La clé publique, celle qu'on confie à l'annuaire à l'enrôlement.
+    #[must_use]
+    pub fn publique(&self) -> ClePublique {
+        self.secrete.publique()
+    }
+
+    /// Répond au défi de l'annuaire.
+    ///
+    /// La liaison de canal doit être un *exporter* TLS de la connexion en
+    /// cours ; sans elle, un relais reste possible (`asl_cle`).
+    ///
+    /// # Erreurs
+    ///
+    /// Celles d'`asl_cle`. **Elles ne peuvent pas arriver ici** : le
+    /// constructeur a déjà refusé tout identifiant qui n'est pas une machine.
+    ///
+    /// Le `Result` est donc une formalité, et il est PROPAGÉ TEL QUEL plutôt
+    /// que traduit. Une traduction aurait posé une branche que rien ne peut
+    /// atteindre — du code mort sur un chemin cryptographique, c'est-à-dire
+    /// du code que personne n'éprouvera jamais et que tout le monde croira
+    /// éprouvé.
+    pub fn repondre(&self, defi: &Defi, liaison: &LiaisonDeCanal) -> Result<Signature, FauteDeCle> {
+        self.secrete.signer(self.machine, defi, liaison)
+    }
+
+    /// Compose l'annonce de ce daemon.
+    ///
+    /// **L'annonce est validée à la construction** : une annonce qui existe est
+    /// une annonce valide, et le daemon apprend ici — et non après un
+    /// aller-retour réseau — qu'il annonce deux fois le même point ou qu'il n'en
+    /// annonce aucun.
+    ///
+    /// # Erreurs
+    ///
+    /// [`Faute::Protocole`].
+    pub fn annoncer<'a>(
+        &self,
+        service: NomService<'a>,
+        points: &'a [PointEcoute],
+        adresses_locales: &'a [IpAddr],
+    ) -> Result<Annonce<'a>, Faute> {
+        Annonce::nouvelle(self.machine, service, points, adresses_locales).map_err(Faute::Protocole)
+    }
+}

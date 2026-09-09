@@ -1,0 +1,40 @@
+# Crate de fuzzing d'air-service-locator-client (cargo-fuzz). **HORS du
+# workspace**, pour les trois raisons écrites dans le dépôt serveur — et une
+# quatrième qui n'appartient qu'à celui-ci.
+#
+#   1. **LE GRAPHE.** `libfuzzer-sys` et `arbitrary` n'ont rien à faire dans le
+#      `Cargo.lock` de ce qu'un tiers embarque. `check-pile.sh`,
+#      `check-sans-c.sh` et `check-couverture.sh` le lisent tous les trois.
+#   2. **LES DRAPEAUX** du sanitizer n'ont rien à faire dans la vérification
+#      ordinaire.
+#   3. **RIEN D'ICI N'EST LIVRÉ.**
+#   4. **ET C'EST CE DÉPÔT QUE DES TIERS EMBARQUENT.** Une dépendance de plus
+#      dans son lock est une dépendance de plus dans l'interpréteur Python de
+#      quelqu'un d'autre. La séparation n'est pas une hygiène ici, c'est une
+#      condition d'emploi.
+#
+# Lancement : `scripts/check-fuzz.sh` (voir README.md).
+
+[package]
+name = "air-service-locator-client-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MPL-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+[dependencies.asl-client]
+path = "../crates/asl-client"
+
+[[bin]]
+name = "fuzz_asl_client_reprise"
+path = "fuzz_targets/fuzz_asl_client_reprise.rs"
+test = false
+doc = false
+bench = false

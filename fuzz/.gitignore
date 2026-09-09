@@ -1,0 +1,16 @@
+# Ce que libFuzzer produit.
+target/
+artifacts/
+
+# LE CORPUS N'EST PAS VERSIONNÉ, ET CE N'EST PAS DÉFINITIF.
+#
+# libFuzzer garde TOUTE entrée qui apporte un chemin nouveau, y compris des
+# milliers de variantes qui couvrent le même : sur `air-mail-server`, treize
+# campagnes de vingt secondes avaient laissé 135 000 fichiers. Versionner cela
+# avant d'avoir de quoi le réduire (`cargo fuzz cmin`) coûterait plus qu'il
+# n'apporterait, et l'historique garde ce qu'on y met.
+#
+# `seeds/`, lui, EST versionné : il est écrit à la main, il est petit, et c'est
+# lui qui évite qu'une campagne de vingt secondes passe son temps à redécouvrir
+# qu'un identifiant commence par une lettre et un tiret.
+corpus/

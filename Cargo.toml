@@ -45,6 +45,12 @@ members = [
     "crates/asl-cli",
 ]
 
+# `fuzz/` est une crate cargo-fuzz HORS de ce workspace : `libfuzzer-sys` et
+# `arbitrary` n'ont rien à faire dans le lock de ce qu'un tiers embarque, et les
+# drapeaux du sanitizer n'ont rien à faire dans la vérification ordinaire. Les
+# raisons complètes sont en tête de `fuzz/Cargo.toml`.
+exclude = ["fuzz"]
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
@@ -65,8 +71,9 @@ repository = "https://github.com/air-desktop-project/air-service-locator-client"
 asl-client = { path = "crates/asl-client", version = "0.1.0" }
 
 # La grammaire, tirée du dépôt qui porte les spécifications.
-asl-id = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "91f3119c91f633d9d61c19a2f3356b427c585526" }
-asl-proto = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "91f3119c91f633d9d61c19a2f3356b427c585526" }
+asl-id = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "a0795c8ddd6d060c360803737fab12abdc6361a8" }
+asl-proto = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "a0795c8ddd6d060c360803737fab12abdc6361a8" }
+asl-cle = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "a0795c8ddd6d060c360803737fab12abdc6361a8" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "forbid"

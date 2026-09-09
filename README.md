@@ -4,14 +4,19 @@
 auprès d'un annuaire `air-service-locator`, celle qu'un de ses clients lie pour
 retrouver un port, ses liaisons vers cinq langages, et l'utilitaire `asl`.
 
-> ## État : une arborescence, et rien qui fonctionne
+> ## État : la logique, pas encore le transport
 >
-> Les trois crates compilent, sont lintées et formatées, et la CI les vérifie —
-> mais **aucune n'expose la moindre fonction**. Les spécifications sont écrites
-> (dépôt serveur, `docs/`) ; le code ne l'est pas.
+> **`asl-client` porte la politique de reprise et l'identité d'une machine**,
+> couvertes à 100 % et éprouvées par le fuzz.
 >
-> `asl` le dit quand on le lance, plutôt que d'afficher une aide qui
-> promettrait des commandes qui n'existent pas.
+> **Le transport n'est pas câblé.** Tant que la pile QUIC ne l'est pas, cette
+> crate ne fait aucune entrée-sortie et reste `no_std`. Ce n'est pas un état
+> subi : c'est ce qui permet d'éprouver la reprise sans attendre une seconde de
+> délai — soixante-dix échecs consécutifs coûtent une boucle, là où un vrai
+> recul exponentiel y mettrait des années.
+>
+> `asl-client-ffi` n'exporte encore rien, et `asl` le dit quand on le lance
+> plutôt que de promettre des commandes qui n'existent pas.
 
 ## Le problème
 
@@ -79,6 +84,21 @@ annuaires dans l'ordre, et réessaie avec un recul exponentiel et un bruit de
 en a pas d'autre : l'état vivant n'est délibérément pas répliqué entre annuaires,
 parce qu'il se reconstruit ici, tout seul, en un keepalive.
 
+Trois propriétés le tiennent, et la cible de fuzz les vérifie sur n'importe
+quelle suite d'événements :
+
+- **Le délai n'est jamais nul.** Ce serait la boucle serrée qu'on évite.
+- **Il ne dépasse jamais le plafond bruité.** Sinon un daemon attendrait plus
+  longtemps que son propre keepalive, et son bail tomberait pendant qu'il
+  patiente.
+- **Le compteur d'essais sature au lieu de déborder.** Après soixante-quatre
+  échecs, un décalage non saturé rendrait un délai nul — et la reprise
+  deviendrait exactement l'attaque qu'elle protège contre.
+
+**Le bruit n'est pas du raffinement.** Sans lui, mille daemons dont l'annuaire
+vient de tomber réessaient à la même seconde et le remettent à terre à l'instant
+où il se relève.
+
 ## Ce que le porteur doit poser sur une machine
 
 **Une paire de clés Ed25519 que la bibliothèque génère ELLE-MÊME**, et dont la
@@ -113,13 +133,18 @@ pouvoir la tirer d'un registre, pas d'un dépôt git dont il ne sait rien.
 ## Les barrières
 
 ```sh
-scripts/check-tout.sh     # compile, clippy, essais, format — dans cet ordre
+scripts/check-tout.sh     # sept barrières, le fuzz, la couverture et les essais
 scripts/check-dco.sh      # après avoir committé
 ```
 
-Celle qui manque et qui comptera le plus ici est `check-abi.sh`. Elle
-s'ajoutera avec la première fonction exportée, jamais avant : comparer un
-en-tête vide à un en-tête vide est une barrière qui n'a rien examiné.
+`check-sans-c.sh` **compte davantage ici que dans le dépôt serveur** : là-bas,
+une crate qui lierait du C s'exécuterait sur nos machines ; ici, elle serait
+chargée dans le processus de quelqu'un d'autre.
+
+`check-abi.sh` existe et **ne compare encore rien** : `asl-client-ffi` n'exporte
+aucune fonction, et il le dit plutôt que de rendre un OK muet. Le registre
+`abi.txt` existe déjà pour que la première fonction ne puisse pas entrer sans
+être inscrite.
 
 ## Les quatre dépôts
 

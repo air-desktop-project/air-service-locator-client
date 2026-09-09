@@ -22,6 +22,9 @@
 #      mauvaise toolchain ne vaut rien.
 #   2. `check-compile`   — une erreur de type se lit en une seconde.
 #   3. `check-pile`      — le graphe résolu, donc les dépendances transitives.
+#   3 bis. `check-sans-c` — le même graphe, et ce que la compilation a produit.
+#      Elle compte DAVANTAGE ici qu'au serveur : une crate qui lierait du C
+#      serait chargée dans le processus de quelqu'un d'autre.
 #   4. `check-abi`       — la surface exportée, lue dans le BINAIRE.
 #   5. `check-clippy`
 #   6. `cargo test`
@@ -50,6 +53,7 @@ barrieres=(
     scripts/check-toolchain.sh
     scripts/check-compile.sh
     scripts/check-pile.sh
+    scripts/check-sans-c.sh
     scripts/check-abi.sh
     scripts/check-clippy.sh
     scripts/check-format.sh
@@ -77,13 +81,31 @@ else
 fi
 echo
 
+echo "═══ scripts/check-fuzz.sh --smoke"
+if ./scripts/check-fuzz.sh --smoke; then
+    echo "─── scripts/check-fuzz.sh : OK"
+else
+    echo "─── scripts/check-fuzz.sh : ÉCHEC"
+    echecs+=("scripts/check-fuzz.sh")
+fi
+echo
+
+echo "═══ scripts/check-couverture.sh"
+if ./scripts/check-couverture.sh; then
+    echo "─── scripts/check-couverture.sh : OK"
+else
+    echo "─── scripts/check-couverture.sh : ÉCHEC"
+    echecs+=("scripts/check-couverture.sh")
+fi
+echo
+
 if [ "${#echecs[@]}" -gt 0 ]; then
     echo "ÉCHEC : ${#echecs[@]} barrière(s) refusent :"
     printf '  %s\n' "${echecs[@]}"
     exit 1
 fi
 
-echo "OK : les ${#barrieres[@]} barrières et les essais passent."
+echo "OK : les ${#barrieres[@]} barrières, le fuzz, la couverture et les essais passent."
 echo
 echo "Le DCO ne fait PAS partie de ce lot : il juge des messages de commit, donc"
 echo "il se lance APRÈS avoir committé — scripts/check-dco.sh."
