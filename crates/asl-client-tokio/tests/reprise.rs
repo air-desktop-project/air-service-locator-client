@@ -482,3 +482,65 @@ async fn un_annuaire_qui_ne_sert_pas_cette_route_le_dit_par_son_statut() {
     let _ = connexion.fermer().await;
     tache.abort();
 }
+
+// ── LE MAINTIEN, ET D'OÙ VIENT SA CADENCE ───────────────────────────────────
+
+#[tokio::test]
+async fn la_cadence_de_maintien_vient_du_bail_que_l_annuaire_annonce() {
+    // ── CE QUE CET ESSAI PROUVE ─────────────────────────────────────────────
+    //
+    // `modele.md` §4.1 : les deux valeurs du bail viennent du SERVEUR,
+    // précisément pour qu'on puisse les changer sans mettre à jour les daemons
+    // installés chez des tiers. Figer la cadence dans le client aurait rendu la
+    // mesure inutile le jour où elle a eu lieu.
+    //
+    // Le banc annonce sept secondes — une valeur qui ne ressemble à aucun
+    // défaut, pour qu'en la retrouvant on prouve qu'elle a VOYAGÉ.
+    let (_atelier, autorite, cert, cle) = materiel("maintien");
+    let (adresse, tache) = lever(cert, cle, FauxAnnuaire).await;
+
+    let mut connexion = Connexion::ouvrir(adresse, "localhost", &autorite, &|| [0x41; 16])
+        .await
+        .expect("la poignée de main");
+    assert_eq!(
+        connexion.maintien_us(),
+        0,
+        "rien ne se maintient avant d'avoir annoncé : il n'y a pas de bail"
+    );
+
+    let corps = connexion
+        .annoncer_encodee(b"peu importe : le banc ne le lit pas")
+        .await
+        .expect("le banc prend l'annonce");
+    let cadence = asl_client_tokio::cadence_du_bail(&corps).expect("le bail se lit");
+    assert_eq!(cadence, banc::CADENCE_DU_BANC);
+
+    connexion.maintenir(cadence);
+    assert_eq!(
+        connexion.maintien_us(),
+        u64::from(banc::CADENCE_DU_BANC) * 1_000_000,
+        "la cadence annoncée doit atteindre la connexion"
+    );
+
+    // **ZÉRO ARRÊTE LE MAINTIEN**, et c'est ce qui permet de le couper sans
+    // fermer la connexion.
+    connexion.maintenir(0);
+    assert_eq!(connexion.maintien_us(), 0);
+
+    let _ = connexion.fermer().await;
+    tache.abort();
+}
+
+#[tokio::test]
+async fn une_reponse_illisible_ne_regle_aucune_cadence() {
+    // **ET NE ROMPT PAS L'ATTACHE** : l'annuaire a rendu 200, l'annonce est
+    // prise. Ce qu'on perd est le maintien — la connexion vit quand même, elle
+    // se refait simplement à chaque délai d'inactivité, ce qui était le
+    // comportement d'avant. Refuser ici retirerait un service qui écoute.
+    for corps in [&b""[..], &b"{"[..], &[0x5A_u8; 4][..]] {
+        assert!(
+            asl_client_tokio::cadence_du_bail(corps).is_err(),
+            "{corps:?} n'est pas une réponse d'annonce"
+        );
+    }
+}

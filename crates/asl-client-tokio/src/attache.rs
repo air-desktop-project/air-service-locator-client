@@ -440,8 +440,21 @@ async fn tenir(
         return false;
     }
     for annonce in annonces {
-        if connexion.annoncer_encodee(annonce).await.is_err() {
+        let Ok(reponse) = connexion.annoncer_encodee(annonce).await else {
             return false;
+        };
+        // **LA CADENCE DE MAINTIEN VIENT D'ICI, ET DE NULLE PART AILLEURS.**
+        // `modele.md` §4.1 : les deux valeurs du bail viennent du serveur,
+        // précisément pour qu'on puisse les changer sans mettre à jour les
+        // daemons installés chez des tiers. Les figer dans cette boucle aurait
+        // rendu la mesure inutile le jour où elle a eu lieu.
+        //
+        // **UNE RÉPONSE ILLISIBLE NE ROMPT PAS L'ATTACHE** : l'annonce est
+        // prise — l'annuaire a rendu 200 —, et ce qu'on perd est le maintien.
+        // Sans lui la connexion vit quand même, elle se refait simplement à
+        // chaque délai d'inactivité, ce qui était le comportement d'avant.
+        if let Ok(bail) = cadence_du_bail(&reponse) {
+            connexion.maintenir(bail);
         }
     }
 
@@ -459,7 +472,8 @@ async fn tenir(
     partage.attaches.fetch_add(1, Ordering::Relaxed);
 
     // **IL N'Y A RIEN À RÉANNONCER PÉRIODIQUEMENT.** La connexion est le bail :
-    // tenir l'une tient l'autre, et le keepalive est celui de QUIC.
+    // tenir l'une tient l'autre, et le maintien posé plus haut la tient ouverte
+    // — c'est `poll_transmit`, appelé par `entretenir`, qui pose le `PING`.
     while connexion.vivante() && !partage.retrait.load(Ordering::Acquire) {
         if connexion.entretenir(ENTRETIEN_MS).await.is_err() {
             break;
@@ -491,4 +505,23 @@ fn recueillir_les_poussees(connexion: &mut Connexion, partage: &Partage) {
     if let Ok(mut place) = partage.poussee.lock() {
         *place = Some(derniere);
     }
+}
+
+/// La cadence de maintien qu'une réponse d'annonce annonce, en secondes.
+///
+/// **PUBLIQUE POUR QU'UN PORTEUR QUI TIENT SA PROPRE BOUCLE PUISSE LA POSER.**
+/// `Attache` s'en charge seule ; un daemon qui n'emploie que `Connexion` doit
+/// pouvoir faire la même chose, sans réécrire un décodeur.
+///
+/// # POURQUOI ON DÉCODE LA RÉPONSE ENTIÈRE POUR DEUX OCTETS
+///
+/// Parce que c'est le décodeur du protocole, et qu'il refuse ce qui n'est pas
+/// une réponse. Chercher `"keepalive_secondes":` dans le texte marcherait
+/// aujourd'hui et accepterait demain une réponse mal formée dont ce champ
+/// seul serait lisible — c'est-à-dire qu'on réglerait une cadence sur un message
+/// qu'on n'a pas compris.
+pub fn cadence_du_bail(corps: &[u8]) -> Result<u16, asl_proto::Erreur> {
+    let mut tampons = asl_proto::cadrage::TamponsReponse::nouveaux();
+    let lue = asl_proto::Reponse::decoder(corps, &mut tampons)?;
+    Ok(lue.bail.keepalive_secondes())
 }

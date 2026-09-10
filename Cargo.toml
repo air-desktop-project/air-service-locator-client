@@ -73,9 +73,9 @@ asl-client = { path = "crates/asl-client", version = "0.1.0" }
 asl-client-tokio = { path = "crates/asl-client-tokio", version = "0.1.0" }
 
 # La grammaire, tirée du dépôt qui porte les spécifications.
-asl-id = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "8315394f2e7bfb226d6d691239ef8ab831a61c0b" }
-asl-proto = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "8315394f2e7bfb226d6d691239ef8ab831a61c0b" }
-asl-cle = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "8315394f2e7bfb226d6d691239ef8ab831a61c0b" }
+asl-id = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "cb3fd69" }
+asl-proto = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "cb3fd69" }
+asl-cle = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "cb3fd69" }
 
 # ── LA PILE QUIC ET HTTP/3, EMPRUNTÉE À `air-mail-server` (C15) ─────────────
 #
@@ -95,14 +95,14 @@ asl-cle = { git = "https://github.com/air-desktop-project/air-service-locator-se
 #
 # Épinglées sur un COMMIT, jamais sur une branche : une branche qui avance
 # changerait le code compilé ici sans qu'une ligne de ce dépôt ait bougé.
-ams-h3 = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "ae66d9fd218768e2be6105e48b8358bb42ba49a1" }
-ams-proto-http = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "ae66d9fd218768e2be6105e48b8358bb42ba49a1" }
-ams-quic-client = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "ae66d9fd218768e2be6105e48b8358bb42ba49a1" }
-ams-proto-h3 = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "ae66d9fd218768e2be6105e48b8358bb42ba49a1" }
-ams-proto-quic = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "ae66d9fd218768e2be6105e48b8358bb42ba49a1" }
-ams-quic = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "ae66d9fd218768e2be6105e48b8358bb42ba49a1" }
-ams-quic-tls = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "ae66d9fd218768e2be6105e48b8358bb42ba49a1" }
-ams-tls = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "ae66d9fd218768e2be6105e48b8358bb42ba49a1" }
+ams-h3 = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "86ccad044" }
+ams-proto-http = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "86ccad044" }
+ams-quic-client = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "86ccad044" }
+ams-proto-h3 = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "86ccad044" }
+ams-proto-quic = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "86ccad044" }
+ams-quic = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "86ccad044" }
+ams-quic-tls = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "86ccad044" }
+ams-tls = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "86ccad044" }
 
 # `rustls` POUR LA CONFIGURATION CLIENTE, et rien d'autre : les racines à qui
 # l'on fait confiance, et le nom qu'on exige du certificat. Le chiffrement, lui,

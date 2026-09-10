@@ -18,10 +18,16 @@ use std::net::ToSocketAddrs as _;
 
 fn main() -> std::process::ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    let [cible, nom, racines] = match arguments.as_slice() {
-        [a, b, c] => [a.clone(), b.clone(), c.clone()],
+    let (cible, nom, racines, tenir) = match arguments.as_slice() {
+        [a, b, c] => (a.clone(), b.clone(), c.clone(), 0_u64),
+        [a, b, c, d] => (
+            a.clone(),
+            b.clone(),
+            c.clone(),
+            d.parse().unwrap_or_default(),
+        ),
         _ => {
-            eprintln!("usage : joindre <hôte:port> <nom exigé> <racines.pem>");
+            eprintln!("usage : joindre <hôte:port> <nom exigé> <racines.pem> [secondes]");
             return std::process::ExitCode::from(1);
         }
     };
@@ -61,11 +67,29 @@ fn main() -> std::process::ExitCode {
             octets
         };
         match asl_client_tokio::Connexion::ouvrir(adresse, &nom, &pem, &alea).await {
-            Ok(connexion) => {
+            Ok(mut connexion) => {
                 println!(
                     "✓ poignée de main faite, socket locale {:?}",
                     connexion.locale()
                 );
+                for seconde in 1..=tenir {
+                    // `entretenir` est ce que la boucle d'attache appelle : elle
+                    // lit ce qui arrive, puis émet ce que QUIC a à dire. Si rien
+                    // n'émet de keepalive, elle n'émet rien.
+                    let issue = connexion.entretenir(1_000).await;
+                    println!(
+                        "  {seconde:>3} s : vivante={} {}",
+                        connexion.vivante(),
+                        match issue {
+                            Ok(()) => String::new(),
+                            Err(quoi) => format!("— {quoi}"),
+                        }
+                    );
+                    if !connexion.vivante() {
+                        println!("✗ la connexion est tombée au bout de {seconde} s de silence");
+                        return std::process::ExitCode::from(4);
+                    }
+                }
                 std::process::ExitCode::SUCCESS
             }
             Err(quoi) => {

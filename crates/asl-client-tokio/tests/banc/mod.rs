@@ -88,7 +88,17 @@ impl ams_h3::Service for FauxAnnuaire {
             (Method::Get, b"/v1/defi") => (StatusCode::OK, asl_cle::DEFI_OCTETS),
             // La preuve est acceptée, et il n'y a rien à dire de plus.
             (Method::Post, b"/v1/defi") => (StatusCode::NO_CONTENT, 0),
-            (Method::Post, b"/v1/annonce") => (StatusCode::OK, 4),
+            // **UNE VRAIE RÉPONSE, ET NON QUATRE OCTETS DE REMPLISSAGE.**
+            // Elle portait `[0x5A; 4]`, ce qui suffisait tant que personne ne la
+            // LISAIT. Le client y prend maintenant la cadence de maintien — et
+            // un banc qui rendrait n'importe quoi laisserait ce chemin-là
+            // silencieusement mort.
+            (Method::Post, b"/v1/annonce") => {
+                let corps = reponse_d_annonce();
+                let place = sortie.get_mut(..corps.len()).unwrap_or_default();
+                place.copy_from_slice(&corps);
+                return ams_h3::Reponse::new(StatusCode::OK, place);
+            }
             _ => (StatusCode::NOT_FOUND, 0),
         };
         let place = sortie.get_mut(..combien).unwrap_or_default();
@@ -265,4 +275,41 @@ pub async fn adresse_morte() -> SocketAddr {
     let adresse = socket.local_addr().expect("une adresse");
     drop(socket);
     adresse
+}
+
+/// La cadence que le banc annonce dans son bail, en secondes.
+///
+/// **UNE VALEUR QUI NE RESSEMBLE À AUCUN DÉFAUT** : ni dix ni trente, pour qu'un
+/// essai qui la retrouve prouve qu'elle a bien voyagé, et non qu'une constante
+/// se trouvait là par hasard.
+pub const CADENCE_DU_BANC: u16 = 7;
+
+/// Ce que le banc répond à une annonce, encodé comme sur le fil.
+fn reponse_d_annonce() -> Vec<u8> {
+    let service = asl_id::Identifiant::depuis_entropie(asl_id::Genre::Service, [0x2B; 16]);
+    let bail = asl_proto::Bail::nouveau(CADENCE_DU_BANC, CADENCE_DU_BANC * 3).expect("un bail");
+    let vu_depuis = asl_proto::VuDepuis {
+        adresse: core::net::IpAddr::V4(core::net::Ipv4Addr::new(203, 0, 113, 7)),
+        port: asl_proto::Port::depuis_u16(49_152).expect("un port"),
+    };
+    let joignabilite = [asl_proto::Joignabilite {
+        point: asl_proto::PointEcoute::nouveau(
+            asl_proto::Protocole::Tcp,
+            asl_proto::Port::depuis_u16(49_152).expect("un port"),
+        ),
+        verdict: asl_proto::Verdict::EnCours,
+    }];
+    let reponse = asl_proto::Reponse::nouvelle(
+        service,
+        bail,
+        vu_depuis,
+        asl_proto::VerdictNat::Indetermine,
+        &joignabilite,
+    )
+    .expect("une réponse valide");
+
+    let mut tampon = vec![0_u8; asl_proto::cadrage::MESSAGE_MAX];
+    let ecrit = reponse.encoder(&mut tampon).expect("elle s'encode");
+    tampon.truncate(ecrit);
+    tampon
 }

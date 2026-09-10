@@ -41,7 +41,7 @@ mod attache;
 mod pont;
 mod reponse;
 
-pub use attache::{Annuaire, Attache, Etat, Reglages, joindre};
+pub use attache::{Annuaire, Attache, Etat, Reglages, cadence_du_bail, joindre};
 pub use pont::Pont;
 pub use reponse::Reponse;
 
@@ -502,6 +502,35 @@ impl Connexion {
     #[must_use]
     pub const fn vivante(&self) -> bool {
         !self.quic.is_closed()
+    }
+
+    /// Maintient cette connexion à la cadence que l'annuaire a annoncée.
+    ///
+    /// # C'EST CE QUI TIENT LE MAPPAGE OUVERT, ET RIEN D'AUTRE NE LE FAIT
+    ///
+    /// `modele.md` §4.1 promet que « le mapping NAT reste ouvert par le
+    /// keepalive lui-même ». **Cette promesse n'était tenue par personne** : la
+    /// pile QUIC n'émettait rien de périodique, et cette boucle-ci ne fait que
+    /// lire. Une annonce silencieuse mourait donc à chaque délai d'inactivité, et
+    /// ne revenait que par une reconnexion complète.
+    ///
+    /// `bancs/nat/` a mesuré ce que le silence coûte : sur un lien résidentiel,
+    /// le chemin meurt entre 28 et 30 secondes, en IPv4 comme en IPv6.
+    ///
+    /// # LA CADENCE VIENT DU SERVEUR, ET N'EST PAS FIGÉE ICI
+    ///
+    /// C'est tout l'objet du bail (`modele.md` §4.1) : la changer après une
+    /// campagne de mesure ne doit pas exiger de mettre à jour les daemons
+    /// installés chez des tiers. **Zéro arrête le maintien.**
+    pub fn maintenir(&mut self, secondes: u16) {
+        self.quic
+            .set_keepalive(u64::from(secondes).saturating_mul(1_000_000), maintenant());
+    }
+
+    /// La cadence de maintien en cours, en microsecondes ; zéro si aucune.
+    #[must_use]
+    pub fn maintien_us(&self) -> u64 {
+        self.quic.keepalive()
     }
 
     /// Retire l'annonce, en fermant proprement.
