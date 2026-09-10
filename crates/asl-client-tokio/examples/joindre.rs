@@ -18,16 +18,24 @@ use std::net::ToSocketAddrs as _;
 
 fn main() -> std::process::ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    let (cible, nom, racines, tenir) = match arguments.as_slice() {
-        [a, b, c] => (a.clone(), b.clone(), c.clone(), 0_u64),
+    let (cible, nom, racines, tenir, cadence) = match arguments.as_slice() {
+        [a, b, c] => (a.clone(), b.clone(), c.clone(), 0_u64, 0_u16),
         [a, b, c, d] => (
             a.clone(),
             b.clone(),
             c.clone(),
             d.parse().unwrap_or_default(),
+            0_u16,
+        ),
+        [a, b, c, d, e] => (
+            a.clone(),
+            b.clone(),
+            c.clone(),
+            d.parse().unwrap_or_default(),
+            e.parse().unwrap_or_default(),
         ),
         _ => {
-            eprintln!("usage : joindre <hôte:port> <nom exigé> <racines.pem> [secondes]");
+            eprintln!("usage : joindre <hôte:port> <nom exigé> <racines.pem> [secondes] [cadence]");
             return std::process::ExitCode::from(1);
         }
     };
@@ -72,6 +80,14 @@ fn main() -> std::process::ExitCode {
                     "✓ poignée de main faite, socket locale {:?}",
                     connexion.locale()
                 );
+                // **LA CADENCE À LA MAIN, ICI SEULEMENT.** Un daemon la lit
+                // dans le bail que l'annuaire lui rend ; cet exemple n'annonce
+                // rien, donc il n'a pas de bail — et sans elle, on mesurerait le
+                // silence au lieu du maintien.
+                if cadence > 0 {
+                    connexion.maintenir(cadence);
+                    println!("  maintien : {cadence} s");
+                }
                 for seconde in 1..=tenir {
                     // `entretenir` est ce que la boucle d'attache appelle : elle
                     // lit ce qui arrive, puis émet ce que QUIC a à dire. Si rien
