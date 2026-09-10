@@ -40,7 +40,7 @@ dependencies = [
 [[package]]
 name = "ams-dane"
 version = "0.1.0"
-source = "git+https://github.com/air-desktop-project/air-mail-server.git?rev=932ce354d#932ce354d8ab70e12be1670ead42f33aa8977e35"
+source = "git+https://github.com/air-desktop-project/air-mail-server.git?rev=6f0ea51b6#6f0ea51b6920c114ec6bd3c182106662296ef9e8"
 dependencies = [
  "sha2",
 ]
@@ -48,12 +48,12 @@ dependencies = [
 [[package]]
 name = "ams-field-codec"
 version = "0.1.0"
-source = "git+https://github.com/air-desktop-project/air-mail-server.git?rev=932ce354d#932ce354d8ab70e12be1670ead42f33aa8977e35"
+source = "git+https://github.com/air-desktop-project/air-mail-server.git?rev=6f0ea51b6#6f0ea51b6920c114ec6bd3c182106662296ef9e8"
 
 [[package]]
 name = "ams-h3"
 version = "0.1.0"
-source = "git+https://github.com/air-desktop-project/air-mail-server.git?rev=932ce354d#932ce354d8ab70e12be1670ead42f33aa8977e35"
+source = "git+https://github.com/air-desktop-project/air-mail-server.git?rev=6f0ea51b6#6f0ea51b6920c114ec6bd3c182106662296ef9e8"
 dependencies = [
  "ams-proto-h3",
  "ams-proto-http",
@@ -64,7 +64,7 @@ dependencies = [
 [[package]]
 name = "ams-proto-h3"
 version = "0.1.0"
-source = "git+https://github.com/air-desktop-project/air-mail-server.git?rev=932ce354d#932ce354d8ab70e12be1670ead42f33aa8977e35"
+source = "git+https://github.com/air-desktop-project/air-mail-server.git?rev=6f0ea51b6#6f0ea51b6920c114ec6bd3c182106662296ef9e8"
 dependencies = [
  "ams-field-codec",
  "ams-proto-http",
@@ -74,17 +74,17 @@ dependencies = [
 [[package]]
 name = "ams-proto-http"
 version = "0.1.0"
-source = "git+https://github.com/air-desktop-project/air-mail-server.git?rev=932ce354d#932ce354d8ab70e12be1670ead42f33aa8977e35"
+source = "git+https://github.com/air-desktop-project/air-mail-server.git?rev=6f0ea51b6#6f0ea51b6920c114ec6bd3c182106662296ef9e8"
 
 [[package]]
 name = "ams-proto-quic"
 version = "0.1.0"
-source = "git+https://github.com/air-desktop-project/air-mail-server.git?rev=932ce354d#932ce354d8ab70e12be1670ead42f33aa8977e35"
+source = "git+https://github.com/air-desktop-project/air-mail-server.git?rev=6f0ea51b6#6f0ea51b6920c114ec6bd3c182106662296ef9e8"
 
 [[package]]
 name = "ams-quic"
 version = "0.1.0"
-source = "git+https://github.com/air-desktop-project/air-mail-server.git?rev=932ce354d#932ce354d8ab70e12be1670ead42f33aa8977e35"
+source = "git+https://github.com/air-desktop-project/air-mail-server.git?rev=6f0ea51b6#6f0ea51b6920c114ec6bd3c182106662296ef9e8"
 dependencies = [
  "ams-proto-quic",
  "ams-quic-crypto",
@@ -93,7 +93,7 @@ dependencies = [
 [[package]]
 name = "ams-quic-client"
 version = "0.1.0"
-source = "git+https://github.com/air-desktop-project/air-mail-server.git?rev=932ce354d#932ce354d8ab70e12be1670ead42f33aa8977e35"
+source = "git+https://github.com/air-desktop-project/air-mail-server.git?rev=6f0ea51b6#6f0ea51b6920c114ec6bd3c182106662296ef9e8"
 dependencies = [
  "ams-proto-h3",
  "ams-proto-quic",
@@ -108,7 +108,7 @@ dependencies = [
 [[package]]
 name = "ams-quic-crypto"
 version = "0.1.0"
-source = "git+https://github.com/air-desktop-project/air-mail-server.git?rev=932ce354d#932ce354d8ab70e12be1670ead42f33aa8977e35"
+source = "git+https://github.com/air-desktop-project/air-mail-server.git?rev=6f0ea51b6#6f0ea51b6920c114ec6bd3c182106662296ef9e8"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -122,7 +122,7 @@ dependencies = [
 [[package]]
 name = "ams-quic-tls"
 version = "0.1.0"
-source = "git+https://github.com/air-desktop-project/air-mail-server.git?rev=932ce354d#932ce354d8ab70e12be1670ead42f33aa8977e35"
+source = "git+https://github.com/air-desktop-project/air-mail-server.git?rev=6f0ea51b6#6f0ea51b6920c114ec6bd3c182106662296ef9e8"
 dependencies = [
  "ams-proto-quic",
  "ams-quic",
@@ -134,7 +134,7 @@ dependencies = [
 [[package]]
 name = "ams-tls"
 version = "0.1.0"
-source = "git+https://github.com/air-desktop-project/air-mail-server.git?rev=932ce354d#932ce354d8ab70e12be1670ead42f33aa8977e35"
+source = "git+https://github.com/air-desktop-project/air-mail-server.git?rev=6f0ea51b6#6f0ea51b6920c114ec6bd3c182106662296ef9e8"
 dependencies = [
  "ams-dane",
  "ams-quic-crypto",
@@ -148,7 +148,7 @@ dependencies = [
 [[package]]
 name = "asl-cle"
 version = "0.1.0"
-source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=a033ca7#a033ca77eea48db1596ef0685eb5029f836bea47"
+source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=7174ac8#7174ac813888cf914218af97c00eb053957923c8"
 dependencies = [
  "asl-id",
  "ed25519-dalek",
@@ -211,12 +211,12 @@ dependencies = [
 [[package]]
 name = "asl-id"
 version = "0.1.0"
-source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=a033ca7#a033ca77eea48db1596ef0685eb5029f836bea47"
+source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=7174ac8#7174ac813888cf914218af97c00eb053957923c8"
 
 [[package]]
 name = "asl-proto"
 version = "0.1.0"
-source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=a033ca7#a033ca77eea48db1596ef0685eb5029f836bea47"
+source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=7174ac8#7174ac813888cf914218af97c00eb053957923c8"
 dependencies = [
  "asl-id",
 ]

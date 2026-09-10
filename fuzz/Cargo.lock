@@ -23,7 +23,7 @@ dependencies = [
 [[package]]
 name = "asl-cle"
 version = "0.1.0"
-source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=a033ca7#a033ca77eea48db1596ef0685eb5029f836bea47"
+source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=7174ac8#7174ac813888cf914218af97c00eb053957923c8"
 dependencies = [
  "asl-id",
  "ed25519-dalek",
@@ -42,12 +42,12 @@ dependencies = [
 [[package]]
 name = "asl-id"
 version = "0.1.0"
-source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=a033ca7#a033ca77eea48db1596ef0685eb5029f836bea47"
+source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=7174ac8#7174ac813888cf914218af97c00eb053957923c8"
 
 [[package]]
 name = "asl-proto"
 version = "0.1.0"
-source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=a033ca7#a033ca77eea48db1596ef0685eb5029f836bea47"
+source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=7174ac8#7174ac813888cf914218af97c00eb053957923c8"
 dependencies = [
  "asl-id",
 ]
