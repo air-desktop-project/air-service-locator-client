@@ -661,6 +661,30 @@ impl Connexion {
         reponse.exige(200)?;
         Ok(reponse.corps)
     }
+
+    /// Demande sous quelle adresse l'annuaire voit CETTE connexion.
+    ///
+    /// # ELLE N'EXIGE AUCUNE PREUVE, ET N'ANNONCE RIEN
+    ///
+    /// C'est tout son intérêt : la réponse à une annonce porte déjà le candidat
+    /// réflexif, mais il faut avoir annoncé pour l'obtenir — donc porter la
+    /// capacité d'annonce, et avoir un service à publier. Une machine de lecture
+    /// seule, ou un daemon dont le port n'est pas encore ouvert, n'avaient aucun
+    /// moyen de savoir sous quelle adresse ils sortent.
+    ///
+    /// **ELLE NE DIT RIEN DU NAT** : ce verdict se tranche en comparant cette
+    /// adresse à celles qu'un daemon ANNONCE, et qui n'a rien annoncé n'a rien à
+    /// comparer.
+    ///
+    /// # Errors
+    ///
+    /// [`Faute::Http3`], [`Faute::Socket`], [`Faute::Quic`], [`Faute::Delai`],
+    /// et [`Faute::Statut`] si l'annuaire ne sert pas cette route.
+    pub async fn vu(&mut self) -> Result<Vec<u8>, Faute> {
+        let reponse = self.requete(b"GET", b"/v1/vu", &[], b"").await?;
+        reponse.exige(200)?;
+        Ok(reponse.corps)
+    }
 }
 
 /// Encode une annonce, telle qu'elle partira sur le fil.

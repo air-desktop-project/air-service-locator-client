@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use asl_client::Identite;
-use asl_client_tokio::{Annuaire, Attache, Faute, Reglages, joindre};
+use asl_client_tokio::{Annuaire, Attache, Connexion, Faute, Reglages, joindre};
 use asl_id::{Genre, Identifiant};
 use banc::{FauxAnnuaire, adresse_morte, lever, materiel};
 
@@ -435,5 +435,50 @@ async fn l_attache_ouvre_le_flux_et_retient_la_derniere_poussee() {
     tokio::time::timeout(Duration::from_secs(5), attache.retirer())
         .await
         .expect("le retrait ne doit pas pendre");
+    tache.abort();
+}
+
+#[tokio::test]
+async fn on_apprend_d_ou_l_annuaire_nous_voit_sans_rien_annoncer() {
+    // **C'EST LA PREMIÈRE CHOSE QU'ON REGARDE** quand personne n'arrive à
+    // joindre un port. La réponse à une annonce porte déjà le candidat
+    // réflexif, mais il faut avoir annoncé pour l'obtenir — donc porter la
+    // capacité d'annonce, et avoir un service à publier.
+    let (_atelier, autorite, cert, cle) = materiel("vu");
+    let (adresse, tache) = lever(cert, cle, FauxAnnuaire).await;
+
+    let mut connexion = Connexion::ouvrir(adresse, "localhost", &autorite, &|| [0x31; 16])
+        .await
+        .expect("la poignée de main");
+    let corps = connexion.vu().await.expect("l'annuaire répond");
+    let texte = String::from_utf8_lossy(&corps).into_owned();
+    assert!(texte.contains(r#""adresse":"2001:db8::1c2d""#), "{texte}");
+    assert!(texte.contains(r#""port":49152"#), "{texte}");
+    // **LA FAMILLE EST ÉCRITE**, pour qu'aucune liaison n'ait à la déduire :
+    // chercher un `:` marche jusqu'à `::ffff:203.0.113.7`.
+    assert!(texte.contains(r#""famille":6"#), "{texte}");
+
+    let _ = connexion.fermer().await;
+    tache.abort();
+}
+
+#[tokio::test]
+async fn un_annuaire_qui_ne_sert_pas_cette_route_le_dit_par_son_statut() {
+    // **ET NON PAR UN CORPS VIDE** : un annuaire plus ancien ne connaît pas
+    // `/v1/vu`, et un diagnostic doit pouvoir distinguer « il ne sait pas » de
+    // « il n'a rien vu ». `FauxAnnuaire` rend `404` pour tout le reste.
+    let (_atelier, autorite, cert, cle) = materiel("vu-absente");
+    let (adresse, tache) = lever(cert, cle, FauxAnnuaire).await;
+
+    let mut connexion = Connexion::ouvrir(adresse, "localhost", &autorite, &|| [0x32; 16])
+        .await
+        .expect("la poignée de main");
+    let issue = connexion
+        .requete(b"GET", b"/v1/inconnue", &[], b"")
+        .await
+        .expect("l'annuaire répond quand même");
+    assert!(issue.exige(200).is_err(), "un 404 n'est pas un 200");
+
+    let _ = connexion.fermer().await;
     tache.abort();
 }

@@ -345,3 +345,89 @@ mod essais {
         assert!(reponse(b"ce n'est pas une reponse d'annuaire").is_err());
     }
 }
+
+/// Ce que `GET /v1/vu` rend, en une ligne.
+///
+/// # UNE RECHERCHE, ET NON UN ANALYSEUR
+///
+/// Ce corps est écrit par `asl-session`, à champs fixes et sans échappement :
+/// `{"adresse":"…","port":N,"famille":N}`. Tirer un analyseur JSON pour lire
+/// trois champs qu'on a écrits soi-même serait payer cher une généralité dont
+/// personne n'a besoin — c'est le même choix qu'`asl_client_tokio::Reponse`.
+///
+/// # Erreurs
+///
+/// Rend `Err` avec ce qui n'a pas pu être lu.
+pub fn vu(corps: &[u8]) -> Result<String, String> {
+    let texte = core::str::from_utf8(corps)
+        .map_err(|_| "la réponse n'est pas de l'UTF-8".to_owned())?
+        .to_owned();
+
+    let entre_guillemets = |apres: &str| -> Option<String> {
+        let reste = texte.split(apres).nth(1)?;
+        Some(reste.split('"').next()?.to_owned())
+    };
+    let nombre = |apres: &str| -> Option<String> {
+        let reste = texte.split(apres).nth(1)?;
+        Some(
+            reste
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>(),
+        )
+    };
+
+    let adresse =
+        entre_guillemets(r#""adresse":""#).ok_or_else(|| format!("pas d'adresse dans {texte}"))?;
+    let port = nombre(r#""port":"#).ok_or_else(|| format!("pas de port dans {texte}"))?;
+    let famille = nombre(r#""famille":"#).unwrap_or_default();
+
+    // **LES CROCHETS EN IPv6**, comme partout ailleurs : sans eux,
+    // `2001:db8::1:6630` est ambigu, et ce qu'on affiche ne se recopie pas.
+    let ou = if famille == "6" {
+        format!("[{adresse}]:{port}")
+    } else {
+        format!("{adresse}:{port}")
+    };
+    Ok(format!("{ou}   (IPv{famille})"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::vu;
+
+    #[test]
+    fn une_adresse_v6_porte_ses_crochets() {
+        // Sans eux, `2001:db8::1:6630` est ambigu : le dernier `:` sépare-t-il
+        // un port ou un groupe d'adresse ? Ce qu'on affiche doit se recopier.
+        let dit = vu(br#"{"adresse":"2001:db8::1","port":49152,"famille":6}"#).expect("lisible");
+        assert!(dit.starts_with("[2001:db8::1]:49152"), "{dit}");
+        assert!(dit.contains("IPv6"), "{dit}");
+    }
+
+    #[test]
+    fn une_adresse_v4_n_en_porte_pas() {
+        let dit = vu(br#"{"adresse":"203.0.113.7","port":1,"famille":4}"#).expect("lisible");
+        assert!(dit.starts_with("203.0.113.7:1"), "{dit}");
+        assert!(dit.contains("IPv4"), "{dit}");
+    }
+
+    #[test]
+    fn un_corps_qui_ne_dit_pas_ce_qu_on_attend_est_refuse() {
+        // **ET NON RENDU À MOITIÉ** : une ligne de diagnostic à demi remplie est
+        // pire qu'une ligne qui dit qu'elle n'a pas pu lire.
+        assert!(vu(b"{}").is_err());
+        assert!(vu(br#"{"port":1,"famille":4}"#).is_err());
+        assert!(vu(br#"{"adresse":"203.0.113.7","famille":4}"#).is_err());
+        assert!(vu(&[0xff, 0xfe]).is_err());
+    }
+
+    #[test]
+    fn une_famille_absente_ne_fait_pas_echouer_la_lecture() {
+        // **UN ANNUAIRE PLUS RÉCENT POURRAIT AJOUTER DES CHAMPS**, et un
+        // diagnostic qui refuserait de lire ce qu'il comprend pour un champ
+        // qu'il ne connaît pas ne rendrait service à personne.
+        let dit = vu(br#"{"adresse":"203.0.113.7","port":80,"quoi":"neuf"}"#).expect("lisible");
+        assert!(dit.starts_with("203.0.113.7:80"), "{dit}");
+    }
+}

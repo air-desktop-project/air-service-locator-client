@@ -75,6 +75,14 @@ impl ams_h3::Service for FauxAnnuaire {
         if matches!(tete.method(), Method::Get) && tete.path() == b"/v1/poussees" {
             return ams_h3::Reponse::new(StatusCode::OK, &[]).tenue();
         }
+        // **CE QUE L'ANNUAIRE VOIT DE NOUS**, et il le rend sans preuve : la
+        // question ne porte que sur la connexion qui la pose.
+        if matches!(tete.method(), Method::Get) && tete.path() == b"/v1/vu" {
+            let corps = br#"{"adresse":"2001:db8::1c2d","port":49152,"famille":6}"#;
+            let place = sortie.get_mut(..corps.len()).unwrap_or_default();
+            place.copy_from_slice(corps);
+            return ams_h3::Reponse::new(StatusCode::OK, place);
+        }
         let (code, combien) = match (tete.method(), tete.path()) {
             // Un défi : trente-deux octets, ni plus ni moins.
             (Method::Get, b"/v1/defi") => (StatusCode::OK, asl_cle::DEFI_OCTETS),

@@ -352,6 +352,18 @@ pub async fn diagnostic(invocation: &Invocation, dossier: &Path) -> Sortie {
         connexion.liaison().octets().len()
     );
 
+    // **CE QUE L'ANNUAIRE VOIT DE NOUS**, et c'est la première chose qu'on
+    // regarde quand personne n'arrive à joindre un port. `GET /v1/vu` n'exige
+    // aucune preuve et n'annonce rien ; un annuaire plus ancien ne la sert pas,
+    // et le dire vaut mieux que de faire échouer le diagnostic entier.
+    match connexion.vu().await {
+        Ok(corps) => match rendu::vu(&corps) {
+            Ok(dit) => println!("vu             {dit}"),
+            Err(quoi) => println!("vu             ILLISIBLE — {quoi}"),
+        },
+        Err(quoi) => println!("vu             INDISPONIBLE — {quoi}"),
+    }
+
     // L'identité, si elle existe.
     println!();
     match etat::lire(dossier) {
@@ -376,10 +388,10 @@ pub async fn diagnostic(invocation: &Invocation, dossier: &Path) -> Sortie {
 
     println!();
     println!(
-        "Ce que ce diagnostic NE dit pas : sous quelle adresse l'annuaire vous\n\
-         voit, et si vous êtes derrière un NAT. Aucune route ne les rend sans\n\
-         annoncer, et annoncer en douce laisserait un service que vous n'avez pas\n\
-         demandé. Pour les obtenir : asl annonce <service> <protocole>:<port>"
+        "Ce que ce diagnostic NE dit pas : si vous êtes derrière un NAT. Ce\n\
+         verdict se tranche en comparant l'adresse ci-dessus à celles que votre\n\
+         daemon ANNONCE, et qui n'a rien annoncé n'a rien à comparer. Pour\n\
+         l'obtenir : asl annonce <service> <protocole>:<port>"
     );
     let _ = connexion.fermer().await;
     Ok(())
