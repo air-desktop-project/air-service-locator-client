@@ -29,7 +29,7 @@ La voie mobile (`protocole.md` §2), en trois couches, sans une ligne de C :
 | `asl-client-tokio::{Tenue, CompteCree}`, `Connexion::{prouver_appareil, creer_compte, requete_mobile}` | Le transport : preuve portée sur la connexion, connexion **tenue** en tâche de fond (un geste biométrique par connexion, pas par requête), keepalive à 10 s. Elle ne se reconnecte pas seule — reprouver, c'est redemander un geste, et c'est l'app qui choisit quand. |
 | `asl-client-ffi::appareil` — `asl_appareil_*` (14 symboles, dans `abi.txt` et `asl.h`) | L'ABI C : un handle à part (`asl_appareil`), la **signature par rappel** (`asl_signataire`, appelée sur le fil de l'appelant), et un **verbe générique** `asl_appareil_requete` qui rend le JSON et le code d'état — le téléphone a un analyseur JSON, ce dépôt n'en tire pas. |
 | `asl-client-android` (cdylib) | Les symboles JNI `Java_org_airdesktop_servicelocator_reseau_Natif_*`, exportés depuis Rust avec la crate `jni` (admise dans `check-sans-c.sh` : des déclarations, pas du C). |
-| `scripts/construire-mobile.sh` | Produit `target/mobile/AslClient.xcframework` et `target/mobile/jniLibs/arm64-v8a/libasl_client_android.so`. Pas une barrière : il se lance sur le Mac. |
+| `scripts/construire-mobile.sh [ios\|android]` | Produit `target/mobile/AslClient.xcframework` et `target/mobile/jniLibs/arm64-v8a/libasl_client_android.so`. Pas une barrière : il se lance sur le Mac, et dans la CI de chaque application, pour sa moitié. |
 
 Et deux changements qui touchent tout le dépôt :
 

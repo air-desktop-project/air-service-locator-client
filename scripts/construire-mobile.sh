@@ -26,10 +26,21 @@
 #
 # Ce n'est PAS une barrière : ce script construit pour d'autres plates-formes
 # que celle où il tourne, et une CI Linux n'a pas Xcode. Il se lance à la main,
-# sur le Mac qui construit les applications.
+# sur le Mac qui construit les applications — et dans la CI de chaque
+# application, qui ne construit que sa moitié :
+#
+#   construire-mobile.sh            les deux
+#   construire-mobile.sh ios        le xcframework seul (Xcode, pas de NDK)
+#   construire-mobile.sh android    l'objet JNI seul (NDK, pas d'Xcode)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+quoi="${1:-tout}"
+case "$quoi" in
+    tout|ios|android) ;;
+    *) echo "usage : $0 [ios|android]" >&2; exit 2 ;;
+esac
 
 sortie="target/mobile"
 mkdir -p "$sortie"
@@ -38,6 +49,7 @@ echo 'construire-mobile — les objets natifs des applications iOS et Android'
 echo
 
 # ── iOS ──────────────────────────────────────────────────────────────────────
+if [ "$quoi" != android ]; then
 for cible in aarch64-apple-ios x86_64-apple-ios aarch64-apple-ios-sim; do
     echo "iOS : $cible"
     cargo build --release --quiet -p asl-client-ffi --target "$cible"
@@ -70,8 +82,10 @@ xcodebuild -create-xcframework \
     -library "$simulateur" -headers "$entetes" \
     -output "$sortie/AslClient.xcframework" >/dev/null
 echo "  → $sortie/AslClient.xcframework"
+fi
 
 # ── Android ──────────────────────────────────────────────────────────────────
+if [ "$quoi" != ios ]; then
 ndk="${ANDROID_NDK:-}"
 if [ -z "$ndk" ] && [ -n "${ANDROID_HOME:-}" ]; then
     ndk=$(ls -d "$ANDROID_HOME"/ndk/* 2>/dev/null | sort -V | tail -1 || true)
@@ -92,6 +106,7 @@ CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$clang" \
 mkdir -p "$sortie/jniLibs/arm64-v8a"
 cp target/aarch64-linux-android/release/libasl_client_android.so "$sortie/jniLibs/arm64-v8a/"
 echo "  → $sortie/jniLibs/arm64-v8a/libasl_client_android.so"
+fi
 
 echo
 echo "OK : les objets natifs sont dans $sortie/."
