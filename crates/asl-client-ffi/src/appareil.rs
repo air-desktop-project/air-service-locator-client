@@ -18,10 +18,11 @@
 //! signer, au moment exact où le protocole les exige. C'est là que le porteur
 //! pose son doigt, et pas avant.
 //!
-//! **Le rappel est fait sur le fil de l'appelant**, à l'intérieur de l'appel
-//! qui l'a provoqué. Une application qui appelle depuis son fil d'interface
-//! bloquerait donc ce fil pendant l'invite biométrique — elle appelle depuis un
-//! fil de fond, comme pour toute entrée-sortie.
+//! **Le rappel est fait pendant l'appel qui l'a provoqué**, sur un fil de la
+//! bibliothèque à grande pile ([`PILE_OCTETS`] dit pourquoi) ; l'appelant est
+//! bloqué jusqu'au retour. Une application qui appelle depuis son fil
+//! d'interface le bloquerait donc pendant l'invite biométrique — elle appelle
+//! depuis un fil de fond, comme pour toute entrée-sortie.
 //!
 //! # UN VERBE GÉNÉRIQUE POUR LES RESSOURCES
 //!
@@ -63,6 +64,38 @@ pub const ASL_PLATEFORME_APPLE: u8 = 1;
 /// Play Integrity.
 pub const ASL_PLATEFORME_GOOGLE: u8 = 2;
 
+/// La pile du fil sur lequel les appels bloquants tournent.
+///
+/// # HUIT MÉBIOCTETS, ET POURQUOI CE N'EST PAS LE FIL DE L'APPELANT
+///
+/// La connexion QUIC d'`ams-quic-tls` fait cent trente-six kibioctets, et
+/// elle s'ÉTABLIT sur la pile — plus les machines d'état des futures qui
+/// l'entourent. Un fil secondaire d'iOS a cinq cent douze kibioctets, un fil
+/// Android un mébioctet : la première tentative de connexion depuis une
+/// application est morte d'un `SIGBUS` sur la garde de pile, sans un mot.
+///
+/// Une bibliothèque ne peut pas exiger de son hôte la taille de ses fils.
+/// Chaque appel bloquant tourne donc sur un fil à nous, créé pour lui et
+/// rejoint à sa fin. **Le rappel de signature est donc fait sur CE fil**, et
+/// non sur celui de l'appelant — lequel est de toute façon bloqué le temps de
+/// l'appel, et n'a rien d'autre à faire.
+const PILE_OCTETS: usize = 8 * 1024 * 1024;
+
+/// Fait tourner cette future jusqu'au bout, sur un fil à grande pile.
+fn bloquer<T: Send + 'static>(
+    moteur: &tokio::runtime::Runtime,
+    futur: impl core::future::Future<Output = T> + Send + 'static,
+) -> Result<T, i32> {
+    let ordonnanceur = moteur.handle().clone();
+    std::thread::Builder::new()
+        .name("asl-appareil".to_owned())
+        .stack_size(PILE_OCTETS)
+        .spawn(move || ordonnanceur.block_on(futur))
+        .map_err(|_| ASL_INTERNE)?
+        .join()
+        .map_err(|_| ASL_INTERNE)
+}
+
 /// La cadence de maintien qu'on pose sur une connexion d'appareil, en secondes.
 ///
 /// **DIX SECONDES, MESURÉES** (`modele.md` §4.1) : sur un lien résidentiel, le
@@ -86,11 +119,18 @@ pub type AslSignataire = Option<
 >;
 
 /// Ce que l'application a posé pour signer, et le contexte qu'elle veut revoir.
+#[derive(Clone, Copy)]
 struct Signataire {
     cle: [u8; ASL_CLE_APPAREIL_OCTETS],
     rappel: unsafe extern "C" fn(*mut c_void, *const u8, usize, *mut u8) -> i32,
     contexte: *mut c_void,
 }
+
+// SAFETY : le contexte est un pointeur que l'application nous a confié pour le
+// lui rendre tel quel, depuis un fil de la bibliothèque, pendant un appel
+// qu'elle a fait et qui la bloque. Elle ne le lit pas ; nous non plus. C'est
+// le contrat d'`asl_appareil_cle`, et il est écrit dans `asl.h`.
+unsafe impl Send for Signataire {}
 
 impl Signataire {
     /// Fait signer ces octets par l'application.
@@ -378,8 +418,8 @@ pub unsafe extern "C" fn asl_appareil_connecter(appareil: *mut AslAppareil) -> i
         appareil.defi = None;
 
         let identite = appareil.identite;
-        let signataire = appareil.signataire.as_ref();
-        let issue = appareil.moteur.block_on(async {
+        let signataire = appareil.signataire;
+        let issue = bloquer(&appareil.moteur, async move {
             let mut connexion = ouvrir(&reglages).await?;
             if let Some(identite) = identite {
                 let signataire = signataire.ok_or(ASL_PAS_D_IDENTITE)?;
@@ -395,7 +435,8 @@ pub unsafe extern "C" fn asl_appareil_connecter(appareil: *mut AslAppareil) -> i
             }
             connexion.maintenir(MAINTIEN_S);
             Ok(Tenue::tenir(connexion))
-        });
+        })
+        .and_then(|issue| issue);
         match issue {
             Ok(tenue) => {
                 appareil.tenue = Some(tenue);
@@ -604,19 +645,19 @@ pub unsafe extern "C" fn asl_appareil_creer_compte(
         if attestation.is_null() != (taille == 0) || taille > ASL_ATTESTATION_MAX {
             return ASL_ARGUMENT;
         }
-        let attestation: &[u8] = if taille == 0 {
-            &[]
+        let attestation: Vec<u8> = if taille == 0 {
+            Vec::new()
         } else {
             // SAFETY : contrat de la fonction.
-            unsafe { core::slice::from_raw_parts(attestation, taille) }
+            unsafe { core::slice::from_raw_parts(attestation, taille) }.to_vec()
         };
         let defi_tire = appareil.defi.take();
         let (tenue, signataire) = match (appareil.tenue(), appareil.signataire()) {
-            (Ok(tenue), Ok(signataire)) => (tenue.clone(), signataire),
+            (Ok(tenue), Ok(signataire)) => (tenue.clone(), *signataire),
             (Err(quoi), _) | (_, Err(quoi)) => return quoi,
         };
 
-        let issue = appareil.moteur.block_on(async {
+        let issue = bloquer(&appareil.moteur, async move {
             let defi = match defi_tire {
                 Some(defi) => defi,
                 None => {
@@ -641,7 +682,7 @@ pub unsafe extern "C" fn asl_appareil_creer_compte(
                 plateforme,
                 &signataire.cle,
                 &preuve,
-                attestation,
+                &attestation,
                 &mut corps,
             )
             .map_err(|_| ASL_ARGUMENT)?;
@@ -655,7 +696,8 @@ pub unsafe extern "C" fn asl_appareil_creer_compte(
                 compte: reponse.identifiant("compte").map_err(|_| ASL_INTERNE)?,
                 appareil: reponse.identifiant("appareil").map_err(|_| ASL_INTERNE)?,
             })
-        });
+        })
+        .and_then(|issue| issue);
         match issue {
             Ok(cree) => {
                 appareil.identite = Some(cree.appareil);
@@ -724,24 +766,27 @@ pub unsafe extern "C" fn asl_appareil_requete(
         {
             return ASL_ARGUMENT;
         }
-        let corps: &[u8] = if taille == 0 {
-            &[]
+        let corps: Vec<u8> = if taille == 0 {
+            Vec::new()
         } else {
             // SAFETY : contrat de la fonction.
-            unsafe { core::slice::from_raw_parts(corps, taille) }
+            unsafe { core::slice::from_raw_parts(corps, taille) }.to_vec()
         };
         let tenue = match appareil.tenue() {
             Ok(tenue) => tenue.clone(),
             Err(quoi) => return quoi,
         };
-        let issue = appareil
-            .moteur
-            .block_on(tenue.requete(methode, chemin, corps))
-            .map_err(|quoi| match quoi {
+        let (methode, chemin) = (methode.to_owned(), chemin.to_owned());
+        let issue = bloquer(&appareil.moteur, async move {
+            tenue.requete(&methode, &chemin, &corps).await
+        })
+        .and_then(|issue| {
+            issue.map_err(|quoi| match quoi {
                 // Une tenue qui ne répond plus est une connexion tombée.
                 asl_client_tokio::Faute::Delai => ASL_INJOIGNABLE,
                 autre => traduire(autre),
-            });
+            })
+        });
         let reponse = match issue {
             Ok(reponse) => reponse,
             Err(quoi) => return quoi,

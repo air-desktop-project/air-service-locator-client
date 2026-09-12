@@ -61,11 +61,22 @@ struct Handle {
     dernier: i32,
 }
 
-/// Le pointeur que ce `Long` porte, ou rien s'il ne peut pas en être un.
+/// Le pointeur que ce `Long` porte.
+///
+/// # BIT POUR BIT, ET NON COMME UN NOMBRE
+///
+/// L'allocateur d'Android sur arm64 ÉTIQUETTE ses pointeurs : l'octet de
+/// poids fort porte une marque (`0xb4…`), et l'adresse, lue comme un entier
+/// signé, est négative. Un `try_from` la refusait — et rendait zéro, c'est-
+/// à-dire un handle « jamais créé » pour un handle bel et bien créé. Un
+/// `Long` est ici soixante-quatre bits qu'on ne lit pas, et rien d'autre.
 fn pointeur(brut: jlong) -> *mut Handle {
-    // Un `Long` à zéro — ou négatif, ce qu'aucune adresse n'est — est un handle
-    // jamais créé, ou déjà libéré : on ne déréférence pas.
-    usize::try_from(brut).map_or(core::ptr::null_mut(), |adresse| adresse as *mut Handle)
+    usize::from_ne_bytes(brut.to_ne_bytes()) as *mut Handle
+}
+
+/// Le `Long` qui porte ce pointeur — voir [`pointeur`].
+fn long(handle: *mut Handle) -> jlong {
+    jlong::from_ne_bytes((handle as usize).to_ne_bytes())
 }
 
 fn handle<'a>(brut: jlong) -> Option<&'a mut Handle> {
@@ -93,6 +104,49 @@ fn rendre_chaine<'a>(env: &JNIEnv<'a>, texte: &str) -> jstring {
     env.new_string(texte)
         .map(|t| t.into_raw())
         .unwrap_or(core::ptr::null_mut())
+}
+
+/// Ce que la dernière panique rattrapée a dit, pour qu'un `ASL_INTERNE` ne
+/// soit pas muet dans Logcat.
+///
+/// L'ABI C rattrape toute panique et rend `ASL_INTERNE` — la bonne chose pour
+/// un hôte qu'on ne doit pas tuer, et la pire pour qui cherche pourquoi. Le
+/// crochet posé ici en garde le texte ; [`journal`] le rend après coup.
+static DERNIERE_PANIQUE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static CROCHET: std::sync::Once = std::sync::Once::new();
+
+fn poser_le_crochet() {
+    CROCHET.call_once(|| {
+        std::panic::set_hook(Box::new(|info| {
+            if let Ok(mut place) = DERNIERE_PANIQUE.lock() {
+                *place = Some(info.to_string());
+            }
+        }));
+    });
+}
+
+/// La dernière panique, s'il y en a eu une depuis le dernier appel.
+fn derniere_panique() -> Option<String> {
+    DERNIERE_PANIQUE
+        .lock()
+        .ok()
+        .and_then(|mut place| place.take())
+}
+
+/// Écrit une ligne dans Logcat, sous l'étiquette `asl`, par `android.util.Log`
+/// — le seul journal qu'un objet natif d'Android ait, et le seul endroit où
+/// une faute de la bibliothèque devient lisible.
+fn journal(env: &mut JNIEnv, message: &str) {
+    let (Ok(etiquette), Ok(texte)) = (env.new_string("asl"), env.new_string(message)) else {
+        return;
+    };
+    let _ = env.call_static_method(
+        "android/util/Log",
+        "e",
+        "(Ljava/lang/String;Ljava/lang/String;)I",
+        &[(&etiquette).into(), (&texte).into()],
+    );
+    let _ = env.exception_clear();
 }
 
 /// Le rappel que l'ABI C appelle : il remonte jusqu'à `signer` de l'objet
@@ -159,12 +213,16 @@ unsafe extern "C" fn rappel_de_signature(
 /// `external fun neuf(): Long`
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_airdesktop_servicelocator_reseau_Natif_neuf(
-    _env: JNIEnv,
+    mut env: JNIEnv,
     _classe: JClass,
 ) -> jlong {
+    poser_le_crochet();
     let mut appareil: *mut AslAppareil = core::ptr::null_mut();
     // SAFETY : `appareil` vise un pointeur que nous possédons.
-    if unsafe { asl_appareil_neuf(&raw mut appareil) } != ASL_OK {
+    let code = unsafe { asl_appareil_neuf(&raw mut appareil) };
+    if code != ASL_OK {
+        let panique = derniere_panique().unwrap_or_default();
+        journal(&mut env, &format!("asl_appareil_neuf → {code} {panique}"));
         return 0;
     }
     let handle = Box::new(Handle {
@@ -172,8 +230,7 @@ pub extern "system" fn Java_org_airdesktop_servicelocator_reseau_Natif_neuf(
         signataire: None,
         dernier: ASL_OK,
     });
-    // Un pointeur tient dans un `jlong` sur toutes les cibles d'Android.
-    jlong::try_from(Box::into_raw(handle) as usize).unwrap_or(0)
+    long(Box::into_raw(handle))
 }
 
 /// `external fun libere(h: Long)`
@@ -563,6 +620,26 @@ pub extern "system" fn Java_org_airdesktop_servicelocator_reseau_Natif_identifia
     // SAFETY : un NUL a été posé.
     let texte = unsafe { core::ffi::CStr::from_ptr(sortie.as_ptr()) }.to_string_lossy();
     rendre_chaine(&env, &texte)
+}
+
+/// `external fun diagnostic(): String` — ce que la bibliothèque sait dire
+/// d'elle-même sur cet appareil : si un handle se crée, et sinon pourquoi.
+/// Pour un écran de débogage, jamais pour un écran de produit.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_airdesktop_servicelocator_reseau_Natif_diagnostic(
+    env: JNIEnv,
+    _classe: JClass,
+) -> jstring {
+    poser_le_crochet();
+    let mut appareil: *mut AslAppareil = core::ptr::null_mut();
+    // SAFETY : `appareil` vise un pointeur que nous possédons.
+    let code = unsafe { asl_appareil_neuf(&raw mut appareil) };
+    let panique = derniere_panique().unwrap_or_default();
+    if !appareil.is_null() {
+        // SAFETY : il vient d'être créé, et personne d'autre ne le tient.
+        unsafe { asl_appareil_libere(appareil) };
+    }
+    rendre_chaine(&env, &format!("asl_appareil_neuf → {code} {panique}"))
 }
 
 /// `external fun fauteTexte(code: Int): String`

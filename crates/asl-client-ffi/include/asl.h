@@ -276,8 +276,10 @@ int32_t asl_derniere_poussee(const asl_client *client,
  * d'un appareil — le matériel ne la rend pas. L'application pose une fonction et
  * un contexte (asl_appareil_cle), que la bibliothèque appelle avec les octets à
  * signer au moment exact où le protocole les exige : c'est LÀ que le porteur
- * pose son doigt. Le rappel est fait SUR LE FIL DE L'APPELANT, à l'intérieur de
- * l'appel qui l'a provoqué — donc jamais depuis le fil d'interface.
+ * pose son doigt. Le rappel est fait PENDANT L'APPEL qui l'a provoqué, sur un
+ * fil de la bibliothèque (à grande pile : la connexion QUIC ne tient pas sur un
+ * fil secondaire d'iOS ou d'Android) ; l'appelant est bloqué jusqu'au retour —
+ * donc jamais depuis le fil d'interface.
  *
  * UNE CONNEXION TENUE. L'authentification est portée par la connexion : la clé
  * est prouvée une fois (asl_appareil_connecter), et toutes les requêtes en

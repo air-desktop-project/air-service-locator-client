@@ -33,5 +33,10 @@ asl-api.workspace = true
 # qu'une connexion.
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
+[dev-dependencies]
+# Pour l'exemple `appareil` seulement : une clé P-256 logicielle qui joue le
+# rôle du matériel d'un téléphone. Elle est déjà dans le graphe par `asl-cle`.
+p256 = { version = "0.14", default-features = false, features = ["ecdsa"] }
+
 [lints]
 workspace = true

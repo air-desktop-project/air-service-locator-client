@@ -206,6 +206,7 @@ dependencies = [
  "asl-client-tokio",
  "asl-id",
  "asl-proto",
+ "p256",
  "tokio",
 ]
 
