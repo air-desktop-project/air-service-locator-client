@@ -73,7 +73,9 @@
 //! **Écrit** : [`Reprise`], le recul entre deux tentatives ; [`Tournee`], le
 //! parcours des annuaires qui l'emploie — IPv6 d'abord, l'attente entre les
 //! TOURS et non entre les annuaires ; [`Identite`], ce qu'une machine détient et
-//! ce qu'elle en fait ; et [`Enrolement`], comment elle acquiert tout cela.
+//! ce qu'elle en fait ; [`Enrolement`], comment elle acquiert tout cela ; et
+//! [`appareil`], ce qu'un TÉLÉPHONE compose — lui ne signe pas ici, sa clé vit
+//! dans son matériel, et ce module ne fait que lui dire quoi signer.
 //!
 //! **Pas écrit** : le transport. Tant que la pile QUIC n'est pas câblée, cette
 //! crate ne fait aucune entrée-sortie et reste `no_std`. Ce n'est pas un état
@@ -84,6 +86,8 @@
 #![no_std]
 
 use asl_cle::{ClePublique, CleSecrete, CodeEnrolement, Defi, LiaisonDeCanal, Signature};
+
+pub mod appareil;
 
 /// L'étiquette que les deux camps donnent à leur exportateur TLS.
 ///

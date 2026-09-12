@@ -8,6 +8,9 @@
 #                     liaisons Python, Ruby, C++, Kotlin et Swift (`liaisons/`).
 #   `asl-cli`         L'utilitaire `asl`, pour faire à la main ce que la
 #                     bibliothèque fait dans un programme.
+#   `asl-client-android`
+#                     La voie mobile de `asl-client-ffi`, exposée à Android par
+#                     JNI — des symboles exportés depuis Rust, sans C.
 #
 # POURQUOI CE DÉPÔT EST SÉPARÉ DU SERVEUR
 #
@@ -43,6 +46,7 @@ members = [
     "crates/asl-client",
     "crates/asl-client-tokio",
     "crates/asl-client-ffi",
+    "crates/asl-client-android",
     "crates/asl-cli",
 ]
 
@@ -71,11 +75,21 @@ repository = "https://github.com/air-desktop-project/air-service-locator-client"
 [workspace.dependencies]
 asl-client = { path = "crates/asl-client", version = "0.1.0" }
 asl-client-tokio = { path = "crates/asl-client-tokio", version = "0.1.0" }
+asl-client-ffi = { path = "crates/asl-client-ffi", version = "0.1.0" }
 
 # La grammaire, tirée du dépôt qui porte les spécifications.
-asl-id = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "7174ac8" }
-asl-proto = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "7174ac8" }
-asl-cle = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "7174ac8" }
+#
+# `asl-api` S'AJOUTE AUX TROIS, pour la même raison qu'elles : c'est la grammaire
+# de la voie mobile (`protocole.md` §2) — les corps de `POST /v1/comptes`, des
+# machines, des autorisations —, à l'étage 1, sans entrée-sortie. Un téléphone
+# qui composerait ces corps de son côté en aurait une seconde écriture.
+#
+# Le SHA est celui du serveur au 2026-09-12, avancé depuis `7174ac8` pour
+# prendre `asl-api` et la clé d'appareil P-256 d'`asl-cle`.
+asl-id = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "cee3170" }
+asl-proto = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "cee3170" }
+asl-cle = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "cee3170" }
+asl-api = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "cee3170" }
 
 # ── LA PILE QUIC ET HTTP/3, EMPRUNTÉE À `air-mail-server` (C15) ─────────────
 #

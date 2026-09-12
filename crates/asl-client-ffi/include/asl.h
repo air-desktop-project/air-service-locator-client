@@ -51,6 +51,11 @@ extern "C" {
  * d'une liste vide évite de faire croire que les points sont devenus
  * injoignables. */
 #define ASL_PAS_DE_POUSSEE    -9
+/* Voie mobile : cet appareil n'est pas connecté — asl_appareil_connecter. */
+#define ASL_NON_CONNECTE      -10
+/* Voie mobile : le signataire de l'application n'a pas rendu de signature.
+ * Pas une panne : le PORTEUR n'a pas confirmé, ou a annulé. Rien n'est parti. */
+#define ASL_SIGNATURE_REFUSEE -11
 
 /* Tailles de tampons que l'appelant doit fournir. */
 #define ASL_IDENTIFIANT_OCTETS 29
@@ -259,6 +264,129 @@ int32_t asl_poussees_recues(const asl_client *client, uint64_t *sortie);
 int32_t asl_derniere_poussee(const asl_client *client,
                              asl_candidat *candidats, size_t combien,
                              size_t *ecrit, uint8_t *derriere_nat);
+
+/* ── LA VOIE MOBILE ─────────────────────────────────────────────────────────
+ *
+ * CE QU'UN TÉLÉPHONE APPELLE, ET RIEN D'AUTRE. Un handle à part du client des
+ * daemons, parce qu'un téléphone n'est pas un daemon : il ADMINISTRE un compte
+ * (`protocole.md` §2), sa clé P-256 vit dans la Secure Enclave ou le Keystore
+ * sous contrôle biométrique, et ses requêtes sont celles d'un écran.
+ *
+ * LA SIGNATURE SE FAIT PAR RAPPEL. Cette bibliothèque ne détient jamais la clé
+ * d'un appareil — le matériel ne la rend pas. L'application pose une fonction et
+ * un contexte (asl_appareil_cle), que la bibliothèque appelle avec les octets à
+ * signer au moment exact où le protocole les exige : c'est LÀ que le porteur
+ * pose son doigt. Le rappel est fait PENDANT L'APPEL qui l'a provoqué, sur un
+ * fil de la bibliothèque (à grande pile : la connexion QUIC ne tient pas sur un
+ * fil secondaire d'iOS ou d'Android) ; l'appelant est bloqué jusqu'au retour —
+ * donc jamais depuis le fil d'interface.
+ *
+ * UNE CONNEXION TENUE. L'authentification est portée par la connexion : la clé
+ * est prouvée une fois (asl_appareil_connecter), et toutes les requêtes en
+ * héritent. Un geste par requête serait intenable ; la connexion est donc gardée
+ * vivante en tâche de fond jusqu'à asl_appareil_deconnecter. Elle NE SE
+ * RECONNECTE PAS SEULE : reprouver la clé, c'est redemander un geste, et c'est
+ * l'application qui choisit quand.
+ *
+ * UN SEUL FIL À LA FOIS : les appels sur un même handle ne se chevauchent pas.
+ */
+
+/* Une clé publique d'appareil : P-256, SEC1 compressé. */
+#define ASL_CLE_APPAREIL_OCTETS 33
+/* Une signature d'appareil : r ‖ s. */
+#define ASL_SIGNATURE_OCTETS 64
+/* Un défi, et une liaison de canal. */
+#define ASL_DEFI_OCTETS 32
+/* Le plus long message qu'un signataire recevra. */
+#define ASL_MESSAGE_MAX 138
+/* L'attestation la plus longue que l'annuaire admette. */
+#define ASL_ATTESTATION_MAX 8192
+
+#define ASL_PLATEFORME_AUCUNE 0
+#define ASL_PLATEFORME_APPLE  1
+#define ASL_PLATEFORME_GOOGLE 2
+
+/* L'appareil. Opaque, comme asl_client. */
+typedef struct asl_appareil asl_appareil;
+
+/* Ce que l'application pose pour signer : reçoit `taille` octets, écrit
+ * ASL_SIGNATURE_OCTETS octets `r ‖ s` dans `signature`, rend 0. Toute autre
+ * valeur : le porteur n'a pas signé, et l'appel rend ASL_SIGNATURE_REFUSEE. */
+typedef int32_t (*asl_signataire)(void *contexte, const uint8_t *message,
+                                  size_t taille, uint8_t *signature);
+
+/* Crée un appareil. N'ouvre aucune connexion. Se libère par asl_appareil_libere. */
+int32_t asl_appareil_neuf(asl_appareil **sortie);
+
+/* Un annuaire, comme asl_client_annuaire : adresse littérale, nom du certificat. */
+int32_t asl_appareil_annuaire(asl_appareil *appareil, const char *adresse, const char *nom);
+
+/* Les racines, comme asl_client_racines : PEM, et aucun repli sur le système. */
+int32_t asl_appareil_racines(asl_appareil *appareil, const uint8_t *pem, size_t taille);
+
+/* La clé publique de cet appareil (33 octets, VÉRIFIÉE sur la courbe) et la
+ * fonction qui signe avec. `contexte` est rendu tel quel au rappel. */
+int32_t asl_appareil_cle(asl_appareil *appareil, const uint8_t cle[ASL_CLE_APPAREIL_OCTETS],
+                         asl_signataire signataire, void *contexte);
+
+/* L'identifiant `a-…` de cet appareil, s'il est déjà enrôlé — ce que
+ * asl_appareil_creer_compte a rendu la première fois. */
+int32_t asl_appareil_identite(asl_appareil *appareil, const char *identifiant);
+
+/* Libère l'appareil, et ferme sa connexion proprement. Un pointeur nul ne fait rien. */
+void asl_appareil_libere(asl_appareil *appareil);
+
+/* Ouvre la connexion — IPv6 d'abord, la tournée des annuaires — et PROUVE LA CLÉ
+ * si une identité est posée : c'est ici que le signataire est appelé, une fois.
+ * Sans identité, la connexion s'ouvre nue, d'où l'on crée un compte. Une
+ * connexion déjà ouverte est fermée d'abord. ASL_INJOIGNABLE si personne ne
+ * répond, ASL_REFUSE si la preuve ne vérifie pas. */
+int32_t asl_appareil_connecter(asl_appareil *appareil);
+
+/* Ferme la connexion, proprement. */
+int32_t asl_appareil_deconnecter(asl_appareil *appareil);
+
+/* La liaison de canal de la connexion en cours (32 octets). Elle n'a qu'un
+ * emploi côté application : entrer dans ce qu'une attestation couvre. */
+int32_t asl_appareil_liaison(asl_appareil *appareil, uint8_t liaison[ASL_DEFI_OCTETS]);
+
+/* Tire un défi (32 octets) sur la connexion en cours. Il ne sert qu'une fois,
+ * et c'est le prochain asl_appareil_creer_compte qui le dépense — utile
+ * seulement pour composer une attestation par-dessus. */
+int32_t asl_appareil_defi(asl_appareil *appareil, uint8_t defi[ASL_DEFI_OCTETS]);
+
+/* Ce dont une attestation couvre le condensat : domaine ‖ clé ‖ défi ‖ liaison,
+ * avec le défi d'asl_appareil_defi et la liaison en cours. Tampon en deux temps. */
+int32_t asl_appareil_message_pour_attestation(asl_appareil *appareil, uint8_t *sortie,
+                                              size_t combien, size_t *ecrit);
+
+/* Crée le compte et enrôle cet appareil. LE PORTEUR EST SOLLICITÉ ICI : le
+ * signataire est appelé sur la preuve de possession. Le défi est celui
+ * d'asl_appareil_defi s'il en reste un, un neuf sinon. `attestation` est vide
+ * pour ASL_PLATEFORME_AUCUNE, exigée pour les autres. Rend `u-…` et `a-…` en
+ * texte, NUL compris ; l'identité est INSTALLÉE au passage, et la connexion est
+ * désormais celle de cet appareil. */
+int32_t asl_appareil_creer_compte(asl_appareil *appareil, uint8_t plateforme,
+                                  const uint8_t *attestation, size_t taille,
+                                  char compte_sortie[ASL_IDENTIFIANT_OCTETS],
+                                  char appareil_sortie[ASL_IDENTIFIANT_OCTETS]);
+
+/* Une requête de protocole.md §2 sur la connexion tenue : méthode (GET, POST,
+ * PUT, PATCH, DELETE), chemin (`/v1/…`), corps JSON ou vide.
+ *
+ * LE CODE D'ÉTAT EST RENDU, JAMAIS JUGÉ : ASL_OK veut dire que l'annuaire a
+ * répondu — 404, 409, 204 compris —, et l'application sait quoi en dire.
+ * ASL_INJOIGNABLE veut dire que la connexion est tombée : asl_appareil_connecter.
+ *
+ * Tampon en deux temps, comme asl_ou — ET LA REQUÊTE A ÉTÉ FAITE quand
+ * ASL_TAMPON_TROP_PETIT est rendu. Passez d'emblée un tampon de la taille du
+ * plus long corps attendu (64 Kio suffisent à tout ce que l'annuaire rend). */
+int32_t asl_appareil_requete(asl_appareil *appareil, const char *methode, const char *chemin,
+                             const uint8_t *corps, size_t taille,
+                             uint8_t *sortie, size_t combien, size_t *ecrit, uint16_t *statut);
+
+/* L'identifiant `a-…` de cet appareil, s'il est enrôlé. ASL_PAS_D_IDENTITE sinon. */
+int32_t asl_appareil_identifiant(const asl_appareil *appareil, char sortie[ASL_IDENTIFIANT_OCTETS]);
 
 #ifdef __cplusplus
 } /* extern "C" */
