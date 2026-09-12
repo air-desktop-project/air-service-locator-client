@@ -22,6 +22,8 @@ asl-client.workspace = true
 asl-client-tokio.workspace = true
 asl-id.workspace = true
 asl-proto.workspace = true
+asl-cle.workspace = true
+asl-api.workspace = true
 
 # `rt-multi-thread` EN PLUS, ET SEULEMENT ICI. L'annonce est tenue par une
 # connexion : elle doit progresser pendant que l'hôte fait autre chose. Un

@@ -46,9 +46,27 @@ module Asl
     PAS_D_IDENTITE = -7
     DEJA = -8
     PAS_DE_POUSSEE = -9
+    NON_CONNECTE = -10
+    SIGNATURE_REFUSEE = -11
 
     IDENTIFIANT_OCTETS = 29
     GRAINE_OCTETS = 32
+
+    # ── LA VOIE MOBILE ──────────────────────────────────────────────────────
+    #
+    # Ce qu'un TÉLÉPHONE appelle (`asl_appareil_*`), transcrit ici parce que
+    # cette liaison transcrit l'en-tête ENTIER — c'est ce que sa barrière
+    # vérifie. Aucune enveloppe idiomatique par-dessus : un daemon Ruby n'a pas
+    # de Secure Enclave, et cette voie n'est pas la sienne.
+    CLE_APPAREIL_OCTETS = 33
+    SIGNATURE_OCTETS = 64
+    DEFI_OCTETS = 32
+    MESSAGE_MAX = 138
+    ATTESTATION_MAX = 8192
+
+    PLATEFORME_AUCUNE = 0
+    PLATEFORME_APPLE = 1
+    PLATEFORME_GOOGLE = 2
 
     TCP = 1
     UDP = 2
@@ -155,7 +173,7 @@ module Asl
       chemins
     end
 
-    # Les treize fonctions, une fois chargées.
+    # Les vingt-sept fonctions, une fois chargées.
     #
     # **CHAQUE SIGNATURE EST DÉCLARÉE À LA MAIN.** C'est le prix de `fiddle`, et
     # il est réel : une déclaration fausse ne se voit pas au chargement, elle
@@ -183,7 +201,32 @@ module Asl
       asl_poussees_recues: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP], Fiddle::TYPE_INT32_T],
       asl_derniere_poussee: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T,
                               Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP],
-                             Fiddle::TYPE_INT32_T]
+                             Fiddle::TYPE_INT32_T],
+      # ── La voie mobile, déclarée sans être enveloppée (voir les constantes).
+      asl_appareil_neuf: [[Fiddle::TYPE_VOIDP], Fiddle::TYPE_INT32_T],
+      asl_appareil_annuaire: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP],
+                              Fiddle::TYPE_INT32_T],
+      asl_appareil_racines: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T],
+                             Fiddle::TYPE_INT32_T],
+      asl_appareil_cle: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP,
+                          Fiddle::TYPE_VOIDP], Fiddle::TYPE_INT32_T],
+      asl_appareil_identite: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP], Fiddle::TYPE_INT32_T],
+      asl_appareil_libere: [[Fiddle::TYPE_VOIDP], Fiddle::TYPE_VOID],
+      asl_appareil_connecter: [[Fiddle::TYPE_VOIDP], Fiddle::TYPE_INT32_T],
+      asl_appareil_deconnecter: [[Fiddle::TYPE_VOIDP], Fiddle::TYPE_INT32_T],
+      asl_appareil_liaison: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP], Fiddle::TYPE_INT32_T],
+      asl_appareil_defi: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP], Fiddle::TYPE_INT32_T],
+      asl_appareil_message_pour_attestation: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP,
+                                               Fiddle::TYPE_SIZE_T, Fiddle::TYPE_VOIDP],
+                                              Fiddle::TYPE_INT32_T],
+      asl_appareil_creer_compte: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_UINT8_T, Fiddle::TYPE_VOIDP,
+                                   Fiddle::TYPE_SIZE_T, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP],
+                                  Fiddle::TYPE_INT32_T],
+      asl_appareil_requete: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP,
+                              Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T, Fiddle::TYPE_VOIDP,
+                              Fiddle::TYPE_SIZE_T, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP],
+                             Fiddle::TYPE_INT32_T],
+      asl_appareil_identifiant: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP], Fiddle::TYPE_INT32_T]
     }.freeze
 
     # Charge la bibliothèque native et rend ses fonctions, par nom.

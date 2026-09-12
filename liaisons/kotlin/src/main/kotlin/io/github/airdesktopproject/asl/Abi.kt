@@ -58,9 +58,28 @@ internal object Abi {
     const val PAS_D_IDENTITE: Int = -7
     const val DEJA: Int = -8
     const val PAS_DE_POUSSEE: Int = -9
+    const val NON_CONNECTE: Int = -10
+    const val SIGNATURE_REFUSEE: Int = -11
 
     const val IDENTIFIANT_OCTETS: Int = 29
     const val GRAINE_OCTETS: Int = 32
+
+    // ── LA VOIE MOBILE ──────────────────────────────────────────────────────
+    //
+    // Ce qu'un TÉLÉPHONE appelle (`asl_appareil_*`), transcrit ici parce que
+    // cette liaison transcrit l'en-tête ENTIER — c'est ce que sa barrière
+    // vérifie. Aucune enveloppe idiomatique par-dessus : cette liaison est
+    // JVM, pas Android, et un daemon sur la JVM n'a pas de Keystore. Android
+    // passe par `asl-client-android` (JNI), qui n'a rien à voir avec ceci.
+    const val CLE_APPAREIL_OCTETS: Int = 33
+    const val SIGNATURE_OCTETS: Int = 64
+    const val DEFI_OCTETS: Int = 32
+    const val MESSAGE_MAX: Int = 138
+    const val ATTESTATION_MAX: Int = 8192
+
+    const val PLATEFORME_AUCUNE: Int = 0
+    const val PLATEFORME_APPLE: Int = 1
+    const val PLATEFORME_GOOGLE: Int = 2
 
     const val TCP: Int = 1
     const val UDP: Int = 2
@@ -138,7 +157,7 @@ internal object Abi {
     private val ENTIER = ValueLayout.JAVA_INT
     private val ADRESSE = ValueLayout.ADDRESS
 
-    /** Les treize fonctions, avec leur signature. */
+    /** Les vingt-sept fonctions, avec leur signature. */
     private val SIGNATURES: Map<String, FunctionDescriptor> = mapOf(
         "asl_version" to FunctionDescriptor.ofVoid(ADRESSE, ADRESSE, ADRESSE),
         "asl_faute_texte" to FunctionDescriptor.of(ADRESSE, ENTIER),
@@ -157,6 +176,27 @@ internal object Abi {
         "asl_derniere_poussee" to FunctionDescriptor.of(
             ENTIER, ADRESSE, ADRESSE, TAILLE, ADRESSE, ADRESSE,
         ),
+        // ── La voie mobile, déclarée sans être enveloppée (voir les constantes).
+        "asl_appareil_neuf" to FunctionDescriptor.of(ENTIER, ADRESSE),
+        "asl_appareil_annuaire" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE, ADRESSE),
+        "asl_appareil_racines" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE, TAILLE),
+        "asl_appareil_cle" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE, ADRESSE, ADRESSE),
+        "asl_appareil_identite" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE),
+        "asl_appareil_libere" to FunctionDescriptor.ofVoid(ADRESSE),
+        "asl_appareil_connecter" to FunctionDescriptor.of(ENTIER, ADRESSE),
+        "asl_appareil_deconnecter" to FunctionDescriptor.of(ENTIER, ADRESSE),
+        "asl_appareil_liaison" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE),
+        "asl_appareil_defi" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE),
+        "asl_appareil_message_pour_attestation" to FunctionDescriptor.of(
+            ENTIER, ADRESSE, ADRESSE, TAILLE, ADRESSE,
+        ),
+        "asl_appareil_creer_compte" to FunctionDescriptor.of(
+            ENTIER, ADRESSE, ValueLayout.JAVA_BYTE, ADRESSE, TAILLE, ADRESSE, ADRESSE,
+        ),
+        "asl_appareil_requete" to FunctionDescriptor.of(
+            ENTIER, ADRESSE, ADRESSE, ADRESSE, ADRESSE, TAILLE, ADRESSE, TAILLE, ADRESSE, ADRESSE,
+        ),
+        "asl_appareil_identifiant" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE),
     )
 
     /** Comment l'objet natif s'appelle, selon le système. */

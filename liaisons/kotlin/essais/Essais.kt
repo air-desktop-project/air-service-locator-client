@@ -133,6 +133,13 @@ private fun lEnteteEstLaReference() {
         "NON_SONDE" to Abi.NON_SONDE, "EN_COURS" to Abi.EN_COURS,
         "NAT_NON" to Abi.NAT_NON, "NAT_OUI" to Abi.NAT_OUI,
         "NAT_INDETERMINE" to Abi.NAT_INDETERMINE,
+        // La voie mobile.
+        "NON_CONNECTE" to Abi.NON_CONNECTE, "SIGNATURE_REFUSEE" to Abi.SIGNATURE_REFUSEE,
+        "CLE_APPAREIL_OCTETS" to Abi.CLE_APPAREIL_OCTETS, "SIGNATURE_OCTETS" to Abi.SIGNATURE_OCTETS,
+        "DEFI_OCTETS" to Abi.DEFI_OCTETS, "MESSAGE_MAX" to Abi.MESSAGE_MAX,
+        "ATTESTATION_MAX" to Abi.ATTESTATION_MAX,
+        "PLATEFORME_AUCUNE" to Abi.PLATEFORME_AUCUNE, "PLATEFORME_APPLE" to Abi.PLATEFORME_APPLE,
+        "PLATEFORME_GOOGLE" to Abi.PLATEFORME_GOOGLE,
     )
 
     for ((nom, valeur) in declarees) {
