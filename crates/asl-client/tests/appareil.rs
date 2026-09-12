@@ -73,6 +73,16 @@ fn la_preuve_d_authentification_fait_quatre_vingt_un_octets() {
     assert_eq!(corps[0], b'a');
     assert_eq!(&corps[1..17], appareil.octets());
     assert_eq!(&corps[17..], &signature);
+
+    // Une machine n'a rien à faire ici : refusée avant de composer quoi que
+    // ce soit.
+    let machine = Identifiant::depuis_entropie(Genre::Machine, [9; 16]);
+    assert_eq!(
+        preuve_d_authentification(machine, &signature),
+        Err(FauteAppareil::PasUnAppareil {
+            obtenu: Genre::Machine
+        })
+    );
 }
 
 #[test]
@@ -116,6 +126,21 @@ fn le_corps_de_compte_porte_la_plate_forme_puis_la_cle_puis_la_preuve() {
 }
 
 #[test]
+fn le_message_d_attestation_est_celui_du_serveur_sous_son_propre_domaine() {
+    let secrete = secrete();
+    let publique = secrete.publique().octets();
+    let message = message_pour_attestation(&publique, &defi(), &liaison()).expect("une vraie clé");
+    assert_eq!(
+        message,
+        asl_cle::message_d_attestation(&secrete.publique(), &defi(), &liaison())
+    );
+    assert!(message.starts_with(asl_cle::DOMAINE_ATTESTATION));
+    // Trois domaines, trois messages : aucun ne vaut pour un autre.
+    let possession = message_de_possession(&publique, &defi(), &liaison()).expect("une vraie clé");
+    assert_ne!(&message[..], &possession[..]);
+}
+
+#[test]
 fn une_cle_hors_de_la_courbe_est_refusee_a_la_lecture() {
     let mut fausse = [0xFF; 33];
     fausse[0] = 0x02;
@@ -125,6 +150,10 @@ fn une_cle_hors_de_la_courbe_est_refusee_a_la_lecture() {
     );
     assert_eq!(
         message_pour_attestation(&fausse, &defi(), &liaison()),
+        Err(FauteAppareil::ClePubliqueInvalide)
+    );
+    assert_eq!(
+        message_de_possession(&fausse, &defi(), &liaison()),
         Err(FauteAppareil::ClePubliqueInvalide)
     );
     let mauvais_prefixe = [0x04; 33];
