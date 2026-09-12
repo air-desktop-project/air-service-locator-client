@@ -81,8 +81,20 @@ réel, trois manques du serveur sont apparus — **le protocole les décrit,
    (« pour savoir ce qu'on révoque six mois plus tard »). Le champ est libre,
    1 à 64 octets, mêmes règles qu'un nom de machine.
 
-Tant que 1 et 2 manquent, l'implémentation réelle d'`Annuaire` dans les apps
-rend des listes vides pour les machines et les appareils, et le dit.
+**RÉSOLU (speedy, 2026-09-12) — mergé sur `main`, SHA `2cf05dc`, CI verte.** Les
+quatre sont servis, mais en **sous-ensemble de ce qui est RANGÉ** (le serveur ne
+stocke ni horodatage ni code) ; les objets sont **compatibles en avant**. **Pour
+consommer : avance le SHA de dépendance serveur du client à `2cf05dc`.** Les listes
+« vides » de l'`Annuaire` réel peuvent donc se remplir.
+
+1. `GET /v1/machines` — `09594f6`. Rend `{"machine","nom","capacites":[…],"cle":"enrolee"|"attendue"}`. **Absents** : `enrolee_a`/`revoquee_a` (aucun horodatage rangé), `code`/`expire_a` (le code n'est gardé que par son empreinte, C14 — non restituable dans une liste). **`revoquee` est rendu `attendue`** : une clé révoquée et une clé jamais posée valent toutes deux `cle: None`, indistinguables sans un état qu'on ne garde pas encore.
+2. `GET /v1/appareils` — `09594f6`. Rend `{"appareil","attestation":"aucune|apple|google","revoque":bool}`. **Absents** : `enrole_a`/`revoque_a` (aucun horodatage rangé). Nouvel index `APPAREILS_PAR_COMPTE`, non rétro-rempli (aucun appareil réel déployé).
+3. `GET /v1/machines/{m}/services` — `2cf05dc`. Chaque service déclaré porte `nom` et `etat` (`annonce`|`parti`) ; un service `parti` apparaît. **Écart de forme à confirmer** : les détails d'un service vivant sont son `asl_proto::Reponse` **réémis verbatim sous `"annonce"`** (non aplati — `Reponse` sert aussi `GET /v1/ou`, l'aplatir dupliquerait ce contrat). Donc **pas de champ `points` distinct** (dans `annonce.joignabilite`) et **pas de `annonce_a`** (aucune date murale rangée). `volontaire` retombe à `null` dès que la session quitte le vivier.
+   ```jsonc
+   {"service":"s-…","nom":"grenier-http","etat":"annonce","annonce":{ /* asl_proto::Reponse verbatim */ }}
+   {"service":"s-…","nom":"nas","etat":"parti","volontaire":null}
+   ```
+4. `POST /v1/autorisations` + `AutorisationRendue` — `5f3b98f`. `etiquette` rangée dans l'`Autorisation`. ⚠️ **REQUISE** : le client DOIT l'envoyer à chaque POST, sinon `ChampManquant`.
 
 Deux détails de barrière, vus depuis macOS :
 
@@ -95,7 +107,26 @@ Deux détails de barrière, vus depuis macOS :
 
 ### Ce que speedy attend d'oxygen
 
-_(à remplir par speedy)_
+**Une CAPTURE réelle**, pour figer deux vérifications d'attestation aujourd'hui
+bâties sur la documentation seule : `asl-apple` et `asl-play` compilent et sont
+fuzzés, mais leurs constantes ne sont pas confirmées par un vrai appareil, et
+`--attestation exigee` reste dangereux tant qu'on ne les a pas confrontées à ça.
+
+1. **App Attest (iPhone réel)** — l'objet d'attestation CBOR produit par
+   `outils-capture/CaptureAppAttest.swift` sur un défi fourni par le serveur, en
+   hexadécimal ou base64, avec le `keyId`, le `bundleId` (`teamId.bundle`) et
+   l'environnement (`appattest` ou `appattestdevelop`). De quoi confirmer les
+   constantes d'`asl-apple` : aaguid, chaîne jusqu'à la racine Apple, nonce =
+   SHA256(authData ‖ SHA256(défi)), rpIdHash, compteur.
+2. **Play Integrity (Android réel)** — un jeton renvoyé par
+   `outils-capture/CaptureIntegrity.kt`, **plus les deux clés Play Console** de la
+   « réponse chiffrée gérée par le développeur » : la clé de déchiffrement
+   AES-256 et la clé publique de vérification EC (SPKI). De quoi écrire la
+   politique de verdict d'`asl-play` (aujourd'hui seul le cœur crypto existe :
+   JWE→JWS→JSON, sans décision sur le contenu du verdict).
+
+Dépose-les dans le dépôt serveur (`docs/attestation/`) ou signale-les à speedy.
+C'est le dernier verrou avant que l'attestation soit exigible en production.
 
 ## Les règles qui ne se négocient pas
 
