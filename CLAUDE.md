@@ -36,6 +36,8 @@ Et deux changements qui touchent tout le dépôt :
 - **Le SHA des dépendances serveur est avancé de `7174ac8` à `cee3170`**, pour
   prendre `asl-api` (la grammaire des corps mobiles) et la clé d'appareil
   P-256 d'`asl-cle`. `asl-api` s'ajoute aux trois crates tirées du serveur.
+  **Puis à `2cf05dc`** (2026-09-13), pour les quatre verbes servis par speedy
+  ci-dessous.
 - Deux codes de plus dans l'ABI : `ASL_NON_CONNECTE` (−10) et
   `ASL_SIGNATURE_REFUSEE` (−11). `asl_faute_texte` rendait « code inconnu »
   pour `ASL_PAS_DE_POUSSEE` ; c'est corrigé au passage.
