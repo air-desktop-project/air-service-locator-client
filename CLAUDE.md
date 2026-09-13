@@ -151,6 +151,22 @@ fuzzés, mais leurs constantes ne sont pas confirmées par un vrai appareil, et
    politique de verdict d'`asl-play` (aujourd'hui seul le cœur crypto existe :
    JWE→JWS→JSON, sans décision sur le contenu du verdict).
 
+**En attendant l'iPhone — une app macOS d'enrôlement (speedy, 2026-09-13).** Pour
+valider la chaîne **clé-d'appareil P-256** (Secure Enclave + Touch ID) sur du **vrai
+matériel Apple** sans attestation : consignes dans le dépôt serveur
+`docs/attestation/enrolement-macos.md`. Le code iOS (`CleAppareil` — déjà des branches
+macOS —, `AnnuaireReel` — crée déjà en `ASL_PLATEFORME_AUCUNE`) se réutilise presque
+tel quel ; le neuf = une **cible macOS**, une UI minimale, et le **xcframework construit
+pour macOS** (slice `aarch64-apple-darwin`, côté CE dépôt). Compte créé en `attestation
+Aucune` contre `nitrogen` → valide `asl-cle` et l'enrôlement, **pas** `asl-apple` (App
+Attest n'existe pas sur macOS ; l'iPhone reste requis pour l'attestation).
+
+**Capture Play déjà là, partielle.** Une première capture réelle est sur la branche
+serveur `capture-play-integrity` (`docs/attestation/captures/`) : elle **confirme la
+grammaire** (JWE `A256KW`/`A256GCM` → JWS, vérifié octet pour octet — 5 segments, CEK 40,
+IV 12, tag 16), mais le jeton est sous les **clés gérées par Google** ; le verdict attend
+encore les deux clés « gérées par moi » du point 2.
+
 Dépose-les dans le dépôt serveur (`docs/attestation/`) ou signale-les à speedy.
 C'est le dernier verrou avant que l'attestation soit exigible en production.
 
