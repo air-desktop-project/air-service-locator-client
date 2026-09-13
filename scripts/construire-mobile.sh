@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 #
-# construire-mobile — les objets natifs que les deux applications mobiles
-# embarquent : un xcframework pour iOS, un objet partagé JNI pour Android.
+# construire-mobile — les objets natifs que les applications embarquent : un
+# xcframework pour iOS et macOS, un objet partagé JNI pour Android.
 #
 # # CE QUE CE SCRIPT PRODUIT, ET OÙ
 #
 #   target/mobile/AslClient.xcframework   iOS : appareil (arm64) et simulateur
-#                                         (arm64 + x86_64, réunis par lipo),
-#                                         avec `include/asl.h` et une carte de
-#                                         module pour que Swift l'importe.
+#                                         (arm64 + x86_64, réunis par lipo) ;
+#                                         macOS : arm64 + x86_64, réunis de
+#                                         même — avec `include/asl.h` et une
+#                                         carte de module pour que Swift
+#                                         l'importe.
 #   target/mobile/jniLibs/arm64-v8a/libasl_client_android.so
 #                                         Android : la voie mobile par JNI.
 #
@@ -19,7 +21,8 @@
 # # CE QU'IL FAUT
 #
 #   • les cibles Rust : `rustup target add aarch64-apple-ios x86_64-apple-ios
-#     aarch64-apple-ios-sim aarch64-linux-android --toolchain <celle du dépôt>`
+#     aarch64-apple-ios-sim aarch64-apple-darwin x86_64-apple-darwin
+#     aarch64-linux-android --toolchain <celle du dépôt>`
 #   • Xcode, pour `lipo` et `xcodebuild -create-xcframework` ;
 #   • le NDK Android, désigné par `ANDROID_NDK` (ou trouvé sous
 #     `$ANDROID_HOME/ndk/*`), pour l'éditeur de liens d'`aarch64-linux-android`.
@@ -29,17 +32,21 @@
 # sur le Mac qui construit les applications — et dans la CI de chaque
 # application, qui ne construit que sa moitié :
 #
-#   construire-mobile.sh            les deux
-#   construire-mobile.sh ios        le xcframework seul (Xcode, pas de NDK)
+#   construire-mobile.sh            tout
+#   construire-mobile.sh apple      le xcframework seul, iOS et macOS (Xcode, pas de NDK)
 #   construire-mobile.sh android    l'objet JNI seul (NDK, pas d'Xcode)
+#
+# (`ios` reste accepté et vaut `apple` : le xcframework porte toujours les
+# deux plates-formes, un même dépôt d'application les construit toutes deux.)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 quoi="${1:-tout}"
 case "$quoi" in
-    tout|ios|android) ;;
-    *) echo "usage : $0 [ios|android]" >&2; exit 2 ;;
+    tout|apple|android) ;;
+    ios) quoi=apple ;;
+    *) echo "usage : $0 [apple|android]" >&2; exit 2 ;;
 esac
 
 sortie="target/mobile"
@@ -54,6 +61,10 @@ for cible in aarch64-apple-ios x86_64-apple-ios aarch64-apple-ios-sim; do
     echo "iOS : $cible"
     cargo build --release --quiet -p asl-client-ffi --target "$cible"
 done
+for cible in aarch64-apple-darwin x86_64-apple-darwin; do
+    echo "macOS : $cible"
+    cargo build --release --quiet -p asl-client-ffi --target "$cible"
+done
 
 # Les deux tranches de simulateur dans un seul objet : un xcframework ne porte
 # qu'une bibliothèque par plate-forme, et « simulateur » en est une.
@@ -62,6 +73,12 @@ lipo -create \
     target/x86_64-apple-ios/release/libasl_client_ffi.a \
     target/aarch64-apple-ios-sim/release/libasl_client_ffi.a \
     -output "$simulateur"
+# Et macOS de même : un Mac Intel et un Mac Apple Silicon dans un seul objet.
+macos="$sortie/libasl_client_ffi-macos.a"
+lipo -create \
+    target/x86_64-apple-darwin/release/libasl_client_ffi.a \
+    target/aarch64-apple-darwin/release/libasl_client_ffi.a \
+    -output "$macos"
 
 # L'en-tête et sa carte de module : c'est ce qui rend `import CAsl` possible
 # côté Swift, sans copier l'en-tête dans le dépôt de l'application.
@@ -80,12 +97,13 @@ rm -rf "$sortie/AslClient.xcframework"
 xcodebuild -create-xcframework \
     -library target/aarch64-apple-ios/release/libasl_client_ffi.a -headers "$entetes" \
     -library "$simulateur" -headers "$entetes" \
+    -library "$macos" -headers "$entetes" \
     -output "$sortie/AslClient.xcframework" >/dev/null
 echo "  → $sortie/AslClient.xcframework"
 fi
 
 # ── Android ──────────────────────────────────────────────────────────────────
-if [ "$quoi" != ios ]; then
+if [ "$quoi" != apple ]; then
 ndk="${ANDROID_NDK:-}"
 if [ -z "$ndk" ] && [ -n "${ANDROID_HOME:-}" ]; then
     ndk=$(ls -d "$ANDROID_HOME"/ndk/* 2>/dev/null | sort -V | tail -1 || true)
