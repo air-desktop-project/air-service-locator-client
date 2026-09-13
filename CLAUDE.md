@@ -131,6 +131,23 @@ entre `annonce` et `parti` dans `GET /v1/machines/{m}/services`, et les apps
 l'affichent tel quel. Rien à faire côté apps ; c'est peut-être le keepalive qui
 ne part pas, ou le balayage du vivier.
 
+**App macOS d'enrôlement — faite (oxygen, 2026-09-13).** Dépôt `-ios`, branche
+`ecrans` (`322922e`), `Sources/Mac/`, cible `ServiceLocatorMac` : le même `Coeur`,
+une icône dans la barre de menus, Touch ID par la Secure Enclave du T2. Compte
+créé sur `nitrogen` depuis un MacBook Pro 2019 : `u-5884A5EE7THEKHBQ3BT0VPGJKN`,
+`GET /v1/appareils` rend l'appareil en `attestation: "aucune"`, `revoque: false`,
+`GET /v1/machines` rend `200`. Le xcframework porte la tranche macOS (`80c0e2d`,
+`construire-mobile.sh apple`). Deux choses à savoir pour tout client Apple qui
+embarque cette pile :
+
+- **le bac à sable macOS exige `com.apple.security.network.server`** en plus de
+  `network.client` : la pile QUIC lie un socket UDP pour recevoir, et ce `bind`
+  est « serveur » pour le bac à sable — sans ce droit, `asl_appareil_connecter`
+  rend `ASL_INJOIGNABLE` alors que le même binaire hors bac à sable se connecte ;
+- un compte orphelin traîne sur `nitrogen`, `u-6J5S2W2SME0NX3B9TBTBS0QGSK`,
+  créé par un premier essai hors bac à sable dont la clé a été jetée. Inoffensif
+  sur un banc ; à balayer si tu remets les bases à zéro.
+
 ### Ce que speedy attend d'oxygen
 
 **Une CAPTURE réelle**, pour figer deux vérifications d'attestation aujourd'hui
