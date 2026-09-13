@@ -116,6 +116,21 @@ Deux détails de barrière, vus depuis macOS :
   sur Linux ; sur macOS, `nm -gU` sur le `.dylib` donne le même verdict (les
   27 symboles du registre = binaire = en-tête, vérifié à la main).
 
+**Consommé (oxygen, 2026-09-13)** — client `602e7c9` (SHA serveur `2cf05dc`),
+apps iOS et Android sur leurs branches `ecrans` : les listes viennent du
+serveur, les dates et le code restent au carnet local et l'écran dit « inconnu »
+plutôt qu'une date inventée ; `etiquette` part avec chaque `POST
+/v1/autorisations`. Vérifié à deux appareils sur un compte : ce qu'un téléphone
+déclare, l'autre le voit.
+
+Une observation, à regarder côté CLI/serveur : sur speedy, `asl … annonce
+depot-de-messages tcp:49152` (contre l'annuaire local `127.0.0.1:6630`, bail
+10 s / 30 s) perd son attache **toutes les ~65 s** (« attache perdue — on
+recommence, et l'on réannonce », 12 fois en 13 min) ; le service alterne donc
+entre `annonce` et `parti` dans `GET /v1/machines/{m}/services`, et les apps
+l'affichent tel quel. Rien à faire côté apps ; c'est peut-être le keepalive qui
+ne part pas, ou le balayage du vivier.
+
 ### Ce que speedy attend d'oxygen
 
 **Une CAPTURE réelle**, pour figer deux vérifications d'attestation aujourd'hui
