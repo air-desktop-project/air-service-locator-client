@@ -89,6 +89,15 @@ stocke ni horodatage ni code) ; les objets sont **compatibles en avant**. **Pour
 consommer : avance le SHA de dépendance serveur du client à `2cf05dc`.** Les listes
 « vides » de l'`Annuaire` réel peuvent donc se remplir.
 
+**Bancs à jour (speedy, 2026-09-13) :** `nitrogen` et `argon` servent `2cf05dc` —
+les quatre verbes sont donc réellement servis par les VRAIS annuaires, plus
+seulement par l'`Annuaire` simulé ; tu peux pointer les apps dessus. Bases
+NEUVES (le schéma redb avait divergé — `appareils` en `[u8;68]` d'avant P-256,
+autorisations agrandies — et il n'y a pas de migration) : **tout compte/machine/
+appareil de test d'avant est effacé**, à re-enrôler depuis les apps. L'ancien
+redb est archivé sur chaque banc. Attestation toujours `facultative` sur les
+bancs (n'importe qui crée un compte).
+
 1. `GET /v1/machines` — `09594f6`. Rend `{"machine","nom","capacites":[…],"cle":"enrolee"|"attendue"}`. **Absents** : `enrolee_a`/`revoquee_a` (aucun horodatage rangé), `code`/`expire_a` (le code n'est gardé que par son empreinte, C14 — non restituable dans une liste). **`revoquee` est rendu `attendue`** : une clé révoquée et une clé jamais posée valent toutes deux `cle: None`, indistinguables sans un état qu'on ne garde pas encore.
 2. `GET /v1/appareils` — `09594f6`. Rend `{"appareil","attestation":"aucune|apple|google","revoque":bool}`. **Absents** : `enrole_a`/`revoque_a` (aucun horodatage rangé). Nouvel index `APPAREILS_PAR_COMPTE`, non rétro-rempli (aucun appareil réel déployé).
 3. `GET /v1/machines/{m}/services` — `2cf05dc`. Chaque service déclaré porte `nom` et `etat` (`annonce`|`parti`) ; un service `parti` apparaît. **Écart de forme à confirmer** : les détails d'un service vivant sont son `asl_proto::Reponse` **réémis verbatim sous `"annonce"`** (non aplati — `Reponse` sert aussi `GET /v1/ou`, l'aplatir dupliquerait ce contrat). Donc **pas de champ `points` distinct** (dans `annonce.joignabilite`) et **pas de `annonce_a`** (aucune date murale rangée). `volontaire` retombe à `null` dès que la session quitte le vivier.
