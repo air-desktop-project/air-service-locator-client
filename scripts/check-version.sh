@@ -34,6 +34,13 @@
 # changement, et un script qui le rendrait se tromperait dans les deux sens.
 # La revue le porte.
 #
+# # IL TOURNE AUSSI SUR macOS, ET CELA SE VOIT DANS SA SYNTAXE
+#
+# Le `sed` des BSD veut un `;` avant `}`, ne connaît ni `\?` ni `\s` ; le
+# `bash` livré avec macOS est un 3.2 sans `mapfile` ni tableaux associatifs ;
+# et `sort -V` n'y est pas promis. Rien ici n'emploie ces commodités, et la
+# comparaison de deux versions se fait à la main, champ par champ.
+#
 # Usage : scripts/check-version.sh [base]
 
 set -euo pipefail
@@ -48,7 +55,28 @@ violations=0
 # ── La version du workspace ──────────────────────────────────────────────────
 
 version_du_manifeste() {
-    sed -n '/^\[workspace\.package\]/,/^\[/{s/^version = "\(.*\)"$/\1/p}' "$1" | head -1
+    sed -n '/^\[workspace\.package\]/,/^\[/{s/^version = "\(.*\)"$/\1/p;}' "$1" | head -1
+}
+
+# `a` est-elle STRICTEMENT inférieure à `b` ? Semver, sans `sort -V` : les trois
+# nombres d'abord ; à nombres égaux, une pré-version passe avant la version
+# pleine, et deux pré-versions se comparent en texte.
+inferieure() {
+    local a="$1" b="$2" na nb pa pb i
+    na="${a%%-*}"; nb="${b%%-*}"
+    pa=""; pb=""
+    [ "$na" != "$a" ] && pa="${a#*-}"
+    [ "$nb" != "$b" ] && pb="${b#*-}"
+    for i in 1 2 3; do
+        local ca cb
+        ca=$(printf '%s' "$na" | cut -d. -f"$i")
+        cb=$(printf '%s' "$nb" | cut -d. -f"$i")
+        [ "$ca" -lt "$cb" ] && return 0
+        [ "$ca" -gt "$cb" ] && return 1
+    done
+    [ -n "$pa" ] && [ -z "$pb" ] && return 0
+    [ -z "$pa" ] && [ -n "$pb" ] && return 1
+    [ "$pa" \< "$pb" ]
 }
 
 version=$(version_du_manifeste Cargo.toml)
@@ -69,7 +97,10 @@ fi
 # et non « tout ce qui s'appelle `asl-*` » : le dépôt client tire par `git` des
 # crates `asl-*` du serveur, qui portent la version DU SERVEUR, et un contrôle
 # par le nom les accuserait à tort.
-mapfile -t membres < <(sed -n '/^members = \[/,/^\]/{s/^[[:space:]]*"\([^"]*\)",\?$/\1/p}' Cargo.toml)
+membres=()
+while IFS= read -r membre; do
+    membres+=("$membre")
+done < <(sed -n '/^members = \[/,/^\]/{s/^[[:space:]]*"\([^"]*\)",\{0,1\}$/\1/p;}' Cargo.toml)
 if [ "${#membres[@]}" -eq 0 ]; then
     echo "VIOLATION  \`[workspace] members\` est introuvable dans Cargo.toml"
     exit 1
@@ -124,15 +155,24 @@ done
 # a sa propre place pour écrire une version. Elles disent toutes celle du
 # workspace, sinon un paquet Python ou une gemme porterait un numéro qu'aucun
 # commit ne nomme. Le dépôt serveur n'en a pas : ce bloc n'y fait rien.
-declare -A liaisons=(
-    [liaisons/python/pyproject.toml]='^version = "\(.*\)"$'
-    [liaisons/ruby/asl.gemspec]='^[[:space:]]*gemme\.version = "\(.*\)"$'
-    [liaisons/kotlin/build.gradle.kts]='^version = "\(.*\)"$'
-    [liaisons/cpp/CMakeLists.txt]='^project(.* VERSION \([0-9.]*\))$'
+# Deux listes parallèles plutôt qu'un tableau associatif : le bash 3.2 de
+# macOS n'en a pas.
+liaisons_fichiers=(
+    liaisons/python/pyproject.toml
+    liaisons/ruby/asl.gemspec
+    liaisons/kotlin/build.gradle.kts
+    liaisons/cpp/CMakeLists.txt
 )
-for fichier in "${!liaisons[@]}"; do
+liaisons_motifs=(
+    '^version = "\(.*\)"$'
+    '^[[:space:]]*gemme\.version = "\(.*\)"$'
+    '^version = "\(.*\)"$'
+    '^project(.* VERSION \([0-9.]*\))$'
+)
+for i in "${!liaisons_fichiers[@]}"; do
+    fichier="${liaisons_fichiers[$i]}"
     [ -f "$fichier" ] || continue
-    lue=$(sed -n "s/${liaisons[$fichier]}/\1/p" "$fichier" | head -1)
+    lue=$(sed -n "s/${liaisons_motifs[$i]}/\1/p" "$fichier" | head -1)
     if [ "$lue" != "$version" ]; then
         echo "VIOLATION  $fichier dit « ${lue:-rien} », et non $version"
         violations=$((violations + 1))
@@ -172,7 +212,7 @@ else
         echo "VIOLATION  la version n'a pas changé depuis $base : une PR qui ne change"
         echo "           pas la version ne se merge pas (bump dans \`[workspace.package]\`)"
         violations=$((violations + 1))
-    elif [ "$(printf '%s\n%s\n' "$ancienne" "$version" | sort -V | tail -1)" != "$version" ]; then
+    elif inferieure "$version" "$ancienne"; then
         echo "VIOLATION  $version est INFÉRIEURE à $ancienne, la version de $base"
         violations=$((violations + 1))
     else
