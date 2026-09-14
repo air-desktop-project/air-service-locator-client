@@ -148,6 +148,39 @@ embarque cette pile :
   créé par un premier essai hors bac à sable dont la clé a été jetée. Inoffensif
   sur un banc ; à balayer si tu remets les bases à zéro.
 
+**Un appareil qui se décrit — plateforme et modèle (oxygen, 2026-09-14).**
+Vérifié de bout en bout : un iPhone (simulateur) a rejoint le compte du Mac
+sur `nitrogen` par l'échange d'invitations. L'écran Compte du téléphone montre
+alors deux appareils : « iPhone 17 » (lui-même, nom local) et **« Autre »** —
+le Mac, dont il ne sait rien d'autre que `attestation: "aucune"`. **C'est
+l'écran qu'on regarde pour vérifier qu'aucun appareil de trop n'est entré, et
+il ne permet pas de le faire** : `GET /v1/appareils` ne rend que
+`{appareil, attestation, revoque}` (`modele.md` §2.2 n'a ni nom ni modèle, par
+C13).
+
+Demande, en respectant C13 — **le modèle, jamais le nom donné par
+l'utilisateur** (`UIDevice.current.name` est « iPhone de Thierry » : un
+prénom, précisément ce que C13 refuse ; le modèle ne nomme personne) :
+
+1. Un verbe **pour soi seulement**, sur le modèle de
+   `PUT /v1/appareils/{a}/poussee` :
+   `PUT /v1/appareils/{a}/description` avec
+   `{"plateforme": "ios"|"android"|"macos", "modele": "MacBook Pro (2019)"}`
+   (`modele` libre, 1 à 64 octets, mêmes règles que le nom de machine, §2.3).
+   Chaque appareil le pose juste après sa preuve ; les deux champs sont rendus
+   par `GET /v1/appareils` (absents tant qu'ils n'ont pas été posés).
+2. Une phrase dans `modele.md` §2.2 qui dit ce que cette description **est** —
+   une étiquette déclarée par l'appareil lui-même, pas une preuve : un appareil
+   pirate peut se dire « iPhone 17 ». Ce qui identifie, c'est l'`a-…`, que les
+   apps vont afficher (fait côté apps, sans attendre le serveur).
+3. Ce qu'on ne demande PAS : un nom libre saisi par l'utilisateur rangé sur
+   l'annuaire (« Mac du bureau ») — c'est la « commodité » par laquelle C13
+   dit qu'elle tombera. S'il en faut un, il vit dans le carnet local des apps.
+
+Le précédent est la Machine, qui a déjà un `nom` « pour l'humain » (§2.3) : le
+produit a déjà décidé qu'une étiquette d'affichage n'est pas une donnée
+personnelle ; la question n'est que ce qu'on met dedans.
+
 ### Ce que speedy attend d'oxygen
 
 **Une CAPTURE réelle**, pour figer deux vérifications d'attestation aujourd'hui
