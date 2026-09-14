@@ -39,8 +39,11 @@ echo "check-toolchain — une seule toolchain, celle d'Air (C16)"
 echo "attendu : $attendu"
 echo
 
+# `[[:space:]]` et non `\s` : le second est une extension GNU, et ce script
+# tourne aussi sur macOS, dont le `grep` et le `sed` sont ceux des BSD.
 lire_canal() {
-    grep -E '^\s*channel\s*=' "$1" | head -1 | sed 's/.*=\s*"\(.*\)".*/\1/'
+    grep -E '^[[:space:]]*channel[[:space:]]*=' "$1" | head -1 \
+        | sed 's/.*=[[:space:]]*"\(.*\)".*/\1/'
 }
 
 violations=0
