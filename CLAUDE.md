@@ -259,6 +259,20 @@ C'est le dernier verrou avant que l'attestation soit exigible en production.
 - **L'ABI est un contrat** (C12) : un ajout est libre et s'inscrit dans
   `abi.txt` ET `include/asl.h` dans le même commit ; un retrait est une
   rupture majeure.
+- **Chaque PR change la version semver (`MAJOR.MINOR.PATCH`) de
+  l'application, dans le commit qui porte le changement ; une PR qui ne change
+  pas la version ne se merge pas.** La version vit à un endroit,
+  `[workspace.package] version` dans `Cargo.toml`, et TOUT la suit en
+  lockstep : les arêtes internes de `[workspace.dependencies]`, les deux
+  verrous (`cargo update --workspace --offline`, ici et dans `fuzz/`), et les
+  liaisons — `liaisons/python/pyproject.toml`, `liaisons/ruby/asl.gemspec`,
+  `liaisons/kotlin/build.gradle.kts`, `liaisons/cpp/CMakeLists.txt`. Le cran
+  est un jugement sur le changement (ajout compatible : mineur ; correction :
+  patch ; rupture d'ABI ou de protocole : majeur) ; la revue le porte, et
+  `scripts/check-version.sh` — lancé par la CI sur chaque PR — ne juge que le
+  fait qu'elle ait bougé, dans le bon sens, et que les crates la partagent.
+  `asl --version` dit la version et le commit du binaire ; l'annuaire rend la
+  sienne par `GET /v1/version`.
 - `scripts/check-tout.sh` avant de pousser ; sur macOS, les barrières une à
   une (voir ci-dessus).
 - **Ce dépôt est PUBLIC.** Aucun secret dans un commit, un message, un fichier.

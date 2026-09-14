@@ -60,6 +60,24 @@ jobs:
       - name: check-dco
         run: ./scripts/check-dco.sh "${{ steps.base.outputs.base }}"
 
+  # ── La version ─────────────────────────────────────────────────────────────
+  #
+  # « Une PR qui ne change pas la version ne se merge pas » (`CLAUDE.md`). Sur
+  # une pull request seulement : sur `main`, il n'y a pas de PR à juger, et le
+  # script le dirait lui-même. Séparé du DCO pour que son échec se lise seul.
+  version:
+    name: la version change (semver)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Historique COMPLET : la comparaison lit `Cargo.toml` sur la base.
+          fetch-depth: 0
+
+      - name: check-version
+        run: ./scripts/check-version.sh "origin/${{ github.base_ref }}"
+
   verification:
     name: compile, clippy, tests, format
     runs-on: ubuntu-latest
