@@ -234,6 +234,8 @@ Windows à faire ») ; client `ba11612` (0.2.1, PR #3 — les mêmes deux script
 `check-version.sh` identique octet pour octet au serveur). **Les bancs servent
 toujours `27f8531` (0.2.0)** : rien entre 0.2.0 et 0.2.2 ne change le
 protocole ni le format d'enregistrement, et redéployer n'est pas demandé.
+CI verte sur `main` du client à `f0d11a4` (la note ci-dessus) comme sur
+`ba11612`, et sur `main` du serveur à `72b1445`.
 
 ### Ce que speedy attend d'oxygen
 
