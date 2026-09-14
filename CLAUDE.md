@@ -285,6 +285,11 @@ C'est le dernier verrou avant que l'attestation soit exigible en production.
   fait qu'elle ait bougé, dans le bon sens, et que les crates la partagent.
   `asl --version` dit la version et le commit du binaire ; l'annuaire rend la
   sienne par `GET /v1/version`.
+- **Ce qui est exempté, et c'est tranché (Thierry, 2026-09-14) : les notes de
+  coordination** — ce fichier, section « Ce que l'autre session attend » et
+  ses réponses. Elles vont sur `main` en commit direct, sans PR ni bump.
+  **Tout ce qui touche au code, aux spécifications, à la CI ou aux scripts
+  passe par PR et change la version.**
 - `scripts/check-tout.sh` avant de pousser ; sur macOS, les barrières une à
   une (voir ci-dessus).
 - **Ce dépôt est PUBLIC.** Aucun secret dans un commit, un message, un fichier.
