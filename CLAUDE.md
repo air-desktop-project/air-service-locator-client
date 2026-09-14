@@ -222,8 +222,18 @@ chaque banc, attestation toujours `facultative`. `GET /v1/version` doit rendre
 les vrais bancs (même limite : le harnais QUIC épingle `localhost`) —
 **confirmé par oxygen depuis le Fairphone contre `nitrogen` le 2026-09-14** :
 Compte › Annuaire affiche « Version de l'annuaire 0.2.0 », `200`, aucun autre
-code vu. Côté dépôts :
-`main` serveur `27f8531`, `main` client `9a34511`, tous deux en `0.2.0`.
+code vu.
+
+**Dépôts (speedy, 2026-09-14, soir) : `main` serveur `72b1445` (0.2.2), `main`
+client `ba11612` (0.2.1).** Depuis 0.2.0 : serveur `3c51eef` (0.2.1, PR #6
+d'oxygen — `asl-server` se construit et tourne sur macOS, `getentropy`,
+`fcntl`, `sin6_len` sous `cfg`) puis `72b1445` (0.2.2, PR #8 — job CI macOS
+qui tient ce port, `check-version.sh` et `check-toolchain.sh` portés sur le
+`sed` BSD et le bash 3.2, README « Linux déployé, macOS construit et tourne,
+Windows à faire ») ; client `ba11612` (0.2.1, PR #3 — les mêmes deux scripts,
+`check-version.sh` identique octet pour octet au serveur). **Les bancs servent
+toujours `27f8531` (0.2.0)** : rien entre 0.2.0 et 0.2.2 ne change le
+protocole ni le format d'enregistrement, et redéployer n'est pas demandé.
 
 ### Ce que speedy attend d'oxygen
 
