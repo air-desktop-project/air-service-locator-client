@@ -78,13 +78,22 @@
 #
 # Elle arrive ici par `cpufeatures`, que `sha2` emploie pour choisir son chemin
 # selon le processeur.
+#
+# # `jni-sys` EST ADMISE, POUR LA MÊME RAISON
+#
+# Ce sont les DÉCLARATIONS de la convention JNI — la table de fonctions que la
+# machine virtuelle d'Android tend à tout objet natif qu'elle charge. Aucun
+# `#[link]`, aucun C ; son `build.rs` ne lie `libjvm` que sous une variable
+# d'environnement réservée à ses propres essais, qui n'est jamais posée ici.
+# Elle arrive par `jni`, qu'`asl-client-android` emploie pour exporter la voie
+# mobile à Kotlin sans écrire une ligne de C — ce qui est exactement C4.
 
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
 # Ce qui est admis malgré un nom ou une nature qui pourraient inquiéter.
-ADMISES=(libc)
+ADMISES=(libc jni-sys)
 
 echo 'check-sans-c — rien ne compile ni ne lie du C (C4)'
 echo

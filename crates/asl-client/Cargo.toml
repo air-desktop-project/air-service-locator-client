@@ -13,6 +13,7 @@ repository.workspace = true
 asl-id.workspace = true
 asl-proto.workspace = true
 asl-cle.workspace = true
+asl-api.workspace = true
 
 [lints]
 workspace = true

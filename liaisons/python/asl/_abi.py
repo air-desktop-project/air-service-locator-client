@@ -48,9 +48,29 @@ ASL_INTERNE = -6
 ASL_PAS_D_IDENTITE = -7
 ASL_DEJA = -8
 ASL_PAS_DE_POUSSEE = -9
+ASL_NON_CONNECTE = -10
+ASL_SIGNATURE_REFUSEE = -11
 
 ASL_IDENTIFIANT_OCTETS = 29
 ASL_GRAINE_OCTETS = 32
+
+# ── LA VOIE MOBILE ──────────────────────────────────────────────────────────
+#
+# Ce qu'un TÉLÉPHONE appelle (`asl_appareil_*`), transcrit ici parce que cette
+# liaison transcrit l'en-tête ENTIER — c'est ce que sa barrière vérifie, et une
+# exception serait le trou par lequel la suivante passerait. Aucune enveloppe
+# idiomatique n'est écrite par-dessus : un daemon Python n'a pas de Secure
+# Enclave, et cette voie n'est pas la sienne.
+
+ASL_CLE_APPAREIL_OCTETS = 33
+ASL_SIGNATURE_OCTETS = 64
+ASL_DEFI_OCTETS = 32
+ASL_MESSAGE_MAX = 138
+ASL_ATTESTATION_MAX = 8192
+
+ASL_PLATEFORME_AUCUNE = 0
+ASL_PLATEFORME_APPLE = 1
+ASL_PLATEFORME_GOOGLE = 2
 
 ASL_TCP = 1
 ASL_UDP = 2
@@ -274,5 +294,74 @@ def _declarer(lib: ctypes.CDLL) -> ctypes.CDLL:
         ctypes.POINTER(ctypes.c_uint8),
     ]
     lib.asl_derniere_poussee.restype = i32
+
+    # ── LA VOIE MOBILE — déclarée, jamais enveloppée (voir les constantes) ──
+    u8p = ctypes.POINTER(ctypes.c_uint8)
+    # `int32_t (*)(void *, const uint8_t *, size_t, uint8_t *)`
+    signataire = ctypes.CFUNCTYPE(i32, ctypes.c_void_p, u8p, ctypes.c_size_t, u8p)
+
+    lib.asl_appareil_neuf.argtypes = [ctypes.POINTER(opaque)]
+    lib.asl_appareil_neuf.restype = i32
+
+    lib.asl_appareil_annuaire.argtypes = [opaque, ctypes.c_char_p, ctypes.c_char_p]
+    lib.asl_appareil_annuaire.restype = i32
+
+    lib.asl_appareil_racines.argtypes = [opaque, u8p, ctypes.c_size_t]
+    lib.asl_appareil_racines.restype = i32
+
+    lib.asl_appareil_cle.argtypes = [opaque, u8p, signataire, ctypes.c_void_p]
+    lib.asl_appareil_cle.restype = i32
+
+    lib.asl_appareil_identite.argtypes = [opaque, ctypes.c_char_p]
+    lib.asl_appareil_identite.restype = i32
+
+    lib.asl_appareil_libere.argtypes = [opaque]
+    lib.asl_appareil_libere.restype = None
+
+    lib.asl_appareil_connecter.argtypes = [opaque]
+    lib.asl_appareil_connecter.restype = i32
+
+    lib.asl_appareil_deconnecter.argtypes = [opaque]
+    lib.asl_appareil_deconnecter.restype = i32
+
+    lib.asl_appareil_liaison.argtypes = [opaque, u8p]
+    lib.asl_appareil_liaison.restype = i32
+
+    lib.asl_appareil_defi.argtypes = [opaque, u8p]
+    lib.asl_appareil_defi.restype = i32
+
+    lib.asl_appareil_message_pour_attestation.argtypes = [
+        opaque,
+        u8p,
+        ctypes.c_size_t,
+        ctypes.POINTER(ctypes.c_size_t),
+    ]
+    lib.asl_appareil_message_pour_attestation.restype = i32
+
+    lib.asl_appareil_creer_compte.argtypes = [
+        opaque,
+        ctypes.c_uint8,
+        u8p,
+        ctypes.c_size_t,
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+    ]
+    lib.asl_appareil_creer_compte.restype = i32
+
+    lib.asl_appareil_requete.argtypes = [
+        opaque,
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        u8p,
+        ctypes.c_size_t,
+        u8p,
+        ctypes.c_size_t,
+        ctypes.POINTER(ctypes.c_size_t),
+        ctypes.POINTER(ctypes.c_uint16),
+    ]
+    lib.asl_appareil_requete.restype = i32
+
+    lib.asl_appareil_identifiant.argtypes = [opaque, ctypes.c_char_p]
+    lib.asl_appareil_identifiant.restype = i32
 
     return lib

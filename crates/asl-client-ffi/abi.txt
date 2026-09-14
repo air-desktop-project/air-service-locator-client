@@ -33,3 +33,23 @@ asl_ou
 # ── LES VERDICTS, POUSSÉS SUR LA CONNEXION TENUE ────────────────────────────
 asl_poussees_recues
 asl_derniere_poussee
+
+# ── LA VOIE MOBILE — ce qu'un téléphone appelle ─────────────────────────────
+#
+# Un handle à part (`asl_appareil`), parce qu'un téléphone n'est pas un daemon :
+# sa clé vit dans son matériel et se signe par RAPPEL, et ses requêtes sont
+# celles d'un écran, servies sur une connexion tenue.
+asl_appareil_neuf
+asl_appareil_annuaire
+asl_appareil_racines
+asl_appareil_cle
+asl_appareil_identite
+asl_appareil_libere
+asl_appareil_connecter
+asl_appareil_deconnecter
+asl_appareil_liaison
+asl_appareil_defi
+asl_appareil_message_pour_attestation
+asl_appareil_creer_compte
+asl_appareil_requete
+asl_appareil_identifiant

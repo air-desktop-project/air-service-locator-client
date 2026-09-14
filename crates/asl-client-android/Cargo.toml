@@ -1,0 +1,32 @@
+[package]
+name = "asl-client-android"
+description = "La voie mobile d'asl-client, exposée à Android par JNI — des symboles exportés depuis Rust, sans une ligne de C."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+# `cdylib` seulement : Android charge un objet partagé par `System.loadLibrary`,
+# et rien d'autre ne lie cette crate.
+crate-type = ["cdylib"]
+
+[dependencies]
+asl-client-ffi.workspace = true
+
+# ── JNI DEPUIS RUST, ET POURQUOI CE N'EST PAS DU C ─────────────────────────
+#
+# La liaison Kotlin de `liaisons/kotlin` passe par `java.lang.foreign`, qui
+# n'existe pas sur Android. Ce qui reste est JNI — et JNI est une CONVENTION
+# D'APPEL, pas un langage : un symbole `Java_…` exporté avec la bonne signature
+# suffit, et Rust sait l'exporter. La crate `jni` n'apporte que les types de
+# cette convention et l'accès à la machine virtuelle ; elle est en Rust pur,
+# et `scripts/check-sans-c.sh` continue de le vérifier sur le graphe résolu.
+#
+# C4 tient donc à la lettre : aucun C n'est compilé, et la glu vit ici, en
+# Rust, à côté de ce qu'elle expose.
+jni = { version = "0.21", default-features = false }
+
+[lints]
+workspace = true

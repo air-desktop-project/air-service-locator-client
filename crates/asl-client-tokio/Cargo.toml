@@ -26,9 +26,13 @@ ams-quic-tls.workspace = true
 ams-tls.workspace = true
 
 rustls.workspace = true
-tokio.workspace = true
+# `sync` EN PLUS : la voie mobile TIENT une connexion dans une tâche de fond et
+# lui passe ses requêtes par un canal (`Tenue`). Un canal, une réponse — rien
+# de ce que `net`, `time` et `rt` ne couvrent déjà, et rien de plus.
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
+asl-api.workspace = true
 # **LE SERVEUR D'EN FACE EST LE VRAI.** Un faux serveur dirait ce que nous
 # croyons qu'un annuaire dit ; celui-ci refuse une trame hors de son flux, une
 # section qui ne fait pas une requête, un ALPN qui n'est pas le nôtre.

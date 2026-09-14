@@ -93,7 +93,7 @@ class LEnteteEstLaReference < Minitest::Test
     # pas du tout : `charger` lèverait. Mieux vaut le dire ici.
     declarees = Fixtures.fonctions
 
-    assert_equal 13, declarees.size, "l'en-tête ne déclare plus treize fonctions"
+    assert_equal 27, declarees.size, "l'en-tête ne déclare plus vingt-sept fonctions"
     declarees.each do |fonction|
       assert Asl::Abi::SIGNATURES.key?(fonction.to_sym),
              "`#{fonction}` est déclarée dans l'en-tête et n'a pas de signature"

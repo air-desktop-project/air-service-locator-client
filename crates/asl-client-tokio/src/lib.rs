@@ -37,10 +37,12 @@ use asl_client::Identite;
 use asl_id::Identifiant;
 use tokio::net::UdpSocket;
 
+mod appareil;
 mod attache;
 mod pont;
 mod reponse;
 
+pub use appareil::{CompteCree, Tenue};
 pub use attache::{Annuaire, Attache, Etat, Reglages, cadence_du_bail, joindre};
 pub use pont::Pont;
 pub use reponse::Reponse;

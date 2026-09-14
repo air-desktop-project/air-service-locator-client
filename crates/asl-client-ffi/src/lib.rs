@@ -94,6 +94,15 @@ pub const ASL_DEJA: i32 = -8;
 /// produit aucune. Le distinguer d'une liste vide évite de faire croire à un
 /// porteur que ses points sont devenus injoignables.
 pub const ASL_PAS_DE_POUSSEE: i32 = -9;
+/// Cet appareil n'est pas connecté : appelez `asl_appareil_connecter`.
+pub const ASL_NON_CONNECTE: i32 = -10;
+/// Le signataire de l'application n'a pas rendu de signature.
+///
+/// **CE N'EST PAS UNE PANNE, C'EST LE PORTEUR** : il n'a pas confirmé son
+/// identité, ou a annulé. Rien n'est parti, et rien n'est à réessayer sans lui.
+pub const ASL_SIGNATURE_REFUSEE: i32 = -11;
+
+pub mod appareil;
 
 /// Combien d'octets écrit `asl_enroler` dans son tampon de machine, NUL compris.
 pub const ASL_IDENTIFIANT_OCTETS: usize = asl_id::LONGUEUR + 1;
@@ -248,7 +257,7 @@ impl AslClient {
 }
 
 /// Le plafond de recul par défaut, en millisecondes.
-const PLAFOND_MS: u64 = 15_000;
+pub(crate) const PLAFOND_MS: u64 = 15_000;
 
 /// Combien de temps un appel bloquant attend une connexion, en secondes.
 ///
@@ -304,6 +313,9 @@ pub extern "C" fn asl_faute_texte(code: i32) -> *const c_char {
         ASL_INTERNE => c"faute interne",
         ASL_PAS_D_IDENTITE => c"aucune identite: appelez asl_client_identite",
         ASL_DEJA => c"ce client annonce deja",
+        ASL_PAS_DE_POUSSEE => c"rien n'a ete pousse",
+        ASL_NON_CONNECTE => c"pas connecte: appelez asl_appareil_connecter",
+        ASL_SIGNATURE_REFUSEE => c"le porteur n'a pas signe",
         _ => c"code inconnu",
     };
     texte.as_ptr()
@@ -863,7 +875,7 @@ pub unsafe extern "C" fn asl_derniere_poussee(
 // ── CE QUI NE TRAVERSE PAS ──────────────────────────────────────────────────
 
 /// Rattrape tout, y compris ce qui n'aurait pas dû arriver.
-fn protege(corps: impl FnOnce() -> i32) -> i32 {
+pub(crate) fn protege(corps: impl FnOnce() -> i32) -> i32 {
     catch_unwind(AssertUnwindSafe(corps)).unwrap_or(ASL_INTERNE)
 }
 
@@ -872,7 +884,7 @@ fn protege(corps: impl FnOnce() -> i32) -> i32 {
 /// # Safety
 ///
 /// `brut`, s'il n'est pas nul, vise une suite d'octets terminée par NUL.
-unsafe fn chaine<'a>(brut: *const c_char) -> Option<&'a str> {
+pub(crate) unsafe fn chaine<'a>(brut: *const c_char) -> Option<&'a str> {
     if brut.is_null() {
         return None;
     }
@@ -885,7 +897,7 @@ unsafe fn chaine<'a>(brut: *const c_char) -> Option<&'a str> {
 /// # Safety
 ///
 /// `ou` vise au moins `texte.len() + 1` octets inscriptibles.
-unsafe fn ecrire_chaine(texte: &str, ou: *mut c_char) {
+pub(crate) unsafe fn ecrire_chaine(texte: &str, ou: *mut c_char) {
     // SAFETY : contrat de la fonction.
     unsafe {
         core::ptr::copy_nonoverlapping(texte.as_ptr().cast::<c_char>(), ou, texte.len());
@@ -894,7 +906,7 @@ unsafe fn ecrire_chaine(texte: &str, ou: *mut c_char) {
 }
 
 /// Ouvre une connexion, avec la patience d'une bibliothèque.
-async fn ouvrir(reglages: &Reglages) -> Result<asl_client_tokio::Connexion, i32> {
+pub(crate) async fn ouvrir(reglages: &Reglages) -> Result<asl_client_tokio::Connexion, i32> {
     let patience = tokio::time::Duration::from_secs(PATIENCE_S);
     match tokio::time::timeout(patience, asl_client_tokio::joindre(reglages, &graine16_ref)).await {
         Ok(Ok(connexion)) => Ok(connexion),
@@ -905,7 +917,7 @@ async fn ouvrir(reglages: &Reglages) -> Result<asl_client_tokio::Connexion, i32>
 
 /// Traduit un refus du réseau. **`REFUSE` et `INJOIGNABLE` restent distincts** :
 /// un droit manquant et un câble débranché se corrigent à des endroits opposés.
-fn traduire(quoi: asl_client_tokio::Faute) -> i32 {
+pub(crate) fn traduire(quoi: asl_client_tokio::Faute) -> i32 {
     match quoi {
         asl_client_tokio::Faute::Statut(_) => ASL_REFUSE,
         asl_client_tokio::Faute::Tls(_) => ASL_CONFIGURATION,
@@ -927,7 +939,7 @@ fn graine16_ref() -> [u8; 16] {
 ///
 /// **AUCUN REPLI INVENTÉ** sur le chemin qui compte : [`asl_enroler`] rend
 /// [`ASL_INTERNE`] plutôt qu'une clé tirée d'une horloge.
-fn graine_du_noyau<const N: usize>() -> Option<[u8; N]> {
+pub(crate) fn graine_du_noyau<const N: usize>() -> Option<[u8; N]> {
     use std::io::Read as _;
     let mut fichier = std::fs::File::open("/dev/urandom").ok()?;
     let mut octets = [0_u8; N];

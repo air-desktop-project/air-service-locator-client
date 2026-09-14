@@ -22,6 +22,8 @@ asl-client.workspace = true
 asl-client-tokio.workspace = true
 asl-id.workspace = true
 asl-proto.workspace = true
+asl-cle.workspace = true
+asl-api.workspace = true
 
 # `rt-multi-thread` EN PLUS, ET SEULEMENT ICI. L'annonce est tenue par une
 # connexion : elle doit progresser pendant que l'hôte fait autre chose. Un
@@ -30,6 +32,11 @@ asl-proto.workspace = true
 # dans le processus d'un tiers. Un seul fil de travail : ce client ne tient
 # qu'une connexion.
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[dev-dependencies]
+# Pour l'exemple `appareil` seulement : une clé P-256 logicielle qui joue le
+# rôle du matériel d'un téléphone. Elle est déjà dans le graphe par `asl-cle`.
+p256 = { version = "0.14", default-features = false, features = ["ecdsa"] }
 
 [lints]
 workspace = true

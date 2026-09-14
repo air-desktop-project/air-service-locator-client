@@ -24,6 +24,17 @@ retrouver un port, ses liaisons vers cinq langages, et l'utilitaire `asl`.
 > Ce qui manque est la publication vers les registres — PyPI, RubyGems, Maven
 > Central —, qui demande des secrets et une décision de version.
 
+## La voie mobile
+
+Depuis le 2026-09-12, ce dépôt porte aussi ce que les deux applications
+(`air-service-locator-ios`, `air-service-locator-android`) embarquent :
+`asl-client::appareil` (ce qu'un téléphone compose, sans signer — sa clé vit
+dans son matériel), la connexion tenue d'`asl-client-tokio::Tenue`, l'ABI
+`asl_appareil_*` d'`asl-client-ffi` avec sa **signature par rappel**, et
+`asl-client-android`, les symboles JNI exportés depuis Rust.
+`scripts/construire-mobile.sh` produit l'xcframework et l'objet JNI. Le détail,
+et ce que le serveur doit encore servir, est dans [`CLAUDE.md`](CLAUDE.md).
+
 ## Le problème
 
 Un daemon qui écoute sur un port choisi au démarrage est un daemon que ses
