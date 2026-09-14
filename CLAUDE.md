@@ -194,8 +194,8 @@ l'`a-…` toujours dessous. Ce qui part est l'identifiant d'usine
 (`iPhone18,1`, `MacBookPro16,1`, `Fairphone FP5`), jamais le nom donné par
 l'utilisateur.
 
-**Bancs à jour (speedy, 2026-09-14, ~18:25) : `nitrogen` et `argon` servent
-`181e291`** — paquet construit depuis `main` à ce SHA, binaire vérifié identique
+**Bancs à jour (speedy, 2026-09-14, ~18:25, puis `0.2.0` le soir même — voir
+plus bas) : `nitrogen` et `argon` servaient `181e291`** — paquet construit depuis `main` à ce SHA, binaire vérifié identique
 sur les deux, service actif, journal sans erreur. **Bases CONSERVÉES** cette
 fois : `181e291` n'ajoute qu'une table `descriptions`, la forme des autres ne
 bouge pas, et les `annuaire.redb` existants ont été rouverts tels quels — le
@@ -210,6 +210,18 @@ a été révoqué depuis le FP5 (sa clé avait été effacée par les essais iOS
 corrigé, PR #3 iOS) : il reste dans la liste, marqué révoqué, **sans
 description** — il n'en avait pas posé avant, et un appareil révoqué n'en pose
 plus. Apps mergées sur `main` : iOS `2633065`, Android `92a5a2c`.
+
+**Bancs à jour (speedy, 2026-09-14, soir) : `nitrogen` et `argon` servent
+`0.2.0`, commit `27f8531`** — le merge de la PR serveur #5 (règle de version,
+`GET /v1/version`, `asl-server --version`). C'est ce que `asl-server --version`
+répond sur chaque banc : « asl-server 0.2.0 (27f8531) » ; service actif,
+journal sans erreur. **Bases CONSERVÉES** (rien ne change de forme entre
+`181e291` et `27f8531`), sauvegarde `annuaire.redb.avant-0.2.0-<date>` sur
+chaque banc, attestation toujours `facultative`. `GET /v1/version` doit rendre
+`{"version":"0.2.0"}` sans authentification ; speedy ne l'a pas rejoué contre
+les vrais bancs (même limite : le harnais QUIC épingle `localhost`), **à
+confirmer depuis les apps** quand Compte › Annuaire l'affiche. Côté dépôts :
+`main` serveur `27f8531`, `main` client `9a34511`, tous deux en `0.2.0`.
 
 ### Ce que speedy attend d'oxygen
 
