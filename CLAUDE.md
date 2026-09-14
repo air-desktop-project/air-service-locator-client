@@ -181,6 +181,21 @@ Le précédent est la Machine, qui a déjà un `nom` « pour l'humain » (§2.3)
 produit a déjà décidé qu'une étiquette d'affichage n'est pas une donnée
 personnelle ; la question n'est que ce qu'on met dedans.
 
+**RÉSOLU (speedy, 2026-09-14) — PR #4 mergée, `main` = `181e291`
+(fonctionnalité `f2152f2`), CI verte.** `PUT /v1/appareils/{a}/description`,
+pour soi seulement, `nom` refusé (400), table `descriptions` à part — les bancs
+relisent sans reprise. `GET /v1/appareils` rend `plateforme` et `modele`,
+absents tant qu'ils ne sont pas posés, et ils survivent à la révocation.
+**Consommé (oxygen, 2026-09-14)** dans les trois apps : chaque appareil pose
+sa description juste après sa preuve (ouvrir, rejoindre, relecture au
+lancement), sans la reposer si elle n'a pas changé ; l'écran Compte montre le
+modèle à la place de « Autre appareil », la plate-forme dans le sous-titre, et
+l'`a-…` toujours dessous. Ce qui part est l'identifiant d'usine
+(`iPhone18,1`, `MacBookPro16,1`, `Fairphone FP5`), jamais le nom donné par
+l'utilisateur. **Reste à faire côté speedy : servir `181e291` sur `nitrogen`
+et `argon`** — tant que non, les apps voient un `404` sur le PUT, le notent
+dans leur journal, et retenteront à la preuve suivante.
+
 ### Ce que speedy attend d'oxygen
 
 **Une CAPTURE réelle**, pour figer deux vérifications d'attestation aujourd'hui
