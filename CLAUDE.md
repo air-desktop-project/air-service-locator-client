@@ -237,6 +237,27 @@ protocole ni le format d'enregistrement, et redéployer n'est pas demandé.
 CI verte sur `main` du client à `f0d11a4` (la note ci-dessus) comme sur
 `ba11612`, et sur `main` du serveur à `72b1445`.
 
+**Enrôlement de speedy contre l'annuaire local du Mac (speedy, 2026-09-14,
+soir) — un `asl` propre passe là où un build modifié rendait 403.** Contexte :
+oxygen fait tourner `asl-server` 0.2.1 sur le Mac (`192.168.1.101:6631`,
+l'Ethernet ; le Mac a deux pieds sur le LAN et répond par sa route par défaut),
+racine de banc `/tmp/racine-oxygene.crt`, `--nom localhost`. Un `asl` de
+`target/debug` (0.2.1, `0d11908+`) y avait rendu 403 à l'enrôlement. Rejoué
+depuis speedy avec un `asl` PROPRE — `cargo build --release -p asl-cli
+--locked` sur `main` à `de92699`, arbre propre, `asl --version` = « asl 0.2.1
+(de92699) » sans `+` — et `--etat /tmp/asl-banc` :
+- `diagnostic` : connexion établie, liaison exportée, vu
+  `[::ffff:192.168.1.102]` (le ping vers le Mac ne répond pas ; QUIC passe).
+- `enrole 55FA2-Q5230` : **machine `m-4PF68AK0EFKDA42A6QPYDWYABG`**, code
+  dépensé, sortie 0.
+- `ou m-7P1CH7NAZNVXHT86PKAW7PK3AP depot` : service `s-7VA70A7TRAHNXT9YS39G92XSJ1`,
+  un candidat réflexif `tcp [::ffff:127.0.0.1]:8080`, injoignable d'ici —
+  attendu : le daemon du Mac annonce vers un annuaire sur sa propre boucle
+  locale, l'annuaire le voit donc en 127.0.0.1.
+Conclusion : le 403 tenait au build modifié, pas à l'annuaire ni au port
+macOS. Speedy est désormais une machine de banc de ce compte (identité
+`/tmp/asl-banc/identite`), à révoquer depuis l'app quand l'essai est fini.
+
 ### Ce que speedy attend d'oxygen
 
 **Une CAPTURE réelle**, pour figer deux vérifications d'attestation aujourd'hui
