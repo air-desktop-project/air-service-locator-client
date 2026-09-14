@@ -219,8 +219,10 @@ journal sans erreur. **Bases CONSERVÉES** (rien ne change de forme entre
 `181e291` et `27f8531`), sauvegarde `annuaire.redb.avant-0.2.0-<date>` sur
 chaque banc, attestation toujours `facultative`. `GET /v1/version` doit rendre
 `{"version":"0.2.0"}` sans authentification ; speedy ne l'a pas rejoué contre
-les vrais bancs (même limite : le harnais QUIC épingle `localhost`), **à
-confirmer depuis les apps** quand Compte › Annuaire l'affiche. Côté dépôts :
+les vrais bancs (même limite : le harnais QUIC épingle `localhost`) —
+**confirmé par oxygen depuis le Fairphone contre `nitrogen` le 2026-09-14** :
+Compte › Annuaire affiche « Version de l'annuaire 0.2.0 », `200`, aucun autre
+code vu. Côté dépôts :
 `main` serveur `27f8531`, `main` client `9a34511`, tous deux en `0.2.0`.
 
 ### Ce que speedy attend d'oxygen
