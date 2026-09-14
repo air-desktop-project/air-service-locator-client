@@ -101,6 +101,21 @@ impl Issue {
     }
 }
 
+/// Ce que `asl --version` imprime : `asl 0.2.0 (4726464)`.
+///
+/// La version est celle du workspace, en lockstep (`Cargo.toml`) ; le commit
+/// vient de `build.rs`, et manque quand le binaire n'a pas été construit dans
+/// un dépôt — on l'omet alors plutôt que d'écrire « inconnu », qui aurait
+/// l'air d'une valeur. Un `+` derrière le commit dit que l'arbre était modifié.
+fn version() -> String {
+    let commit = env!("ASL_COMMIT");
+    if commit.is_empty() {
+        format!("asl {}", env!("CARGO_PKG_VERSION"))
+    } else {
+        format!("asl {} ({commit})", env!("CARGO_PKG_VERSION"))
+    }
+}
+
 /// L'aide, telle qu'elle s'affiche.
 fn aide() {
     println!(
@@ -136,6 +151,7 @@ OPTIONS
                              puis ~/.config/asl.
     --nom <nom>              Le nom exigé du certificat, s'il diffère de l'hôte.
     --aide                   Ceci.
+    --version                La version et le commit, puis s'arrête.
 
     ASL_PATIENCE             Secondes à attendre une connexion (20 par défaut).
                              `joindre` n'abandonne jamais ; la borne est à vous.
@@ -164,6 +180,10 @@ fn main() -> ExitCode {
 
     if matches!(invocation.commande, Commande::Aide) {
         aide();
+        return ExitCode::SUCCESS;
+    }
+    if matches!(invocation.commande, Commande::Version) {
+        println!("{}", version());
         return ExitCode::SUCCESS;
     }
 
@@ -198,7 +218,7 @@ async fn conduire(invocation: &Invocation) -> Sortie {
     match &invocation.commande {
         // Déjà traitée avant l'ordonnanceur : `asl --aide` doit répondre même
         // quand rien ne se monte.
-        Commande::Aide => Ok(()),
+        Commande::Aide | Commande::Version => Ok(()),
         Commande::Diagnostic => commandes::diagnostic(invocation, &dossier).await,
         Commande::Enrole { code } => commandes::enrole(invocation, &dossier, code).await,
         Commande::Annonce { service, points } => {

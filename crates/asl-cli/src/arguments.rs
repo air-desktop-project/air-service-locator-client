@@ -48,6 +48,8 @@ pub enum Commande {
     Diagnostic,
     /// Afficher l'aide.
     Aide,
+    /// Afficher la version et le commit, puis s'arrêter.
+    Version,
 }
 
 /// Un annuaire tel qu'il a été écrit sur la ligne de commande.
@@ -194,13 +196,17 @@ where
             "--racines" => racines = Some(valeur()?),
             "--etat" => etat = Some(valeur()?),
             "--nom" => nom = Some(valeur()?),
-            "--aide" => {
+            "--aide" | "--version" => {
                 return Ok(Invocation {
                     annuaires,
                     racines,
                     etat,
                     nom,
-                    commande: Commande::Aide,
+                    commande: if mot == "--aide" {
+                        Commande::Aide
+                    } else {
+                        Commande::Version
+                    },
                 });
             }
             _ => return Err(Faute::OptionInconnue(mot)),
@@ -210,6 +216,7 @@ where
     let mut suite = restants.collect::<Vec<_>>().into_iter();
     let commande = match commande.as_str() {
         "aide" => Commande::Aide,
+        "version" => Commande::Version,
         "diagnostic" => Commande::Diagnostic,
         "enrole" => Commande::Enrole {
             code: suite.next().ok_or(Faute::ArgumentManquant {
@@ -467,6 +474,20 @@ mod essais {
         assert_eq!(
             lire(&["diagnostic", "--racines", "/etc/asl/ca.pem"]),
             Err(Faute::ArgumentEnTrop("--racines".to_owned()))
+        );
+    }
+
+    #[test]
+    fn la_version_se_demande_comme_l_aide() {
+        // `asl --version` et `asl version` : sans configuration, comme l'aide —
+        // c'est ce qu'on tape pour savoir ce qu'on a installé.
+        assert_eq!(lire(&["--version"]).unwrap().commande, Commande::Version);
+        assert_eq!(lire(&["version"]).unwrap().commande, Commande::Version);
+        assert_eq!(
+            lire(&["--annuaire", "[::1]:6630", "--version"])
+                .unwrap()
+                .commande,
+            Commande::Version
         );
     }
 

@@ -152,7 +152,12 @@ pouvoir la tirer d'un registre, pas d'un dépôt git dont il ne sait rien.
 ```sh
 scripts/check-tout.sh     # sept barrières, le fuzz, la couverture et les essais
 scripts/check-dco.sh      # après avoir committé
+scripts/check-version.sh  # après avoir committé : la version a changé, et tout la suit
 ```
+
+**Chaque PR change la version** (`CLAUDE.md`), et `check-version` la tient : une
+PR dont `[workspace.package] version` est celle de `main` ne se merge pas.
+`asl --version` dit la version et le commit du binaire.
 
 `check-sans-c.sh` **compte davantage ici que dans le dépôt serveur** : là-bas,
 une crate qui lierait du C s'exécuterait sur nos machines ; ici, elle serait
