@@ -89,10 +89,10 @@ stocke ni horodatage ni code) ; les objets sont **compatibles en avant**. **Pour
 consommer : avance le SHA de dépendance serveur du client à `2cf05dc`.** Les listes
 « vides » de l'`Annuaire` réel peuvent donc se remplir.
 
-**Bancs à jour (speedy, 2026-09-13) :** `nitrogen` et `argon` servent `2cf05dc` —
-les quatre verbes sont donc réellement servis par les VRAIS annuaires, plus
-seulement par l'`Annuaire` simulé ; tu peux pointer les apps dessus. Bases
-NEUVES (le schéma redb avait divergé — `appareils` en `[u8;68]` d'avant P-256,
+**Bancs à jour (speedy, 2026-09-13, puis `181e291` le 2026-09-14 — voir plus
+bas) :** `nitrogen` et `argon` servaient `2cf05dc` — les quatre verbes sont donc
+réellement servis par les VRAIS annuaires, plus seulement par l'`Annuaire`
+simulé ; tu peux pointer les apps dessus. Bases NEUVES à ce passage-là (le schéma redb avait divergé — `appareils` en `[u8;68]` d'avant P-256,
 autorisations agrandies — et il n'y a pas de migration) : **tout compte/machine/
 appareil de test d'avant est effacé**, à re-enrôler depuis les apps. L'ancien
 redb est archivé sur chaque banc. Attestation toujours `facultative` sur les
@@ -192,9 +192,24 @@ lancement), sans la reposer si elle n'a pas changé ; l'écran Compte montre le
 modèle à la place de « Autre appareil », la plate-forme dans le sous-titre, et
 l'`a-…` toujours dessous. Ce qui part est l'identifiant d'usine
 (`iPhone18,1`, `MacBookPro16,1`, `Fairphone FP5`), jamais le nom donné par
-l'utilisateur. **Reste à faire côté speedy : servir `181e291` sur `nitrogen`
-et `argon`** — tant que non, les apps voient un `404` sur le PUT, le notent
-dans leur journal, et retenteront à la preuve suivante.
+l'utilisateur.
+
+**Bancs à jour (speedy, 2026-09-14, ~18:25) : `nitrogen` et `argon` servent
+`181e291`** — paquet construit depuis `main` à ce SHA, binaire vérifié identique
+sur les deux, service actif, journal sans erreur. **Bases CONSERVÉES** cette
+fois : `181e291` n'ajoute qu'une table `descriptions`, la forme des autres ne
+bouge pas, et les `annuaire.redb` existants ont été rouverts tels quels — le
+compte `u-5884…` et ses trois appareils sont toujours là et se décriront au
+prochain lancement. Une copie `annuaire.redb.avant-181e291-<date>` est posée
+sur chaque banc. Attestation toujours `facultative`. Speedy n'a pas rejoué le
+PUT lui-même (le harnais QUIC des essais épingle `localhost`) ; **vérifié par
+oxygen sur `nitrogen` le 2026-09-14** : le PUT passe, `GET /v1/appareils` rend
+`plateforme` et `modele`, l'écran Compte du Fairphone montre « Fairphone FP5 ·
+Android » et « MacBookPro15,2 · macOS », aucun 4xx. L'iPhone simulé `a-040F…`
+a été révoqué depuis le FP5 (sa clé avait été effacée par les essais iOS ;
+corrigé, PR #3 iOS) : il reste dans la liste, marqué révoqué, **sans
+description** — il n'en avait pas posé avant, et un appareil révoqué n'en pose
+plus. Apps mergées sur `main` : iOS `2633065`, Android `92a5a2c`.
 
 ### Ce que speedy attend d'oxygen
 
