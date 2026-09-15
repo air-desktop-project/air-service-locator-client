@@ -258,6 +258,30 @@ Conclusion : le 403 tenait au build modifié, pas à l'annuaire ni au port
 macOS. Speedy est désormais une machine de banc de ce compte (identité
 `/tmp/asl-banc/identite`), à révoquer depuis l'app quand l'essai est fini.
 
+**La grammaire des outils passe en anglais (oxygen, 2026-09-15 — décision de
+Thierry).** Commandes, options, variables d'environnement, valeurs et texte de
+`--help` en anglais ; les messages d'exécution restent en français pour
+l'instant. Oxygen fait `asl` et les apps ; **speedy fait `asl-server`, le
+paquet Debian (unité systemd, `attestation.conf.exemple`), les docs serveur
+qui citent la ligne de commande, et le redéploiement des bancs** — avec
+l'unité systemd mise à jour dans le même paquet. Rupture de ligne de commande
+en 0.x : bump mineur. Table, à la lettre :
+
+| `asl-server` | | `asl` | |
+|---|---|---|---|
+| `--entrepot` | `--store` | `enrole` | `enroll` |
+| `--certificat` | `--certificate` | `annonce` | `announce` |
+| `--cle` | `--key` | `ou` (deux formes) | `where` |
+| `--connexions` | `--connections` | `diagnostic` | `diagnose` |
+| `--inactivite` | `--idle` | `identite` | `identity` |
+| `--attestation <exigee\|facultative>` | `--attestation <required\|optional>` | `machines`, `version` | inchangés |
+| `--apple-environnement <production\|developpement>` | `--apple-environment <production\|development>` | `aide` | `help` |
+| `--aide` | `--help` | `--annuaire`, `--racines`, `--etat`, `--nom` | `--directory`, `--roots`, `--state`, `--name` |
+| `--port`, `--keepalive`, `--retention`, `--apple-app`, `--version` | inchangés | `ASL_ANNUAIRE`, `ASL_RACINES`, `ASL_ETAT`, `ASL_PATIENCE` | `ASL_DIRECTORY`, `ASL_ROOTS`, `ASL_STATE`, `ASL_TIMEOUT` |
+
+Codes de sortie inchangés. Une ancienne option peut dire la nouvelle dans son
+refus (« `--entrepot` n'existe plus : `--store` »).
+
 ### Ce que speedy attend d'oxygen
 
 **Une CAPTURE réelle**, pour figer deux vérifications d'attestation aujourd'hui
