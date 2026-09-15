@@ -282,6 +282,47 @@ en 0.x : bump mineur. Table, à la lettre :
 Codes de sortie inchangés. Une ancienne option peut dire la nouvelle dans son
 refus (« `--entrepot` n'existe plus : `--store` »).
 
+**La réplication entre les deux racines — chantier serveur (oxygen,
+2026-09-15, décision de Thierry).** L'alias `asl-root.air-desktop.org` est
+posé chez Gandi, `asl` 0.5.0 le joint sans option et fait tourner les
+adresses d'un même nom (le DNS tourne, mais `getaddrinfo` retrie — RFC 6724 —
+et mettait toujours `nitrogen` en tête). Et c'est là que ça s'est vu :
+**`nitrogen` et `argon` ne se répliquent pas** — le compte `u-5884…` n'existe
+que chez `nitrogen`, et une requête sur deux tombait sur `argon` en `401`.
+`annuaires.md` §3 dit pourtant que les deux racines se synchronisent : comptes,
+clés d'appareils, machines et empreintes, services déclarés, autorisations —
+tout sauf l'état vivant (bail, joignabilité), qui se reconstruit seul à la
+reconnexion.
+
+En attendant : **l'alias ne pointe que sur `nitrogen`** (un AAAA, un A), et
+`argon` ne reçoit pas de trafic. La tournée dans `asl` reste et jouera le jour
+venu.
+
+Ce que speedy doit faire, dans l'ordre :
+
+1. **Spécifier** ce que le §3 laisse ouvert (§7.3 : le transport, « QUIC
+   comme le reste, probablement ») : un flux entre pairs de même autorité,
+   authentifié par leurs clés (§2, l'ancre de confiance) ; quoi se réplique
+   (le tableau du §3, à la ligne) ; le sens (les deux écrivent — un compte se
+   crée sur l'une ou l'autre selon le tirage) ; **la règle de conflit** quand
+   la même chose est écrite des deux côtés (un identifiant à 128 bits ne
+   collisionne pas ; une autorisation révoquée d'un côté et vivante de l'autre,
+   si) ; le rattrapage d'une racine qui revient après une coupure ; ce qui se
+   journalise (C13 : rien de plus que l'entrepôt ne porte déjà).
+2. **Coder** dans l'étage 3 (`asl-loop-tokio`, `asl-store`) et le binaire :
+   un pair configuré (`--peer <host:port>` et sa clé), la boucle de
+   synchronisation, une table de version par enregistrement dans l'entrepôt
+   si la règle de conflit l'exige. Couverture et fuzz comme le reste.
+3. **Déployer** sur les deux bancs, vérifier qu'un compte créé chez l'une
+   est lu chez l'autre après un aller-retour, puis **remettre `argon` dans
+   l'alias** (les deux AAAA, les deux A — le jeton Gandi est dans
+   `GANDI_TOKEN_DELHAISE`, exporté dans `~/.bashrc` de speedy APRÈS la garde
+   interactive : un shell non interactif ne le voit pas, `bash -ic` si).
+
+Les certificats des deux racines portent déjà `asl-root.air-desktop.org`
+dans leurs SAN (réémis le 15). Rien à faire côté apps : elles parlent à
+`nitrogen` par son nom et ne passent pas par l'alias.
+
 ### Ce que speedy attend d'oxygen
 
 **Une CAPTURE réelle**, pour figer deux vérifications d'attestation aujourd'hui
