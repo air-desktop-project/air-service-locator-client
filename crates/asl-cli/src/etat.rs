@@ -85,20 +85,58 @@ impl core::fmt::Display for Faute {
 /// Le répertoire où vit l'identité.
 ///
 /// Dans l'ordre : ce que la ligne de commande dit, puis `ASL_ETAT`, puis
-/// `$XDG_CONFIG_HOME/asl`, puis `~/.config/asl`.
+/// `$XDG_CONFIG_HOME/asl`, puis `~/.config/asl` — **et sur macOS, si aucun
+/// de ceux-là ne porte d'identité, celui de l'application Service Locator.**
+///
+/// # POURQUOI `asl` CONNAÎT L'APPLICATION, SUR MAC SEULEMENT
+///
+/// Sur un Mac, c'est l'application qui enrôle la machine — « Faire de ce Mac
+/// une machine », sous Touch ID — et elle écrit l'identité **dans ce format,
+/// dans son conteneur** : `~/Library/Containers/org.airdesktop.servicelocator.mac/
+/// Data/Library/Application Support/asl/identite`. Un bac à sable ne peut
+/// pas écrire dans `~/.config`, et un Mac n'a qu'une identité de machine :
+/// c'est donc à l'utilitaire d'aller la lire là où elle est, plutôt que de
+/// dire « cette machine n'est pas enrôlée » à un Mac qui l'est. Ce repli ne
+/// joue que si `~/.config/asl` n'a rien à dire — ce qu'on a enrôlé à la main
+/// passe toujours avant —, et jamais quand `--etat` ou `ASL_ETAT` a parlé.
 #[must_use]
 pub fn repertoire(demande: Option<&str>) -> PathBuf {
+    let maison = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_owned()));
+    resoudre(
+        demande,
+        std::env::var("ASL_ETAT").ok().as_deref(),
+        std::env::var("XDG_CONFIG_HOME").ok().as_deref(),
+        &maison,
+    )
+}
+
+/// La règle de [`repertoire`], sur ce qu'on lui donne — pour qu'un essai la
+/// nourrisse sans toucher à l'environnement du processus.
+fn resoudre(
+    demande: Option<&str>,
+    etat: Option<&str>,
+    xdg: Option<&str>,
+    maison: &Path,
+) -> PathBuf {
     if let Some(ou) = demande {
         return PathBuf::from(ou);
     }
-    if let Ok(ou) = std::env::var("ASL_ETAT") {
+    if let Some(ou) = etat {
         return PathBuf::from(ou);
     }
-    if let Ok(config) = std::env::var("XDG_CONFIG_HOME") {
+    if let Some(config) = xdg {
         return PathBuf::from(config).join("asl");
     }
-    let maison = std::env::var("HOME").unwrap_or_else(|_| ".".to_owned());
-    PathBuf::from(maison).join(".config").join("asl")
+    let usuel = maison.join(".config").join("asl");
+    #[cfg(target_os = "macos")]
+    if !usuel.join(FICHIER).exists() {
+        let application = maison
+            .join("Library/Containers/org.airdesktop.servicelocator.mac/Data/Library/Application Support/asl");
+        if application.join(FICHIER).exists() {
+            return application;
+        }
+    }
+    usuel
 }
 
 /// Trente-deux ou seize octets d'entropie, pris au noyau.
@@ -449,6 +487,42 @@ mod essais {
     fn le_repertoire_suit_l_ordre_annonce() {
         // La ligne de commande passe avant tout le reste.
         assert_eq!(repertoire(Some("/tmp/ici")), PathBuf::from("/tmp/ici"));
+    }
+
+    /// Le repli vers l'application ne joue que sur macOS, et seulement quand
+    /// `~/.config/asl` n'a rien : on l'éprouve sur une maison à nous, où l'on
+    /// pose l'identité d'un côté puis de l'autre.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sur_mac_l_identite_de_l_application_est_lue_si_l_usuelle_manque() {
+        let maison = std::env::temp_dir().join(format!("asl-maison-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&maison);
+        let application = maison
+            .join("Library/Containers/org.airdesktop.servicelocator.mac/Data/Library/Application Support/asl");
+        fs::create_dir_all(&application).expect("le dossier de l'application");
+        let usuel = maison.join(".config").join("asl");
+        fs::create_dir_all(&usuel).expect("le dossier usuel");
+
+        // Rien nulle part : l'usuel, pour que `asl enrole` y écrive.
+        assert_eq!(resoudre(None, None, None, &maison), usuel);
+        // L'application seule a une identité : c'est elle qu'on lit.
+        fs::write(application.join(FICHIER), "machine = m-0\n").expect("écrit");
+        assert_eq!(resoudre(None, None, None, &maison), application);
+        // L'usuel en a une aussi : il passe avant.
+        fs::write(usuel.join(FICHIER), "machine = m-0\n").expect("écrit");
+        assert_eq!(resoudre(None, None, None, &maison), usuel);
+        // Et ce qu'on a demandé passe avant tout, application ou pas.
+        fs::remove_file(usuel.join(FICHIER)).expect("effacé");
+        assert_eq!(
+            resoudre(None, Some("/tmp/la"), None, &maison),
+            PathBuf::from("/tmp/la")
+        );
+        assert_eq!(
+            resoudre(None, None, Some("/tmp/xdg"), &maison),
+            PathBuf::from("/tmp/xdg/asl")
+        );
+
+        let _ = fs::remove_dir_all(&maison);
     }
 
     #[test]
