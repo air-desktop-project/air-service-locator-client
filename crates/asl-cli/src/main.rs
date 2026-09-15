@@ -154,9 +154,11 @@ COMMANDS
 OPTIONS
     --directory <host:port>  Repeatable. A name resolving to several addresses
                              yields them all; IPv6 is tried first.
-                             Default: ASL_DIRECTORY, comma-separated.
+                             Default: ASL_DIRECTORY, comma-separated; else the
+                             root directories, asl-root.air-desktop.org:6630.
     --roots <file.pem>       The certificate authorities. There is NO fallback
-                             to the system store. Default: ASL_ROOTS.
+                             to the system store. Default: ASL_ROOTS; else the
+                             air-desktop-project root CA, pinned in this binary.
     --state <dir>            Where this machine's identity lives.
                              Default: ASL_STATE, then $XDG_CONFIG_HOME/asl,
                              then ~/.config/asl (on macOS, the Service Locator
