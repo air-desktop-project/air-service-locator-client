@@ -75,7 +75,7 @@ impl core::fmt::Display for Faute {
             Self::PasEnrolee { ou } => write!(
                 f,
                 "cette machine n'est pas enrôlée ({} n'existe pas).\n\
-                 Demandez un code à l'application, puis : asl enrole <code>",
+                 Demandez un code à l'application, puis : asl enroll <code>",
                 ou.display()
             ),
         }
@@ -84,7 +84,7 @@ impl core::fmt::Display for Faute {
 
 /// Le répertoire où vit l'identité.
 ///
-/// Dans l'ordre : ce que la ligne de commande dit, puis `ASL_ETAT`, puis
+/// Dans l'ordre : ce que la ligne de commande dit, puis `ASL_STATE`, puis
 /// `$XDG_CONFIG_HOME/asl`, puis `~/.config/asl` — **et sur macOS, si aucun
 /// de ceux-là ne porte d'identité, celui de l'application Service Locator.**
 ///
@@ -98,13 +98,13 @@ impl core::fmt::Display for Faute {
 /// c'est donc à l'utilitaire d'aller la lire là où elle est, plutôt que de
 /// dire « cette machine n'est pas enrôlée » à un Mac qui l'est. Ce repli ne
 /// joue que si `~/.config/asl` n'a rien à dire — ce qu'on a enrôlé à la main
-/// passe toujours avant —, et jamais quand `--etat` ou `ASL_ETAT` a parlé.
+/// passe toujours avant —, et jamais quand `--state` ou `ASL_STATE` a parlé.
 #[must_use]
 pub fn repertoire(demande: Option<&str>) -> PathBuf {
     let maison = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_owned()));
     resoudre(
         demande,
-        std::env::var("ASL_ETAT").ok().as_deref(),
+        std::env::var("ASL_STATE").ok().as_deref(),
         std::env::var("XDG_CONFIG_HOME").ok().as_deref(),
         &maison,
     )
@@ -194,7 +194,7 @@ pub fn ecrire(
     let ou = dossier.join(FICHIER);
 
     // **LE COMPTE, QUAND ON LE SAIT.** Un annuaire d'avant 0.3.0 ne le rend pas
-    // à l'enrôlement ; `asl diagnostic` l'apprendra par `GET /v1/moi` et
+    // à l'enrôlement ; `asl diagnose` l'apprendra par `GET /v1/moi` et
     // complétera ce fichier. C'est un identifiant public, pas un secret.
     let ligne_compte = compte.map_or(String::new(), |compte| {
         format!("compte = {}\n", compte.texte().as_str())
@@ -286,7 +286,7 @@ pub fn lire_la_fiche(dossier: &Path) -> Result<Fiche, Faute> {
     }
 
     // **UN COMPTE ILLISIBLE N'EMPÊCHE PAS DE S'AUTHENTIFIER** : il ne sert
-    // qu'à l'affichage, et `asl diagnostic` le remettra d'aplomb.
+    // qu'à l'affichage, et `asl diagnose` le remettra d'aplomb.
     let compte =
         compte.and_then(|texte| Identifiant::analyser_genre(Genre::Utilisateur, &texte).ok());
 
@@ -503,7 +503,7 @@ mod essais {
         let usuel = maison.join(".config").join("asl");
         fs::create_dir_all(&usuel).expect("le dossier usuel");
 
-        // Rien nulle part : l'usuel, pour que `asl enrole` y écrive.
+        // Rien nulle part : l'usuel, pour que `asl enroll` y écrive.
         assert_eq!(resoudre(None, None, None, &maison), usuel);
         // L'application seule a une identité : c'est elle qu'on lit.
         fs::write(application.join(FICHIER), "machine = m-0\n").expect("écrit");

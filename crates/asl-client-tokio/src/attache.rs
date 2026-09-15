@@ -202,7 +202,7 @@ pub async fn joindre(
 ///
 /// Une tâche de fond qui n'expose rien est une tâche dont personne ne sait si
 /// elle vit. Ces quatre nombres sont ce qu'un daemon met dans son `/health` ou
-/// dans `asl diagnostic` — et [`Etat::abandonnee`] est le seul état dont un
+/// dans `asl diagnose` — et [`Etat::abandonnee`] est le seul état dont un
 /// humain doit être averti.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Etat {

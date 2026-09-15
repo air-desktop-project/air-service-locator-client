@@ -122,7 +122,12 @@ où il se relève.
 partie privée ne quitte jamais la machine. Il n'y a **aucun secret partagé** à
 poser : c'est la règle du produit, pas une préférence.
 
-L'enrôlement se fait en une commande — `asl enrole <code>` — avec un code court
+**La grammaire d'`asl` est en anglais** — commandes, options, variables
+d'environnement, `--help` — parce que c'est la langue d'un terminal, quel que
+soit celui qui s'y assoit ; ses messages, eux, sont en français, comme tout
+ce dépôt.
+
+L'enrôlement se fait en une commande — `asl enroll <code>` — avec un code court
 que l'application affiche, à usage unique et valable quelques minutes. La
 bibliothèque génère alors sa paire et présente sa clé publique. **Le code n'est
 pas un justificatif durable** : il n'ouvre qu'une opération, lier une clé.
@@ -132,11 +137,11 @@ capacité `annonce`, celle qui consomme porte `lecture`.
 
 **La machine sait pour qui elle agit.** L'enrôlement rend son identifiant et
 celui de son propriétaire, tous deux publics ; `asl` les range dans son fichier
-d'identité, `asl identite` les rend hors ligne, et `asl diagnostic` les demande
+d'identité, `asl identity` les rend hors ligne, et `asl diagnose` les demande
 à l'annuaire (`GET /v1/moi`) — et complète le fichier d'une machine enrôlée
 avant que l'annuaire ne rende le propriétaire. De là, un programme de B part
 d'un `u-…` que A lui a donné : `asl machines <u-…>` liste ce que A lui a ouvert,
-`asl ou <service>` trouve toutes les instances d'un nom qu'il a le droit de
+`asl where <service>` trouve toutes les instances d'un nom qu'il a le droit de
 voir — sans qu'un humain ait à recopier des `m-…`.
 
 **Il n'existe aucun mode anonyme.** Une résolution hors d'une connexion

@@ -23,10 +23,10 @@ use asl_id::{Genre, Identifiant};
 fn asl(arguments: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_asl"))
         .args(arguments)
-        .env_remove("ASL_ANNUAIRE")
-        .env_remove("ASL_RACINES")
-        .env_remove("ASL_ETAT")
-        .env("ASL_PATIENCE", "2")
+        .env_remove("ASL_DIRECTORY")
+        .env_remove("ASL_ROOTS")
+        .env_remove("ASL_STATE")
+        .env("ASL_TIMEOUT", "2")
         .output()
         .expect("le binaire `asl` se lance")
 }
@@ -86,15 +86,15 @@ fn poser_une_identite(dossier: &Path, mode: u32) -> Identifiant {
 fn l_aide_repond_quand_rien_n_est_configure() {
     // C'est la commande qu'on tape justement parce qu'on ne sait pas quoi
     // configurer : elle ne doit exiger ni annuaire, ni racine, ni identité.
-    for forme in [["aide"], ["--aide"]] {
+    for forme in [["help"], ["--help"]] {
         let sortie = asl(&forme);
         assert_eq!(code(&sortie), Some(0), "{forme:?}");
         let dit = texte(&sortie.stdout);
-        for verbe in ["enrole", "annonce", "ou ", "diagnostic"] {
+        for verbe in ["enroll", "announce", "where ", "diagnose"] {
             assert!(dit.contains(verbe), "l'aide doit citer `{verbe}` : {dit}");
         }
         assert!(
-            dit.contains("CODES DE SORTIE"),
+            dit.contains("EXIT CODES"),
             "les codes sont une interface, l'aide doit les dire"
         );
     }
@@ -106,13 +106,13 @@ fn l_aide_repond_quand_rien_n_est_configure() {
 fn ce_qui_ne_se_lit_pas_rend_un_et_le_dit_sur_stderr() {
     for ligne in [
         vec![],
-        vec!["annoncer"],
-        vec!["--verbeux", "diagnostic"],
-        vec!["annonce", "depot"],
-        vec!["annonce", "depot", "sctp:1"],
-        vec!["ou", "pas-un-identifiant", "depot"],
-        vec!["diagnostic", "et", "puis"],
-        vec!["--annuaire"],
+        vec!["announcer"],
+        vec!["--verbose", "diagnose"],
+        vec!["announce", "depot"],
+        vec!["announce", "depot", "sctp:1"],
+        vec!["where", "pas-un-identifiant", "depot"],
+        vec!["diagnose", "et", "puis"],
+        vec!["--directory"],
     ] {
         let sortie = asl(&ligne);
         assert_eq!(
@@ -136,34 +136,34 @@ fn une_configuration_qui_manque_rend_deux_et_dit_quoi_poser() {
     let etat = bac.chemin().to_string_lossy().into_owned();
 
     // Aucun annuaire.
-    let sortie = asl(&["--etat", &etat, "diagnostic"]);
+    let sortie = asl(&["--state", &etat, "diagnose"]);
     assert_eq!(code(&sortie), Some(2));
     let dit = texte(&sortie.stderr);
-    assert!(dit.contains("--annuaire"), "{dit}");
-    assert!(dit.contains("ASL_ANNUAIRE"), "{dit}");
+    assert!(dit.contains("--directory"), "{dit}");
+    assert!(dit.contains("ASL_DIRECTORY"), "{dit}");
 
     // Un annuaire, mais aucune racine. **Pas de repli sur le magasin du
     // système** : les annuaires racines ont leur propre autorité.
     let sortie = asl(&[
-        "--etat",
+        "--state",
         &etat,
-        "--annuaire",
+        "--directory",
         "127.0.0.1:6630",
-        "diagnostic",
+        "diagnose",
     ]);
     assert_eq!(code(&sortie), Some(2));
     let dit = texte(&sortie.stderr);
-    assert!(dit.contains("--racines"), "{dit}");
+    assert!(dit.contains("--roots"), "{dit}");
 
     // Un fichier de racines qui n'existe pas.
     let sortie = asl(&[
-        "--etat",
+        "--state",
         &etat,
-        "--annuaire",
+        "--directory",
         "127.0.0.1:6630",
-        "--racines",
+        "--roots",
         "/n-existe-pas/ca.pem",
-        "diagnostic",
+        "diagnose",
     ]);
     assert_eq!(code(&sortie), Some(2));
     assert!(texte(&sortie.stderr).contains("/n-existe-pas/ca.pem"));
@@ -178,13 +178,13 @@ fn un_nom_qui_ne_se_resout_pas_rend_deux_et_non_quatre() {
     std::fs::write(&racines, b"pas un PEM").expect("le fichier s'écrit");
 
     let sortie = asl(&[
-        "--etat",
+        "--state",
         &bac.chemin().to_string_lossy(),
-        "--annuaire",
+        "--directory",
         "annuaire.invalid:6630",
-        "--racines",
+        "--roots",
         &racines.to_string_lossy(),
-        "diagnostic",
+        "diagnose",
     ]);
     assert_eq!(code(&sortie), Some(2), "{}", texte(&sortie.stderr));
     assert!(texte(&sortie.stderr).contains("annuaire.invalid"));
@@ -198,9 +198,9 @@ fn une_cle_lisible_par_d_autres_est_refusee_et_la_correction_est_donnee() {
     poser_une_identite(bac.chemin(), 0o644);
 
     let sortie = asl(&[
-        "--etat",
+        "--state",
         &bac.chemin().to_string_lossy(),
-        "annonce",
+        "announce",
         "depot",
         "tcp:8080",
     ]);
@@ -220,11 +220,11 @@ fn une_machine_non_enrolee_l_apprend_avant_toute_connexion() {
     let bac = Bac::neuf("pas-enrolee");
     let depart = std::time::Instant::now();
     let sortie = asl(&[
-        "--etat",
+        "--state",
         &bac.chemin().to_string_lossy(),
-        "--annuaire",
+        "--directory",
         "127.0.0.1:1",
-        "ou",
+        "where",
         Identifiant::depuis_entropie(Genre::Machine, [3; 16])
             .texte()
             .as_str(),
@@ -236,7 +236,7 @@ fn une_machine_non_enrolee_l_apprend_avant_toute_connexion() {
         "elle a essayé de se connecter avant de lire son identité"
     );
     let dit = texte(&sortie.stderr);
-    assert!(dit.contains("asl enrole"), "et l'on dit quoi faire : {dit}");
+    assert!(dit.contains("asl enroll"), "et l'on dit quoi faire : {dit}");
 }
 
 // ── Personne n'a répondu : code 4 ───────────────────────────────────────────
@@ -254,13 +254,13 @@ fn un_annuaire_qui_ne_repond_pas_rend_quatre() {
     std::fs::write(&racines, &autorite).expect("la racine s'écrit");
 
     let sortie = asl(&[
-        "--etat",
+        "--state",
         &bac.chemin().to_string_lossy(),
-        "--annuaire",
+        "--directory",
         "127.0.0.1:1",
-        "--racines",
+        "--roots",
         &racines.to_string_lossy(),
-        "diagnostic",
+        "diagnose",
     ]);
     assert_eq!(code(&sortie), Some(4), "{}", texte(&sortie.stderr));
     assert!(

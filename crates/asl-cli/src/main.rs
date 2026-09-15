@@ -80,7 +80,7 @@ impl Issue {
             // **CHAQUE CODE EST TRADUIT**, parce qu'un nombre nu envoie chercher
             // dans une spécification que personne n'a sous la main.
             Self::Refuse(401) => "401 — la clé de cette machine n'a pas été acceptée.\n\
-                 Elle n'est pas liée, ou elle a été révoquée : asl enrole <code>"
+                 Elle n'est pas liée, ou elle a été révoquée : asl enroll <code>"
                 .to_owned(),
             Self::Refuse(403) => "403 — cette machine n'a pas le droit de faire cela.".to_owned(),
             // **`404` VEUT DIRE DEUX CHOSES, ET L'ANNUAIRE REFUSE DE LES
@@ -119,63 +119,67 @@ fn version() -> String {
 /// L'aide, telle qu'elle s'affiche.
 fn aide() {
     println!(
-        "asl — annoncer, résoudre et diagnostiquer un service, à la main.
+        "asl — announce, resolve and diagnose a service, by hand.
 
 USAGE
-    asl [options] <commande> [arguments]
+    asl [options] <command> [arguments]
 
-COMMANDES
-    enrole <code>                     Lie une clé neuve à cette machine.
-                                      La clé est générée ICI ; le code ne sert
-                                      qu'une fois et n'ouvre que cette opération.
+COMMANDS
+    enroll <code>                     Bind a fresh key to this machine.
+                                      The key is generated HERE; the code is
+                                      single-use and opens this operation only.
 
-    annonce <service> <proto:port>... Annonce un service et TIENT l'annonce.
-                                      Elle ne rend pas la main : la connexion EST
-                                      le bail. Ctrl-C retire proprement.
+    announce <service> <proto:port>...
+                                      Announce a service and HOLD the announcement.
+                                      It does not return: the connection IS the
+                                      lease. Ctrl-C withdraws it cleanly.
 
-    ou <machine> <service>            Demande où joindre ce service, et montre
-                                      les candidats dans l'ordre où un client les
-                                      essaierait.
+    where <machine> <service>         Ask where to reach this service, and list
+                                      the candidates in the order a client would
+                                      try them.
 
-    ou <service>                      Toutes les instances de ce nom que votre
-                                      compte a le droit de voir — les vôtres, et
-                                      celles qu'on vous a accordées.
+    where <service>                   Every instance of this name your account
+                                      may see — yours, and those granted to you.
 
-    machines <u-…>                    Les machines de cet utilisateur que votre
-                                      compte a le droit de voir : les vôtres si
-                                      c'est vous, sinon ce qu'il vous a accordé.
+    machines <u-…>                    The machines of this user your account may
+                                      see: yours if it is you, else what they
+                                      granted you.
 
-    identite                          Qui est cette machine et pour qui elle
-                                      agit, sans rien joindre.
+    identity                          Who this machine is and whom it acts for,
+                                      without connecting.
 
-    diagnostic                        Dit ce qu'on sait de l'annuaire, et ce
-                                      qu'on ne sait pas.
+    diagnose                          What is known about the directory, and
+                                      what is not.
 
 OPTIONS
-    --annuaire <hôte:port>   Répétable. Un nom qui rend plusieurs adresses les
-                             fournit toutes, et IPv6 est essayé d'abord.
-                             À défaut : ASL_ANNUAIRE, séparé par des virgules.
-    --racines <fichier.pem>  Les certificats d'autorité. Il n'y a PAS de repli
-                             sur le magasin du système. À défaut : ASL_RACINES.
-    --etat <répertoire>      Où vit l'identité de cette machine.
-                             À défaut : ASL_ETAT, puis $XDG_CONFIG_HOME/asl,
-                             puis ~/.config/asl.
-    --nom <nom>              Le nom exigé du certificat, s'il diffère de l'hôte.
-    --aide                   Ceci.
-    --version                La version et le commit, puis s'arrête.
+    --directory <host:port>  Repeatable. A name resolving to several addresses
+                             yields them all; IPv6 is tried first.
+                             Default: ASL_DIRECTORY, comma-separated.
+    --roots <file.pem>       The certificate authorities. There is NO fallback
+                             to the system store. Default: ASL_ROOTS.
+    --state <dir>            Where this machine's identity lives.
+                             Default: ASL_STATE, then $XDG_CONFIG_HOME/asl,
+                             then ~/.config/asl (on macOS, the Service Locator
+                             app's identity when that one is empty).
+    --name <name>            The name required of the certificate, when it
+                             differs from the host.
+    --help                   This.
+    --version                Version and commit, then exit.
 
-    ASL_PATIENCE             Secondes à attendre une connexion (20 par défaut).
-                             `joindre` n'abandonne jamais ; la borne est à vous.
+    ASL_TIMEOUT              Seconds to wait for a connection (default 20).
+                             `announce` never gives up; the bound is yours.
 
-    Les options viennent AVANT la commande.
+    Options come BEFORE the command.
 
-CODES DE SORTIE
-    0 abouti   1 usage   2 configuration   3 refusé par l'annuaire   4 injoignable
+EXIT CODES
+    0 done   1 usage   2 configuration   3 refused by the directory   4 unreachable
 
-EXEMPLES
-    asl --annuaire nitrogen.example:6630 --racines /etc/asl/ca.pem enrole 4K9M2-P7R1T
-    asl annonce depot tcp:8080 udp:9000
-    asl ou m_7f3a9c2e5b1d4068 depot"
+EXAMPLES
+    asl --directory nitrogen.example:6630 --roots /etc/asl/ca.pem enroll 4K9M2-P7R1T
+    asl announce depot tcp:8080 udp:9000
+    asl where m-7F3A9C2E5B1D4068ABCDEFGHJK depot
+    asl where depot
+    asl machines u-5884A5EE7THEKHBQ3BT0VPGJKN"
     );
 }
 
@@ -184,7 +188,7 @@ fn main() -> ExitCode {
         Ok(lue) => lue,
         Err(quoi) => {
             eprintln!("asl : {quoi}");
-            eprintln!("      `asl aide` montre ce qui se tape.");
+            eprintln!("      `asl help` montre ce qui se tape.");
             return ExitCode::from(1);
         }
     };

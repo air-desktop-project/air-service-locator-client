@@ -323,6 +323,11 @@ C'est le dernier verrou avant que l'attestation soit exigible en production.
 
 ## Les règles qui ne se négocient pas
 
+- **La grammaire d'`asl` est en anglais** — commandes, options, variables
+  d'environnement, `--help` — et ses messages en français. Un ajout à la
+  ligne de commande se nomme en anglais ; un ajout au texte d'un message, en
+  français. (Décision de Thierry, 2026-09-15 ; la table est plus haut.)
+
 - **Une seule toolchain, celle d'Air** (`rust-toolchain.toml`,
   `nightly-2026-07-11`). Elle ne se modifie pas seule.
 - **Pas une ligne de C** (C4), **jamais une autre pile QUIC** (C15) : les deux
