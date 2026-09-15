@@ -20,7 +20,7 @@ asl-cle.workspace = true
 asl-id.workspace = true
 asl-proto.workspace = true
 
-# `signal` EN PLUS, ET SEULEMENT ICI. `asl annonce` tient l'annonce au premier
+# `signal` EN PLUS, ET SEULEMENT ICI. `asl announce` tient l'annonce au premier
 # plan, et Ctrl-C doit la retirer PROPREMENT — sinon l'annuaire donne une adresse
 # morte pendant une minute. La bibliothèque, elle, ne demande pas cette feature :
 # un daemon a déjà son propre traitement des signaux, et lui en imposer un serait

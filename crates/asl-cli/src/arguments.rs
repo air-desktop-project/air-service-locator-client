@@ -117,7 +117,7 @@ pub enum Faute {
 impl core::fmt::Display for Faute {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::RienADire => write!(f, "il n'y a pas de commande — essayez `asl aide`"),
+            Self::RienADire => write!(f, "il n'y a pas de commande — essayez `asl help`"),
             Self::OptionInconnue(quoi) => write!(f, "l'option `{quoi}` n'existe pas"),
             Self::ValeurManquante(quoi) => write!(f, "l'option `{quoi}` attend une valeur"),
             Self::CommandeInconnue(quoi) => write!(f, "la commande `{quoi}` n'existe pas"),
@@ -179,7 +179,7 @@ fn point(texte: &str) -> Result<PointEcoute, Faute> {
 /// Lit la ligne de commande.
 ///
 /// **LES OPTIONS VIENNENT AVANT LA COMMANDE**, et cette rigidité est voulue :
-/// `asl annonce depot --annuaire x` et `asl --annuaire x annonce depot` se
+/// `asl announce depot --directory x` et `asl --directory x announce depot` se
 /// liraient pareil dans un analyseur permissif, et l'un des deux mentirait le
 /// jour où une commande prendra une option qui lui est propre.
 ///
@@ -205,17 +205,17 @@ where
         }
         let mut valeur = || restants.next().ok_or(Faute::ValeurManquante(mot.clone()));
         match mot.as_str() {
-            "--annuaire" => annuaires.push(cible(&valeur()?)?),
-            "--racines" => racines = Some(valeur()?),
-            "--etat" => etat = Some(valeur()?),
-            "--nom" => nom = Some(valeur()?),
-            "--aide" | "--version" => {
+            "--directory" => annuaires.push(cible(&valeur()?)?),
+            "--roots" => racines = Some(valeur()?),
+            "--state" => etat = Some(valeur()?),
+            "--name" => nom = Some(valeur()?),
+            "--help" | "--version" => {
                 return Ok(Invocation {
                     annuaires,
                     racines,
                     etat,
                     nom,
-                    commande: if mot == "--aide" {
+                    commande: if mot == "--help" {
                         Commande::Aide
                     } else {
                         Commande::Version
@@ -228,18 +228,18 @@ where
 
     let mut suite = restants.collect::<Vec<_>>().into_iter();
     let commande = match commande.as_str() {
-        "aide" => Commande::Aide,
+        "help" => Commande::Aide,
         "version" => Commande::Version,
-        "diagnostic" => Commande::Diagnostic,
-        "enrole" => Commande::Enrole {
+        "diagnose" => Commande::Diagnostic,
+        "enroll" => Commande::Enrole {
             code: suite.next().ok_or(Faute::ArgumentManquant {
-                commande: "enrole",
+                commande: "enroll",
                 quoi: "le code affiché par l'application",
             })?,
         },
-        "annonce" => {
+        "announce" => {
             let service = suite.next().ok_or(Faute::ArgumentManquant {
-                commande: "annonce",
+                commande: "announce",
                 quoi: "un nom de service",
             })?;
             let points = suite
@@ -248,19 +248,19 @@ where
                 .collect::<Result<Vec<_>, _>>()?;
             if points.is_empty() {
                 return Err(Faute::ArgumentManquant {
-                    commande: "annonce",
+                    commande: "announce",
                     quoi: "au moins un `protocole:port`",
                 });
             }
             Commande::Annonce { service, points }
         }
-        // **UN ARGUMENT, OU DEUX.** `asl ou <machine> <service>` vise une
-        // machine ; `asl ou <service>` demande toutes les instances du nom
+        // **UN ARGUMENT, OU DEUX.** `asl where <machine> <service>` vise une
+        // machine ; `asl where <service>` demande toutes les instances du nom
         // qu'on a le droit de voir. Un `m-…` seul serait une machine sans
         // service, et c'est dit comme tel.
-        "ou" => {
+        "where" => {
             let premier = suite.next().ok_or(Faute::ArgumentManquant {
-                commande: "ou",
+                commande: "where",
                 quoi: "un nom de service, ou une machine et un nom de service",
             })?;
             match suite.next() {
@@ -275,7 +275,7 @@ where
                 None => {
                     if Identifiant::analyser_genre(Genre::Machine, &premier).is_ok() {
                         return Err(Faute::ArgumentManquant {
-                            commande: "ou",
+                            commande: "where",
                             quoi: "un nom de service après la machine",
                         });
                     }
@@ -295,7 +295,7 @@ where
                 .map_err(|_| Faute::UtilisateurIllisible(compte.clone()))?;
             Commande::Machines { compte }
         }
-        "identite" => Commande::Identite,
+        "identity" => Commande::Identite,
         _ => return Err(Faute::CommandeInconnue(commande)),
     };
 
@@ -332,18 +332,15 @@ mod essais {
 
     #[test]
     fn les_quatre_commandes_se_lisent() {
-        assert_eq!(lire(&["aide"]).unwrap().commande, Commande::Aide);
+        assert_eq!(lire(&["help"]).unwrap().commande, Commande::Aide);
+        assert_eq!(lire(&["diagnose"]).unwrap().commande, Commande::Diagnostic);
         assert_eq!(
-            lire(&["diagnostic"]).unwrap().commande,
-            Commande::Diagnostic
-        );
-        assert_eq!(
-            lire(&["enrole", "4K9M2-P7R1T"]).unwrap().commande,
+            lire(&["enroll", "4K9M2-P7R1T"]).unwrap().commande,
             Commande::Enrole {
                 code: "4K9M2-P7R1T".to_owned()
             }
         );
-        let annonce = lire(&["annonce", "depot", "tcp:8080"]).unwrap().commande;
+        let annonce = lire(&["announce", "depot", "tcp:8080"]).unwrap().commande;
         assert_eq!(
             annonce,
             Commande::Annonce {
@@ -360,7 +357,7 @@ mod essais {
     fn un_annuaire_ipv6_litteral_se_lit_entre_crochets() {
         // **SANS LES CROCHETS, `::1:6630` EST AMBIGU** — et les refuser rendrait
         // tout annuaire IPv6 littéral inatteignable.
-        let lu = lire(&["--annuaire", "[2001:db8::1]:6630", "diagnostic"]).unwrap();
+        let lu = lire(&["--directory", "[2001:db8::1]:6630", "diagnose"]).unwrap();
         assert_eq!(
             lu.annuaires,
             vec![Cible {
@@ -373,11 +370,11 @@ mod essais {
     #[test]
     fn un_annuaire_se_lit_par_son_nom_ou_par_une_adresse_v4() {
         let lu = lire(&[
-            "--annuaire",
+            "--directory",
             "nitrogen.example:6630",
-            "--annuaire",
+            "--directory",
             "203.0.113.7:6630",
-            "diagnostic",
+            "diagnose",
         ])
         .unwrap();
         assert_eq!(lu.annuaires.len(), 2, "l'option est répétable");
@@ -397,7 +394,7 @@ mod essais {
             "[2001:db8::1]6630",      // pas de `:` après le crochet
         ] {
             assert_eq!(
-                lire(&["--annuaire", quoi, "diagnostic"]),
+                lire(&["--directory", quoi, "diagnose"]),
                 Err(Faute::AnnuaireIllisible(quoi.to_owned())),
                 "{quoi}"
             );
@@ -406,7 +403,7 @@ mod essais {
 
     #[test]
     fn une_annonce_prend_autant_de_points_qu_on_lui_en_donne() {
-        let lu = lire(&["annonce", "depot", "tcp:8080", "udp:9000"]).unwrap();
+        let lu = lire(&["announce", "depot", "tcp:8080", "udp:9000"]).unwrap();
         let Commande::Annonce { points, .. } = lu.commande else {
             panic!("une annonce");
         };
@@ -418,9 +415,9 @@ mod essais {
     fn une_annonce_sans_point_est_refusee_avant_toute_connexion() {
         // Le daemon l'apprend ici, et non après un aller-retour réseau.
         assert_eq!(
-            lire(&["annonce", "depot"]),
+            lire(&["announce", "depot"]),
             Err(Faute::ArgumentManquant {
-                commande: "annonce",
+                commande: "announce",
                 quoi: "au moins un `protocole:port`"
             })
         );
@@ -430,7 +427,7 @@ mod essais {
     fn un_point_mal_ecrit_est_refuse() {
         for quoi in ["8080", "sctp:8080", "tcp:", "tcp:0", "tcp:70000"] {
             assert_eq!(
-                lire(&["annonce", "depot", quoi]),
+                lire(&["announce", "depot", quoi]),
                 Err(Faute::PointIllisible(quoi.to_owned())),
                 "{quoi}"
             );
@@ -444,13 +441,13 @@ mod essais {
         let service = Identifiant::depuis_entropie(Genre::Service, [7; 16]);
         let texte = service.texte();
         assert_eq!(
-            lire(&["ou", texte.as_str(), "depot"]),
+            lire(&["where", texte.as_str(), "depot"]),
             Err(Faute::MachineIllisible(texte.as_str().to_owned()))
         );
 
         let machine = Identifiant::depuis_entropie(Genre::Machine, [7; 16]);
         let texte = machine.texte();
-        let lu = lire(&["ou", texte.as_str(), "depot"]).unwrap();
+        let lu = lire(&["where", texte.as_str(), "depot"]).unwrap();
         assert_eq!(
             lu.commande,
             Commande::Ou {
@@ -463,18 +460,18 @@ mod essais {
     #[test]
     fn les_arguments_en_trop_sont_refuses() {
         assert_eq!(
-            lire(&["diagnostic", "et", "puis"]),
+            lire(&["diagnose", "et", "puis"]),
             Err(Faute::ArgumentEnTrop("et".to_owned()))
         );
         assert_eq!(
-            lire(&["enrole", "4K9M2P7R1T", "encore"]),
+            lire(&["enroll", "4K9M2P7R1T", "encore"]),
             Err(Faute::ArgumentEnTrop("encore".to_owned()))
         );
     }
 
     #[test]
     fn une_option_sans_valeur_est_refusee() {
-        for quoi in ["--annuaire", "--racines", "--etat", "--nom"] {
+        for quoi in ["--directory", "--roots", "--state", "--name"] {
             assert_eq!(lire(&[quoi]), Err(Faute::ValeurManquante(quoi.to_owned())));
         }
     }
@@ -484,8 +481,8 @@ mod essais {
         // **UNE OPTION IGNORÉE EST PIRE QU'UNE OPTION REFUSÉE** : l'utilisateur
         // croit avoir demandé quelque chose, et rien ne le détrompe.
         assert_eq!(
-            lire(&["--verbeux", "diagnostic"]),
-            Err(Faute::OptionInconnue("--verbeux".to_owned()))
+            lire(&["--verbose", "diagnose"]),
+            Err(Faute::OptionInconnue("--verbose".to_owned()))
         );
         assert_eq!(
             lire(&["annoncer"]),
@@ -498,13 +495,13 @@ mod essais {
         // Après la commande, un `--` est un argument comme un autre — et c'est
         // ce qui rend la lecture non ambiguë.
         let lu = lire(&[
-            "--racines",
+            "--roots",
             "/etc/asl/ca.pem",
-            "--etat",
+            "--state",
             "/var/lib/asl",
-            "--nom",
+            "--name",
             "nitrogen.example",
-            "diagnostic",
+            "diagnose",
         ])
         .unwrap();
         assert_eq!(lu.racines.as_deref(), Some("/etc/asl/ca.pem"));
@@ -512,14 +509,14 @@ mod essais {
         assert_eq!(lu.nom.as_deref(), Some("nitrogen.example"));
 
         assert_eq!(
-            lire(&["diagnostic", "--racines", "/etc/asl/ca.pem"]),
-            Err(Faute::ArgumentEnTrop("--racines".to_owned()))
+            lire(&["diagnose", "--roots", "/etc/asl/ca.pem"]),
+            Err(Faute::ArgumentEnTrop("--roots".to_owned()))
         );
     }
 
     #[test]
     fn ou_avec_un_seul_mot_demande_toutes_les_instances_du_nom() {
-        let lu = lire(&["ou", "depot"]).unwrap();
+        let lu = lire(&["where", "depot"]).unwrap();
         assert_eq!(
             lu.commande,
             Commande::Ou {
@@ -531,12 +528,18 @@ mod essais {
         // manque, dit comme tel, et non un nom de service bizarre.
         let machine = Identifiant::depuis_entropie(Genre::Machine, [7; 16]);
         assert!(matches!(
-            lire(&["ou", machine.texte().as_str()]),
-            Err(Faute::ArgumentManquant { commande: "ou", .. })
+            lire(&["where", machine.texte().as_str()]),
+            Err(Faute::ArgumentManquant {
+                commande: "where",
+                ..
+            })
         ));
         assert!(matches!(
-            lire(&["ou"]),
-            Err(Faute::ArgumentManquant { commande: "ou", .. })
+            lire(&["where"]),
+            Err(Faute::ArgumentManquant {
+                commande: "where",
+                ..
+            })
         ));
     }
 
@@ -567,7 +570,7 @@ mod essais {
 
     #[test]
     fn identite_se_demande_sans_rien() {
-        assert_eq!(lire(&["identite"]).unwrap().commande, Commande::Identite);
+        assert_eq!(lire(&["identity"]).unwrap().commande, Commande::Identite);
     }
 
     #[test]
@@ -577,7 +580,7 @@ mod essais {
         assert_eq!(lire(&["--version"]).unwrap().commande, Commande::Version);
         assert_eq!(lire(&["version"]).unwrap().commande, Commande::Version);
         assert_eq!(
-            lire(&["--annuaire", "[::1]:6630", "--version"])
+            lire(&["--directory", "[::1]:6630", "--version"])
                 .unwrap()
                 .commande,
             Commande::Version
@@ -588,9 +591,9 @@ mod essais {
     fn l_aide_se_demande_avant_toute_configuration() {
         // `asl --aide` doit répondre même quand rien n'est configuré : c'est la
         // commande qu'on tape justement parce qu'on ne sait pas quoi configurer.
-        assert_eq!(lire(&["--aide"]).unwrap().commande, Commande::Aide);
+        assert_eq!(lire(&["--help"]).unwrap().commande, Commande::Aide);
         assert_eq!(
-            lire(&["--annuaire", "[::1]:6630", "--aide"])
+            lire(&["--directory", "[::1]:6630", "--help"])
                 .unwrap()
                 .commande,
             Commande::Aide

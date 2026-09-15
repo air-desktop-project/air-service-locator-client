@@ -50,7 +50,7 @@
 //!
 //! **AUCUN SECRET PARTAGÉ N'EST POSÉ** (contrainte C14). L'enrôlement se fait
 //! avec un code court, à usage unique et valable quelques minutes, que
-//! l'application affiche : `asl enrole <code>`. La bibliothèque génère alors sa
+//! l'application affiche : `asl enroll <code>`. La bibliothèque génère alors sa
 //! paire et présente sa clé publique. Le code n'ouvre qu'une opération — lier une
 //! clé —, et le justificatif durable est la clé, que personne n'a jamais
 //! transmise.
@@ -463,7 +463,7 @@ impl Enrolement {
 
     /// Compose le corps de `POST /v1/enrolement`.
     ///
-    /// `code` est ce que l'administrateur a tapé — `asl enrole 4K9M2-P7R1T`. Il
+    /// `code` est ce que l'administrateur a tapé — `asl enroll 4K9M2-P7R1T`. Il
     /// est **canonisé ici** : la casse est indifférente, le tiret d'affichage
     /// facultatif, et les confusions de Crockford rattrapées. C'est indispensable
     /// et non commode — l'annuaire cherche par l'empreinte de la forme

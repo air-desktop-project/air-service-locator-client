@@ -20,7 +20,7 @@
 
 cmake_minimum_required(VERSION 3.16)
 
-project(asl_cpp LANGUAGES CXX VERSION 0.3.1)
+project(asl_cpp LANGUAGES CXX VERSION 0.4.0)
 
 add_library(asl_cpp INTERFACE)
 add_library(asl::asl ALIAS asl_cpp)

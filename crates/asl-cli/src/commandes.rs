@@ -26,7 +26,7 @@ const PLAFOND_MS: u64 = 15_000;
 ///
 /// # POURQUOI L'UTILITAIRE SE DONNE UNE BORNE QUE LA BIBLIOTHÈQUE REFUSE
 ///
-/// `joindre` n'abandonne jamais, et c'est juste : un daemon qui tourne depuis un
+/// `announce` n'abandonne jamais, et c'est juste : un daemon qui tourne depuis un
 /// mois doit se réannoncer tout seul le jour où l'annuaire revient.
 ///
 /// **Une personne devant un terminal n'a pas cette patience**, et surtout elle a
@@ -37,12 +37,12 @@ const PATIENCE_S: u64 = 20;
 
 /// La patience, telle que l'environnement peut la raccourcir.
 ///
-/// **`ASL_PATIENCE` EXISTE POUR LES SCRIPTS**, qui ont souvent une borne à eux
+/// **`ASL_TIMEOUT` EXISTE POUR LES SCRIPTS**, qui ont souvent une borne à eux
 /// et ne peuvent pas se permettre vingt secondes par sonde. Une valeur illisible
 /// ou nulle est ignorée plutôt que refusée : un diagnostic qui refuserait de
 /// démarrer à cause de sa propre horloge serait le comble.
 fn patience() -> u64 {
-    std::env::var("ASL_PATIENCE")
+    std::env::var("ASL_TIMEOUT")
         .ok()
         .and_then(|texte| texte.parse::<u64>().ok())
         .filter(|secondes| *secondes > 0)
@@ -96,11 +96,11 @@ fn reglages(invocation: &Invocation) -> Result<Reglages, Issue> {
         .map_err(|quoi| Issue::Configuration(quoi.to_string()))
 }
 
-/// Les annuaires que `ASL_ANNUAIRE` désigne, séparés par des virgules.
+/// Les annuaires que `ASL_DIRECTORY` désigne, séparés par des virgules.
 fn depuis_l_environnement() -> Result<Vec<Cible>, Issue> {
-    let brut = std::env::var("ASL_ANNUAIRE").map_err(|_| {
+    let brut = std::env::var("ASL_DIRECTORY").map_err(|_| {
         Issue::Configuration(
-            "aucun annuaire : passez `--annuaire <hôte:port>` ou posez `ASL_ANNUAIRE`".to_owned(),
+            "aucun annuaire : passez `--directory <host:port>` ou posez `ASL_DIRECTORY`".to_owned(),
         )
     })?;
     brut.split(',')
@@ -108,16 +108,16 @@ fn depuis_l_environnement() -> Result<Vec<Cible>, Issue> {
         .filter(|mot| !mot.is_empty())
         .map(|mot| {
             crate::arguments::analyser(
-                ["--annuaire", mot, "diagnostic"]
+                ["--directory", mot, "diagnostic"]
                     .into_iter()
                     .map(str::to_owned),
             )
-            .map_err(|quoi| Issue::Configuration(format!("`ASL_ANNUAIRE` : {quoi}")))
+            .map_err(|quoi| Issue::Configuration(format!("`ASL_DIRECTORY` : {quoi}")))
             .and_then(|lue| {
                 lue.annuaires
                     .into_iter()
                     .next()
-                    .ok_or_else(|| Issue::Configuration("`ASL_ANNUAIRE` est vide".to_owned()))
+                    .ok_or_else(|| Issue::Configuration("`ASL_DIRECTORY` est vide".to_owned()))
             })
         })
         .collect()
@@ -133,11 +133,10 @@ fn racines(invocation: &Invocation) -> Result<Vec<u8>, Issue> {
     let ou = invocation
         .racines
         .clone()
-        .or_else(|| std::env::var("ASL_RACINES").ok())
+        .or_else(|| std::env::var("ASL_ROOTS").ok())
         .ok_or_else(|| {
             Issue::Configuration(
-                "aucune racine : passez `--racines <fichier.pem>` ou posez `ASL_RACINES`"
-                    .to_owned(),
+                "aucune racine : passez `--roots <file.pem>` ou posez `ASL_ROOTS`".to_owned(),
             )
         })?;
     std::fs::read(&ou).map_err(|quoi| Issue::Configuration(format!("{ou} : {quoi}")))
@@ -163,7 +162,7 @@ async fn ouvrir(reglages: &Reglages) -> Result<Connexion, Issue> {
     }
 }
 
-// ── `asl enrole` ────────────────────────────────────────────────────────────
+// ── `asl enroll` ────────────────────────────────────────────────────────────
 
 /// Lie une clé neuve à cette machine.
 pub async fn enrole(invocation: &Invocation, dossier: &Path, code: &str) -> Sortie {
@@ -187,9 +186,9 @@ pub async fn enrole(invocation: &Invocation, dossier: &Path, code: &str) -> Sort
     println!("machine        {}", enrolee.machine.texte().as_str());
     match enrolee.proprietaire {
         Some(compte) => println!("compte         {}", compte.texte().as_str()),
-        // Un annuaire d'avant 0.3.0 : `asl diagnostic` l'apprendra.
+        // Un annuaire d'avant 0.3.0 : `asl diagnose` l'apprendra.
         None => {
-            println!("compte         non rendu par cet annuaire — `asl diagnostic` le demandera")
+            println!("compte         non rendu par cet annuaire — `asl diagnose` le demandera")
         }
     }
     println!("identité       {}", dossier.join("identite").display());
@@ -202,13 +201,13 @@ pub async fn enrole(invocation: &Invocation, dossier: &Path, code: &str) -> Sort
     Ok(())
 }
 
-// ── `asl annonce` ───────────────────────────────────────────────────────────
+// ── `asl announce` ───────────────────────────────────────────────────────────
 
 /// Annonce un service, et TIENT l'annonce.
 ///
 /// # ELLE NE REND PAS LA MAIN, ET C'EST LE POINT LE PLUS FACILE À MANQUER
 ///
-/// La connexion EST le bail (`protocole.md` §1.2) : `asl annonce` qui se
+/// La connexion EST le bail (`protocole.md` §1.2) : `asl announce` qui se
 /// terminerait retirerait l'annonce en se terminant. Un utilitaire qui afficherait
 /// « annoncé » puis rendrait l'invite mentirait sur ce qu'il a fait — l'annonce
 /// aurait déjà disparu quand l'invite s'affiche.
@@ -279,7 +278,7 @@ pub async fn annonce(
     }
 }
 
-// ── `asl ou` ────────────────────────────────────────────────────────────────
+// ── `asl where` ────────────────────────────────────────────────────────────────
 
 /// Demande où joindre un service — sur une machine, ou partout où ce compte a
 /// le droit de le voir.
@@ -344,7 +343,7 @@ pub async fn machines(
     Ok(())
 }
 
-// ── `asl identite` ──────────────────────────────────────────────────────────
+// ── `asl identity` ──────────────────────────────────────────────────────────
 
 /// Dit qui est cette machine et pour qui elle agit, **sans rien joindre**.
 ///
@@ -360,14 +359,14 @@ pub fn identite(dossier: &Path) -> Sortie {
     match fiche.compte {
         Some(compte) => println!("compte         {}", compte.texte().as_str()),
         None => println!(
-            "compte         inconnu de ce fichier — `asl diagnostic` le demande à l'annuaire"
+            "compte         inconnu de ce fichier — `asl diagnose` le demande à l'annuaire"
         ),
     }
     println!("identité       {}", dossier.join("identite").display());
     Ok(())
 }
 
-// ── `asl diagnostic` ────────────────────────────────────────────────────────
+// ── `asl diagnose` ────────────────────────────────────────────────────────
 
 /// Dit ce qu'on sait de l'annuaire, et **ce qu'on ne sait pas**.
 ///
@@ -380,7 +379,7 @@ pub fn identite(dossier: &Path) -> Sortie {
 ///
 /// Un diagnostic qui annoncerait en douce laisserait derrière lui un service que
 /// personne n'a demandé. Il dit donc ce qu'il sait, nomme ce qui manque, et
-/// renvoie à `asl annonce` — plutôt que d'affirmer ce qu'il n'a pas mesuré, ce
+/// renvoie à `asl announce` — plutôt que d'affirmer ce qu'il n'a pas mesuré, ce
 /// que C6 interdit à l'annuaire et que l'utilitaire n'a pas plus le droit de
 /// faire.
 pub async fn diagnostic(invocation: &Invocation, dossier: &Path) -> Sortie {
@@ -480,7 +479,7 @@ pub async fn diagnostic(invocation: &Invocation, dossier: &Path) -> Sortie {
                     println!("clé            REFUSÉE — {quoi}");
                     println!(
                         "               la clé de cette machine n'est pas (ou plus) liée.\n\
-                         \x20              Demandez un code, puis : asl enrole <code>"
+                         \x20              Demandez un code, puis : asl enroll <code>"
                     );
                 }
             }
@@ -492,7 +491,7 @@ pub async fn diagnostic(invocation: &Invocation, dossier: &Path) -> Sortie {
         "Ce que ce diagnostic NE dit pas : si vous êtes derrière un NAT. Ce\n\
          verdict se tranche en comparant l'adresse ci-dessus à celles que votre\n\
          daemon ANNONCE, et qui n'a rien annoncé n'a rien à comparer. Pour\n\
-         l'obtenir : asl annonce <service> <protocole>:<port>"
+         l'obtenir : asl announce <service> <protocole>:<port>"
     );
     let _ = connexion.fermer().await;
     Ok(())
