@@ -17,8 +17,8 @@ use asl_id::{Genre, Identifiant};
 
 /// Lance `asl`, dans un environnement propre.
 ///
-/// **L'ENVIRONNEMENT EST VIDÉ DE CE QUI COMPTE.** `ASL_ANNUAIRE`, `ASL_RACINES`
-/// et `ASL_ETAT` posés sur la machine de qui lance les essais changeraient leur
+/// **L'ENVIRONNEMENT EST VIDÉ DE CE QUI COMPTE.** `ASL_DIRECTORY`, `ASL_ROOTS`
+/// et `ASL_STATE` posés sur la machine de qui lance les essais changeraient leur
 /// résultat — et c'est exactement le genre d'essai qui passe chez son auteur.
 fn asl(arguments: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_asl"))
@@ -188,6 +188,40 @@ fn un_nom_qui_ne_se_resout_pas_rend_deux_et_non_quatre() {
     ]);
     assert_eq!(code(&sortie), Some(2), "{}", texte(&sortie.stderr));
     assert!(texte(&sortie.stderr).contains("annuaire.invalid"));
+}
+
+/// `ASL_DIRECTORY` se lit avec la même grammaire que `--directory`, et c'est
+/// précisément là qu'un renommage de commande s'est cassé une fois : la
+/// variable était relue à travers l'analyseur avec un mot de commande qui
+/// n'existait plus. Une adresse posée par la variable doit donc arriver au
+/// même endroit que l'option — ici, jusqu'au refus du PEM, code 2, sans
+/// jamais dire qu'une commande n'existe pas.
+#[test]
+fn asl_directory_se_lit_comme_l_option() {
+    let bac = Bac::neuf("env");
+    let racines = bac.chemin().join("ca.pem");
+    std::fs::write(&racines, b"pas un PEM").expect("le fichier s'écrit");
+
+    let sortie = Command::new(env!("CARGO_BIN_EXE_asl"))
+        .args([
+            "--state",
+            &bac.chemin().to_string_lossy(),
+            "--roots",
+            &racines.to_string_lossy(),
+            "diagnose",
+        ])
+        .env_remove("ASL_STATE")
+        .env("ASL_DIRECTORY", "annuaire.invalid:6630, [::1]:6630")
+        .env("ASL_TIMEOUT", "2")
+        .output()
+        .expect("le binaire `asl` se lance");
+    let dit = texte(&sortie.stderr);
+    assert!(
+        !dit.contains("n'existe pas"),
+        "la variable doit passer l'analyseur : {dit}"
+    );
+    assert_eq!(code(&sortie), Some(2), "{dit}");
+    assert!(dit.contains("annuaire.invalid"), "{dit}");
 }
 
 #[test]

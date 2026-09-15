@@ -108,7 +108,7 @@ fn depuis_l_environnement() -> Result<Vec<Cible>, Issue> {
         .filter(|mot| !mot.is_empty())
         .map(|mot| {
             crate::arguments::analyser(
-                ["--directory", mot, "diagnostic"]
+                ["--directory", mot, "diagnose"]
                     .into_iter()
                     .map(str::to_owned),
             )
