@@ -78,7 +78,7 @@ fn reglages(invocation: &Invocation) -> Result<Reglages, Issue> {
             .map_err(|quoi| {
                 Issue::Configuration(format!("`{}` ne se résout pas : {quoi}", cible.hote))
             })?;
-        for adresse in adresses {
+        for adresse in tourner(adresses.collect()) {
             annuaires.push(Annuaire {
                 adresse,
                 nom: nom.clone(),
@@ -94,6 +94,35 @@ fn reglages(invocation: &Invocation) -> Result<Reglages, Issue> {
     let racines = racines(invocation)?;
     Reglages::nouveaux(annuaires, racines, PLAFOND_MS)
         .map_err(|quoi| Issue::Configuration(quoi.to_string()))
+}
+
+/// Fait tourner, au hasard, les adresses qu'un même nom a rendues.
+///
+/// # POURQUOI LE DNS NE SUFFIT PAS
+///
+/// Un alias comme celui des racines rend plusieurs adresses, et le DNS les
+/// sert en tournant — mais **`getaddrinfo` les retrie** (RFC 6724, sur macOS
+/// comme avec la glibc), et met la même en tête à chaque fois : deux racines
+/// dont une seule reçoit tout. Le tirage se fait donc ici, par un décalage
+/// aléatoire de la liste, de sorte qu'un `asl` lancé cent fois se répartisse
+/// entre elles. **L'ordre des familles ne change pas** — IPv6 d'abord reste
+/// une décision de produit, et la tournée est faite APRÈS, par famille.
+/// Un nom à une seule adresse, ou une adresse littérale, ne tourne pas.
+fn tourner(adresses: Vec<std::net::SocketAddr>) -> Vec<std::net::SocketAddr> {
+    let (mut v6, mut v4): (Vec<_>, Vec<_>) = adresses.into_iter().partition(|a| a.is_ipv6());
+    // Un octet du noyau suffit à choisir le point de départ ; si le noyau
+    // ne répond pas, on ne tourne pas — ce n'est pas une raison d'échouer.
+    let depart = crate::etat::hasard::<1>().map_or(0, |[octet]| usize::from(octet));
+    if v6.len() > 1 {
+        let n = v6.len();
+        v6.rotate_left(depart.checked_rem(n).unwrap_or(0));
+    }
+    if v4.len() > 1 {
+        let n = v4.len();
+        v4.rotate_left(depart.checked_rem(n).unwrap_or(0));
+    }
+    v6.extend(v4);
+    v6
 }
 
 /// L'alias des annuaires racines d'`air-desktop-project` : un nom qui rend
@@ -541,4 +570,27 @@ fn ecouter_ctrl_c() -> Arc<AtomicBool> {
         }
     });
     arret
+}
+
+#[cfg(test)]
+mod tests {
+    /// La tournée ne change ni les familles ni leur ordre : IPv6 d'abord,
+    /// toujours ; elle ne fait que décaler chaque famille — et un ensemble
+    /// à une adresse par famille reste tel quel.
+    #[test]
+    fn la_tournee_garde_ipv6_devant_et_ne_perd_rien() {
+        use std::net::SocketAddr;
+        let six_a: SocketAddr = "[2001:db8::1]:6630".parse().unwrap();
+        let six_b: SocketAddr = "[2001:db8::2]:6630".parse().unwrap();
+        let quatre: SocketAddr = "192.0.2.1:6630".parse().unwrap();
+        for _ in 0..16 {
+            let tournee = super::tourner(vec![quatre, six_a, six_b]);
+            assert_eq!(tournee.len(), 3);
+            assert!(tournee[0].is_ipv6() && tournee[1].is_ipv6(), "{tournee:?}");
+            assert_eq!(tournee[2], quatre);
+            assert!(tournee.contains(&six_a) && tournee.contains(&six_b));
+        }
+        assert_eq!(super::tourner(vec![quatre]), vec![quatre]);
+        assert!(super::tourner(vec![]).is_empty());
+    }
 }
