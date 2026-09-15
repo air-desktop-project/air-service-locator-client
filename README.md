@@ -122,6 +122,13 @@ où il se relève.
 partie privée ne quitte jamais la machine. Il n'y a **aucun secret partagé** à
 poser : c'est la règle du produit, pas une préférence.
 
+**Sans rien dire, `asl` joint les annuaires racines** — `asl-root.air-desktop.org:6630`,
+un alias DNS qui rend les deux serveurs racines et que le DNS sert en tournant —
+avec **la racine d'`air-desktop-project` épinglée dans le binaire**
+(`crates/asl-cli/racines/air-desktop-project.pem`). `--directory`/`ASL_DIRECTORY`
+et `--roots`/`ASL_ROOTS` servent à viser autre chose : un banc, une autre
+autorité. Il n'y a toujours aucun repli sur le magasin du système.
+
 **La grammaire d'`asl` est en anglais** — commandes, options, variables
 d'environnement, `--help` — parce que c'est la langue d'un terminal, quel que
 soit celui qui s'y assoit ; ses messages, eux, sont en français, comme tout

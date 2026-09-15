@@ -135,15 +135,19 @@ fn une_configuration_qui_manque_rend_deux_et_dit_quoi_poser() {
     let bac = Bac::neuf("config");
     let etat = bac.chemin().to_string_lossy().into_owned();
 
-    // Aucun annuaire.
+    // **Aucun annuaire donné : ce sont les racines qu'on joint**, sous leur
+    // alias — et ce n'est donc plus une faute de configuration. Ce que
+    // l'essai peut tenir sans réseau, c'est que l'alias est bien celui que
+    // la commande vise : il apparaît dans ce qu'elle dit, résolu ou non.
     let sortie = asl(&["--state", &etat, "diagnose"]);
-    assert_eq!(code(&sortie), Some(2));
-    let dit = texte(&sortie.stderr);
-    assert!(dit.contains("--directory"), "{dit}");
-    assert!(dit.contains("ASL_DIRECTORY"), "{dit}");
+    assert_ne!(code(&sortie), Some(1), "{}", texte(&sortie.stderr));
+    let dit = texte(&sortie.stdout) + &texte(&sortie.stderr);
+    assert!(dit.contains("asl-root.air-desktop.org"), "{dit}");
 
-    // Un annuaire, mais aucune racine. **Pas de repli sur le magasin du
-    // système** : les annuaires racines ont leur propre autorité.
+    // Un annuaire, mais aucune racine donnée : **celle d'air-desktop-project
+    // est épinglée**, et c'est elle qui vaut — pas le magasin du système. Un
+    // annuaire qui n'est pas signé par elle est donc refusé, et ce n'est pas
+    // une faute de configuration non plus.
     let sortie = asl(&[
         "--state",
         &etat,
@@ -151,9 +155,7 @@ fn une_configuration_qui_manque_rend_deux_et_dit_quoi_poser() {
         "127.0.0.1:6630",
         "diagnose",
     ]);
-    assert_eq!(code(&sortie), Some(2));
-    let dit = texte(&sortie.stderr);
-    assert!(dit.contains("--roots"), "{dit}");
+    assert_ne!(code(&sortie), Some(2), "{}", texte(&sortie.stderr));
 
     // Un fichier de racines qui n'existe pas.
     let sortie = asl(&[

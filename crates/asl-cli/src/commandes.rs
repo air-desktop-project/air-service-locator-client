@@ -96,13 +96,21 @@ fn reglages(invocation: &Invocation) -> Result<Reglages, Issue> {
         .map_err(|quoi| Issue::Configuration(quoi.to_string()))
 }
 
-/// Les annuaires que `ASL_DIRECTORY` désigne, séparés par des virgules.
+/// L'alias des annuaires racines d'`air-desktop-project` : un nom qui rend
+/// les adresses des deux serveurs racines, et que le DNS sert en tournant.
+///
+/// **C'est ce qu'on joint quand on ne dit rien.** Un utilisateur qui tape
+/// `asl machines u-…` n'a pas à savoir où sont les racines : elles sont là où
+/// le produit les met, sous ce nom, et c'est ce nom que leur certificat
+/// porte. Le certificat de chaque racine le porte aussi, ce qui fait que le
+/// nom exigé (`--name`, l'hôte par défaut) vaut pour l'une comme pour
+/// l'autre.
+pub const ANNUAIRES_RACINES: &str = "asl-root.air-desktop.org:6630";
+
+/// Les annuaires que `ASL_DIRECTORY` désigne, séparés par des virgules — et,
+/// sans elle, les racines.
 fn depuis_l_environnement() -> Result<Vec<Cible>, Issue> {
-    let brut = std::env::var("ASL_DIRECTORY").map_err(|_| {
-        Issue::Configuration(
-            "aucun annuaire : passez `--directory <host:port>` ou posez `ASL_DIRECTORY`".to_owned(),
-        )
-    })?;
+    let brut = std::env::var("ASL_DIRECTORY").unwrap_or_else(|_| ANNUAIRES_RACINES.to_owned());
     brut.split(',')
         .map(str::trim)
         .filter(|mot| !mot.is_empty())
@@ -129,18 +137,27 @@ fn depuis_l_environnement() -> Result<Vec<Cible>, Issue> {
 /// annuaires racines de ce produit sont signés par SA propre autorité, et se
 /// rabattre silencieusement sur les centaines de racines d'un système ferait
 /// accepter un certificat qu'aucune d'elles n'aurait dû émettre.
+///
+/// **LA RACINE D'`air-desktop-project` EST ÉPINGLÉE DANS CE BINAIRE**, et
+/// c'est ce qui rend `asl` utilisable sans un fichier à aller chercher : sans
+/// `--roots` ni `ASL_ROOTS`, c'est elle qui vaut — la même que celle des
+/// annuaires racines. Un fichier donné la remplace entièrement (un banc, une
+/// autre autorité) : on n'ajoute pas, on choisit.
 fn racines(invocation: &Invocation) -> Result<Vec<u8>, Issue> {
-    let ou = invocation
+    let Some(ou) = invocation
         .racines
         .clone()
         .or_else(|| std::env::var("ASL_ROOTS").ok())
-        .ok_or_else(|| {
-            Issue::Configuration(
-                "aucune racine : passez `--roots <file.pem>` ou posez `ASL_ROOTS`".to_owned(),
-            )
-        })?;
+    else {
+        return Ok(RACINE_EPINGLEE.to_vec());
+    };
     std::fs::read(&ou).map_err(|quoi| Issue::Configuration(format!("{ou} : {quoi}")))
 }
+
+/// La racine d'`air-desktop-project`, en PEM — celle qui a signé les
+/// certificats des annuaires racines. Publique par nature : c'est une clé
+/// publique, et l'épingler est ce que `ca.sh` du serveur annonce.
+const RACINE_EPINGLEE: &[u8] = include_bytes!("../racines/air-desktop-project.pem");
 
 /// Ouvre une connexion, avec la patience d'une personne et non d'un daemon.
 async fn ouvrir(reglages: &Reglages) -> Result<Connexion, Issue> {
