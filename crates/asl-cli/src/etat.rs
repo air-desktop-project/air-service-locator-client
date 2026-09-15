@@ -143,13 +143,24 @@ pub fn hasard<const N: usize>() -> Result<[u8; N], Faute> {
 /// # Erreurs
 ///
 /// [`Faute::Disque`].
-pub fn ecrire(dossier: &Path, machine: Identifiant, graine: &[u8; 32]) -> Result<(), Faute> {
+pub fn ecrire(
+    dossier: &Path,
+    machine: Identifiant,
+    compte: Option<Identifiant>,
+    graine: &[u8; 32],
+) -> Result<(), Faute> {
     fs::create_dir_all(dossier).map_err(|quoi| Faute::Disque {
         ou: dossier.to_path_buf(),
         quoi,
     })?;
     let ou = dossier.join(FICHIER);
 
+    // **LE COMPTE, QUAND ON LE SAIT.** Un annuaire d'avant 0.3.0 ne le rend pas
+    // à l'enrôlement ; `asl diagnostic` l'apprendra par `GET /v1/moi` et
+    // complétera ce fichier. C'est un identifiant public, pas un secret.
+    let ligne_compte = compte.map_or(String::new(), |compte| {
+        format!("compte = {}\n", compte.texte().as_str())
+    });
     let contenu = format!(
         "# asl — l'identité de cette machine.\n\
          #\n\
@@ -157,8 +168,9 @@ pub fn ecrire(dossier: &Path, machine: Identifiant, graine: &[u8; 32]) -> Result
          # et elle ne le doit pas : l'annuaire ne connaît que la moitié publique.\n\
          # Ne la copiez pas sur une autre machine — enrôlez-la, c'est gratuit.\n\
          machine = {}\n\
-         graine = {}\n",
+         {}graine = {}\n",
         machine.texte().as_str(),
+        ligne_compte,
         en_hexa(graine)
     );
 
@@ -172,6 +184,15 @@ pub fn ecrire(dossier: &Path, machine: Identifiant, graine: &[u8; 32]) -> Result
         .map_err(|quoi| Faute::Disque { ou, quoi })
 }
 
+/// Ce que le fichier d'identité dit, une fois lu : de quoi s'authentifier, et
+/// le compte pour lequel cette machine agit, s'il y est.
+pub struct Fiche {
+    /// La machine et sa clé — ce qu'`asl-client` demande.
+    pub identite: Identite,
+    /// Le compte, quand l'enrôlement ou un diagnostic l'a posé.
+    pub compte: Option<Identifiant>,
+}
+
 /// Lit l'identité de cette machine.
 ///
 /// # Erreurs
@@ -179,6 +200,15 @@ pub fn ecrire(dossier: &Path, machine: Identifiant, graine: &[u8; 32]) -> Result
 /// [`Faute::PasEnrolee`], [`Faute::TropOuvert`], [`Faute::Illisible`],
 /// [`Faute::Disque`].
 pub fn lire(dossier: &Path) -> Result<Identite, Faute> {
+    lire_la_fiche(dossier).map(|fiche| fiche.identite)
+}
+
+/// Lit le fichier d'identité entier, compte compris.
+///
+/// # Erreurs
+///
+/// Celles de [`lire`].
+pub fn lire_la_fiche(dossier: &Path) -> Result<Fiche, Faute> {
     let ou = dossier.join(FICHIER);
     if !ou.exists() {
         return Err(Faute::PasEnrolee { ou });
@@ -200,6 +230,7 @@ pub fn lire(dossier: &Path) -> Result<Identite, Faute> {
     })?;
     let mut machine = None;
     let mut graine = None;
+    let mut compte = None;
     for ligne in contenu.lines() {
         let ligne = ligne.trim();
         if ligne.is_empty() || ligne.starts_with('#') {
@@ -211,9 +242,15 @@ pub fn lire(dossier: &Path) -> Result<Identite, Faute> {
         match clef.trim() {
             "machine" => machine = Some(valeur.trim().to_owned()),
             "graine" => graine = Some(valeur.trim().to_owned()),
+            "compte" => compte = Some(valeur.trim().to_owned()),
             _ => {}
         }
     }
+
+    // **UN COMPTE ILLISIBLE N'EMPÊCHE PAS DE S'AUTHENTIFIER** : il ne sert
+    // qu'à l'affichage, et `asl diagnostic` le remettra d'aplomb.
+    let compte =
+        compte.and_then(|texte| Identifiant::analyser_genre(Genre::Utilisateur, &texte).ok());
 
     let machine = machine.ok_or_else(|| Faute::Illisible {
         ou: ou.clone(),
@@ -237,10 +274,38 @@ pub fn lire(dossier: &Path) -> Result<Identite, Faute> {
     // **LA CLÉ EST DÉRIVÉE, ET NON STOCKÉE.** La graine est ce qu'`asl-client`
     // demande ; en garder aussi la clé dérivée ferait deux copies du même
     // secret, dont une que rien ne vérifie.
-    Identite::nouvelle(machine, graine).map_err(|_| Faute::Illisible {
+    let identite = Identite::nouvelle(machine, graine).map_err(|_| Faute::Illisible {
         ou,
         quoi: "l'identifiant n'est pas celui d'une machine",
-    })
+    })?;
+    Ok(Fiche { identite, compte })
+}
+
+/// Pose le compte dans un fichier d'identité qui ne le portait pas.
+///
+/// Le fichier est réécrit entier, avec la même graine et le même mode : une
+/// ligne ajoutée à la main laisserait deux écritures possibles du même fichier.
+///
+/// # Erreurs
+///
+/// Celles de [`lire`] et d'[`ecrire`].
+pub fn completer(dossier: &Path, compte: Identifiant) -> Result<(), Faute> {
+    let ou = dossier.join(FICHIER);
+    let contenu = fs::read_to_string(&ou).map_err(|quoi| Faute::Disque {
+        ou: ou.clone(),
+        quoi,
+    })?;
+    let fiche = lire_la_fiche(dossier)?;
+    let graine = contenu
+        .lines()
+        .filter_map(|ligne| ligne.trim().split_once('='))
+        .find(|(clef, _)| clef.trim() == "graine")
+        .and_then(|(_, valeur)| depuis_hexa(valeur.trim()))
+        .ok_or(Faute::Illisible {
+            ou,
+            quoi: "il manque la ligne `graine =`",
+        })?;
+    ecrire(dossier, fiche.identite.machine(), Some(compte), &graine)
 }
 
 /// Un enrôlement neuf, et la graine qu'il faudra écrire s'il aboutit.
@@ -296,6 +361,65 @@ const fn chiffre(caractere: u8) -> Option<u8> {
 #[cfg(test)]
 mod essais {
     use super::*;
+
+    /// Un dossier d'essai à nous.
+    fn dossier(quoi: &str) -> PathBuf {
+        let ou = std::env::temp_dir().join(format!("asl-etat-{}-{quoi}", std::process::id()));
+        let _ = fs::remove_dir_all(&ou);
+        ou
+    }
+
+    #[test]
+    fn le_compte_s_ecrit_se_relit_et_se_complete() {
+        let ou = dossier("compte");
+        let machine = Identifiant::depuis_entropie(Genre::Machine, [0x21; 16]);
+        let compte = Identifiant::depuis_entropie(Genre::Utilisateur, [0x22; 16]);
+        let graine = [0x5A_u8; 32];
+
+        // Sans compte — un annuaire d'avant 0.3.0.
+        ecrire(&ou, machine, None, &graine).expect("écrit");
+        let fiche = lire_la_fiche(&ou).expect("lisible");
+        assert_eq!(fiche.identite.machine(), machine);
+        assert_eq!(fiche.compte, None);
+        assert!(
+            !fs::read_to_string(ou.join(FICHIER))
+                .unwrap()
+                .contains("compte =")
+        );
+
+        // Complété par un diagnostic : même machine, même graine, et le compte.
+        completer(&ou, compte).expect("complété");
+        let fiche = lire_la_fiche(&ou).expect("lisible");
+        assert_eq!(fiche.identite.machine(), machine);
+        assert_eq!(fiche.compte, Some(compte));
+        assert_eq!(
+            lire(&ou).expect("lisible").machine(),
+            machine,
+            "la clé n'a pas bougé"
+        );
+        let mode = fs::metadata(ou.join(FICHIER)).unwrap().mode() & 0o777;
+        assert_eq!(mode, 0o600, "le mode non plus");
+
+        // Écrit d'emblée avec le compte.
+        ecrire(&ou, machine, Some(compte), &graine).expect("écrit");
+        assert_eq!(lire_la_fiche(&ou).expect("lisible").compte, Some(compte));
+
+        let _ = fs::remove_dir_all(&ou);
+    }
+
+    #[test]
+    fn un_compte_illisible_n_empeche_pas_de_s_authentifier() {
+        let ou = dossier("compte-illisible");
+        let machine = Identifiant::depuis_entropie(Genre::Machine, [0x21; 16]);
+        ecrire(&ou, machine, None, &[0x5A; 32]).expect("écrit");
+        let chemin = ou.join(FICHIER);
+        let mut contenu = fs::read_to_string(&chemin).unwrap();
+        contenu.push_str("compte = pas-un-identifiant\n");
+        fs::write(&chemin, contenu).unwrap();
+        let fiche = lire_la_fiche(&ou).expect("l'identité se lit quand même");
+        assert_eq!(fiche.compte, None);
+        let _ = fs::remove_dir_all(&ou);
+    }
 
     #[test]
     fn l_hexadecimal_fait_l_aller_et_le_retour() {

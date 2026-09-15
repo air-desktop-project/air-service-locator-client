@@ -176,15 +176,22 @@ pub async fn enrole(invocation: &Invocation, dossier: &Path, code: &str) -> Sort
     let (enrolement, graine) =
         etat::preparer_un_enrolement().map_err(|quoi| Issue::Configuration(quoi.to_string()))?;
 
-    let machine = connexion
+    let enrolee = connexion
         .enroler(&enrolement, code)
         .await
         .map_err(refus_de_l_annuaire)?;
 
-    etat::ecrire(dossier, machine, &graine)
+    etat::ecrire(dossier, enrolee.machine, enrolee.proprietaire, &graine)
         .map_err(|quoi| Issue::Configuration(quoi.to_string()))?;
 
-    println!("machine        {}", machine.texte().as_str());
+    println!("machine        {}", enrolee.machine.texte().as_str());
+    match enrolee.proprietaire {
+        Some(compte) => println!("compte         {}", compte.texte().as_str()),
+        // Un annuaire d'avant 0.3.0 : `asl diagnostic` l'apprendra.
+        None => {
+            println!("compte         non rendu par cet annuaire — `asl diagnostic` le demandera")
+        }
+    }
     println!("identité       {}", dossier.join("identite").display());
     println!();
     println!(
@@ -274,11 +281,12 @@ pub async fn annonce(
 
 // ── `asl ou` ────────────────────────────────────────────────────────────────
 
-/// Demande où joindre un service.
+/// Demande où joindre un service — sur une machine, ou partout où ce compte a
+/// le droit de le voir.
 pub async fn ou(
     invocation: &Invocation,
     identite: &Identite,
-    machine: asl_id::Identifiant,
+    machine: Option<asl_id::Identifiant>,
     service: &str,
 ) -> Sortie {
     let reglages = reglages(invocation)?;
@@ -288,12 +296,74 @@ pub async fn ou(
         .await
         .map_err(refus_de_l_annuaire)?;
 
-    let corps = connexion
-        .ou(machine, service)
+    let dit = match machine {
+        Some(machine) => {
+            let corps = connexion
+                .ou(machine, service)
+                .await
+                .map_err(refus_de_l_annuaire)?;
+            rendu::reponse(&corps)
+        }
+        None => {
+            let corps = connexion
+                .ou_par_nom(service)
+                .await
+                .map_err(refus_de_l_annuaire)?;
+            rendu::reponses(&corps)
+        }
+    };
+    println!("{}", dit.map_err(Issue::Injoignable)?);
+    let _ = connexion.fermer().await;
+    Ok(())
+}
+
+// ── `asl machines` ──────────────────────────────────────────────────────────
+
+/// Les machines d'un utilisateur que ce compte a le droit de voir.
+///
+/// **UNE LISTE VIDE N'EST PAS UNE PANNE** : c'est ce que l'annuaire répond à
+/// qui n'a rien reçu de cet utilisateur — et il ne dit pas s'il a des machines
+/// (C9). Le rendu le dit à la place d'un `[]` muet.
+pub async fn machines(
+    invocation: &Invocation,
+    identite: &Identite,
+    compte: asl_id::Identifiant,
+) -> Sortie {
+    let reglages = reglages(invocation)?;
+    let mut connexion = ouvrir(&reglages).await?;
+    connexion
+        .authentifier(identite)
         .await
         .map_err(refus_de_l_annuaire)?;
-    println!("{}", rendu::reponse(&corps).map_err(Issue::Injoignable)?);
+    let corps = connexion
+        .machines_de(compte)
+        .await
+        .map_err(refus_de_l_annuaire)?;
+    print!("{}", rendu::machines(&corps).map_err(Issue::Injoignable)?);
     let _ = connexion.fermer().await;
+    Ok(())
+}
+
+// ── `asl identite` ──────────────────────────────────────────────────────────
+
+/// Dit qui est cette machine et pour qui elle agit, **sans rien joindre**.
+///
+/// C'est ce qu'un script ou un exploitant lit sur une machine dont le réseau est
+/// en panne : le fichier d'identité suffit, et l'annuaire n'a rien à y ajouter.
+pub fn identite(dossier: &Path) -> Sortie {
+    let fiche =
+        etat::lire_la_fiche(dossier).map_err(|quoi| Issue::Configuration(quoi.to_string()))?;
+    println!(
+        "machine        {}",
+        fiche.identite.machine().texte().as_str()
+    );
+    match fiche.compte {
+        Some(compte) => println!("compte         {}", compte.texte().as_str()),
+        None => println!(
+            "compte         inconnu de ce fichier — `asl diagnostic` le demande à l'annuaire"
+        ),
+    }
+    println!("identité       {}", dossier.join("identite").display());
     Ok(())
 }
 
@@ -366,15 +436,46 @@ pub async fn diagnostic(invocation: &Invocation, dossier: &Path) -> Sortie {
 
     // L'identité, si elle existe.
     println!();
-    match etat::lire(dossier) {
+    match etat::lire_la_fiche(dossier) {
         Err(quoi) => {
             println!("identité       ABSENTE OU ILLISIBLE");
             println!("               {quoi}");
         }
-        Ok(identite) => {
+        Ok(fiche) => {
+            let identite = fiche.identite;
             println!("machine        {}", identite.machine().texte().as_str());
             match connexion.authentifier(&identite).await {
-                Ok(()) => println!("clé            acceptée par l'annuaire"),
+                Ok(()) => {
+                    println!("clé            acceptée par l'annuaire");
+                    // **POUR QUI CETTE MACHINE AGIT**, demandé à l'annuaire
+                    // sur la connexion qu'elle vient de prouver ; et le fichier
+                    // d'identité est complété s'il ne le disait pas encore
+                    // (`protocole.md` §3, `GET /v1/moi`).
+                    match connexion.moi().await {
+                        Ok(moi) => {
+                            println!("compte         {}", moi.proprietaire.texte().as_str());
+                            if fiche.compte != Some(moi.proprietaire) {
+                                match etat::completer(dossier, moi.proprietaire) {
+                                    Ok(()) => {
+                                        println!("               (posé dans le fichier d'identité)")
+                                    }
+                                    Err(quoi) => println!(
+                                        "               (non posé dans le fichier : {quoi})"
+                                    ),
+                                }
+                            }
+                        }
+                        Err(quoi) => match fiche.compte {
+                            Some(compte) => println!(
+                                "compte         {} (d'après le fichier ; l'annuaire ne répond pas à /v1/moi — {quoi})",
+                                compte.texte().as_str()
+                            ),
+                            None => println!(
+                                "compte         INCONNU — l'annuaire ne sert pas /v1/moi ({quoi})"
+                            ),
+                        },
+                    }
+                }
                 Err(quoi) => {
                     println!("clé            REFUSÉE — {quoi}");
                     println!(

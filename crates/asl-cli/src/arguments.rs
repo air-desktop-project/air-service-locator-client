@@ -39,11 +39,19 @@ pub enum Commande {
     },
     /// Demander où joindre un service.
     Ou {
-        /// La machine qui le porte.
-        machine: Identifiant,
+        /// La machine qui le porte — ou aucune : toutes les instances du nom
+        /// que ce compte a le droit de voir (`GET /v1/ou?service=`).
+        machine: Option<Identifiant>,
         /// Le nom du service.
         service: String,
     },
+    /// Les machines d'un utilisateur que ce compte a le droit de voir.
+    Machines {
+        /// L'utilisateur.
+        compte: Identifiant,
+    },
+    /// Dire qui est cette machine et pour qui elle agit, **hors ligne**.
+    Identite,
     /// Dire ce qu'on sait de l'annuaire, et ce qu'on ne sait pas.
     Diagnostic,
     /// Afficher l'aide.
@@ -102,6 +110,8 @@ pub enum Faute {
     PointIllisible(String),
     /// Cet identifiant de machine ne se lit pas.
     MachineIllisible(String),
+    /// Cet identifiant d'utilisateur ne se lit pas.
+    UtilisateurIllisible(String),
 }
 
 impl core::fmt::Display for Faute {
@@ -122,6 +132,9 @@ impl core::fmt::Display for Faute {
                 write!(f, "`{quoi}` ne se lit pas comme un `protocole:port`")
             }
             Self::MachineIllisible(quoi) => write!(f, "`{quoi}` n'est pas une machine"),
+            Self::UtilisateurIllisible(quoi) => {
+                write!(f, "`{quoi}` n'est pas un utilisateur (u-…)")
+            }
         }
     }
 }
@@ -241,21 +254,48 @@ where
             }
             Commande::Annonce { service, points }
         }
+        // **UN ARGUMENT, OU DEUX.** `asl ou <machine> <service>` vise une
+        // machine ; `asl ou <service>` demande toutes les instances du nom
+        // qu'on a le droit de voir. Un `m-…` seul serait une machine sans
+        // service, et c'est dit comme tel.
         "ou" => {
-            let machine = suite.next().ok_or(Faute::ArgumentManquant {
+            let premier = suite.next().ok_or(Faute::ArgumentManquant {
                 commande: "ou",
-                quoi: "une machine",
+                quoi: "un nom de service, ou une machine et un nom de service",
             })?;
-            let machine = Identifiant::analyser_genre(Genre::Machine, &machine)
-                .map_err(|_| Faute::MachineIllisible(machine.clone()))?;
-            Commande::Ou {
-                machine,
-                service: suite.next().ok_or(Faute::ArgumentManquant {
-                    commande: "ou",
-                    quoi: "un nom de service",
-                })?,
+            match suite.next() {
+                Some(service) => {
+                    let machine = Identifiant::analyser_genre(Genre::Machine, &premier)
+                        .map_err(|_| Faute::MachineIllisible(premier.clone()))?;
+                    Commande::Ou {
+                        machine: Some(machine),
+                        service,
+                    }
+                }
+                None => {
+                    if Identifiant::analyser_genre(Genre::Machine, &premier).is_ok() {
+                        return Err(Faute::ArgumentManquant {
+                            commande: "ou",
+                            quoi: "un nom de service après la machine",
+                        });
+                    }
+                    Commande::Ou {
+                        machine: None,
+                        service: premier,
+                    }
+                }
             }
         }
+        "machines" => {
+            let compte = suite.next().ok_or(Faute::ArgumentManquant {
+                commande: "machines",
+                quoi: "un utilisateur (u-…)",
+            })?;
+            let compte = Identifiant::analyser_genre(Genre::Utilisateur, &compte)
+                .map_err(|_| Faute::UtilisateurIllisible(compte.clone()))?;
+            Commande::Machines { compte }
+        }
+        "identite" => Commande::Identite,
         _ => return Err(Faute::CommandeInconnue(commande)),
     };
 
@@ -414,7 +454,7 @@ mod essais {
         assert_eq!(
             lu.commande,
             Commande::Ou {
-                machine,
+                machine: Some(machine),
                 service: "depot".to_owned()
             }
         );
@@ -475,6 +515,59 @@ mod essais {
             lire(&["diagnostic", "--racines", "/etc/asl/ca.pem"]),
             Err(Faute::ArgumentEnTrop("--racines".to_owned()))
         );
+    }
+
+    #[test]
+    fn ou_avec_un_seul_mot_demande_toutes_les_instances_du_nom() {
+        let lu = lire(&["ou", "depot"]).unwrap();
+        assert_eq!(
+            lu.commande,
+            Commande::Ou {
+                machine: None,
+                service: "depot".to_owned()
+            }
+        );
+        // **UNE MACHINE SEULE N'EST PAS UN SERVICE** : c'est un argument qui
+        // manque, dit comme tel, et non un nom de service bizarre.
+        let machine = Identifiant::depuis_entropie(Genre::Machine, [7; 16]);
+        assert!(matches!(
+            lire(&["ou", machine.texte().as_str()]),
+            Err(Faute::ArgumentManquant { commande: "ou", .. })
+        ));
+        assert!(matches!(
+            lire(&["ou"]),
+            Err(Faute::ArgumentManquant { commande: "ou", .. })
+        ));
+    }
+
+    #[test]
+    fn machines_exige_un_utilisateur() {
+        let compte = Identifiant::depuis_entropie(Genre::Utilisateur, [7; 16]);
+        assert_eq!(
+            lire(&["machines", compte.texte().as_str()])
+                .unwrap()
+                .commande,
+            Commande::Machines { compte }
+        );
+        let machine = Identifiant::depuis_entropie(Genre::Machine, [7; 16]);
+        assert_eq!(
+            lire(&["machines", machine.texte().as_str()]),
+            Err(Faute::UtilisateurIllisible(
+                machine.texte().as_str().to_owned()
+            ))
+        );
+        assert!(matches!(
+            lire(&["machines"]),
+            Err(Faute::ArgumentManquant {
+                commande: "machines",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn identite_se_demande_sans_rien() {
+        assert_eq!(lire(&["identite"]).unwrap().commande, Commande::Identite);
     }
 
     #[test]
