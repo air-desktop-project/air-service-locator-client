@@ -613,7 +613,8 @@ impl Connexion {
         reponse.exige(204)
     }
 
-    /// Présente un code d'enrôlement et une clé neuve, et rend la machine.
+    /// Présente un code d'enrôlement et une clé neuve, et rend la machine —
+    /// et son propriétaire, quand l'annuaire le dit.
     ///
     /// # Errors
     ///
@@ -623,7 +624,7 @@ impl Connexion {
         &mut self,
         enrolement: &asl_client::Enrolement,
         code: &str,
-    ) -> Result<Identifiant, Faute> {
+    ) -> Result<Enrolee, Faute> {
         let defi = self.defi().await?;
         let corps = enrolement
             .corps(code, &defi, &self.liaison)
@@ -638,7 +639,64 @@ impl Connexion {
             )
             .await?;
         reponse.exige(200)?;
-        reponse.identifiant("machine")
+        Ok(Enrolee {
+            machine: reponse.identifiant("machine")?,
+            // **ABSENT SUR UN ANNUAIRE D'AVANT 0.3.0**, et ce n'est pas une
+            // faute : `GET /v1/moi` le rendra plus tard (`protocole.md` §2.0).
+            proprietaire: reponse.identifiant("proprietaire").ok(),
+        })
+    }
+
+    /// Qui est cette machine, et à qui elle appartient.
+    ///
+    /// **SUR UNE CONNEXION AUTHENTIFIÉE** : c'est `GET /v1/moi` (`protocole.md`
+    /// §3), et l'annuaire ne répond qu'à une machine qui a prouvé sa clé.
+    ///
+    /// # Errors
+    ///
+    /// Celles de [`Connexion::requete`], plus [`Faute::Statut`] — `401` sans
+    /// preuve, `404` sur un annuaire qui ne sert pas encore ce verbe — et
+    /// [`Faute::Illisible`].
+    pub async fn moi(&mut self) -> Result<Moi, Faute> {
+        let reponse = self.requete(b"GET", b"/v1/moi", &[], b"").await?;
+        reponse.exige(200)?;
+        Ok(Moi {
+            machine: reponse.identifiant("machine")?,
+            proprietaire: reponse.identifiant("proprietaire")?,
+        })
+    }
+
+    /// Demande où joindre toutes les instances d'un nom de service que le
+    /// propriétaire de cette machine a le droit de voir.
+    ///
+    /// Rend une LISTE d'objets, chacun tel qu'`asl_proto::Reponse::decoder` le
+    /// lit ; `asl_proto::cadrage::elements` la découpe.
+    ///
+    /// # Errors
+    ///
+    /// Celles de [`Connexion::requete`], plus [`Faute::Statut`].
+    pub async fn ou_par_nom(&mut self, service: &str) -> Result<Vec<u8>, Faute> {
+        let cible = format!("/v1/ou?service={service}");
+        let reponse = self.requete(b"GET", cible.as_bytes(), &[], b"").await?;
+        reponse.exige(200)?;
+        Ok(reponse.corps)
+    }
+
+    /// Les machines de cet utilisateur que le propriétaire de cette machine a
+    /// le droit de voir — les siennes, ou ce qu'une autorisation lui ouvre
+    /// (`protocole.md` §2.2). **Une liste vide à qui n'a rien**, jamais un refus.
+    ///
+    /// Rend une LISTE de `{"machine":"m-…","nom":"…"}`, que
+    /// `asl_proto::cadrage::elements` découpe.
+    ///
+    /// # Errors
+    ///
+    /// Celles de [`Connexion::requete`], plus [`Faute::Statut`].
+    pub async fn machines_de(&mut self, compte: Identifiant) -> Result<Vec<u8>, Faute> {
+        let cible = format!("/v1/utilisateurs/{}/machines", compte.texte());
+        let reponse = self.requete(b"GET", cible.as_bytes(), &[], b"").await?;
+        reponse.exige(200)?;
+        Ok(reponse.corps)
     }
 
     /// Annonce ce service.
@@ -716,6 +774,30 @@ impl Connexion {
         reponse.exige(200)?;
         Ok(reponse.corps)
     }
+}
+
+/// Ce qu'un enrôlement rend : la machine, et son propriétaire si l'annuaire
+/// le dit.
+///
+/// La machine ne connaissait que le code ; elle repart en sachant qui elle est
+/// et pour qui elle agit (`protocole.md` §2.0). Un annuaire d'avant 0.3.0 ne
+/// rend que la machine — `proprietaire` est alors `None`, et [`Connexion::moi`]
+/// le rendra plus tard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Enrolee {
+    /// La machine que le code désignait.
+    pub machine: Identifiant,
+    /// Le compte qui la possède, quand l'annuaire l'a rendu.
+    pub proprietaire: Option<Identifiant>,
+}
+
+/// Ce que `GET /v1/moi` rend : qui je suis, et à qui j'appartiens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Moi {
+    /// La machine de cette connexion.
+    pub machine: Identifiant,
+    /// Son propriétaire.
+    pub proprietaire: Identifiant,
 }
 
 /// Encode une annonce, telle qu'elle partira sur le fil.

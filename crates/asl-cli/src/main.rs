@@ -137,6 +137,17 @@ COMMANDES
                                       les candidats dans l'ordre où un client les
                                       essaierait.
 
+    ou <service>                      Toutes les instances de ce nom que votre
+                                      compte a le droit de voir — les vôtres, et
+                                      celles qu'on vous a accordées.
+
+    machines <u-…>                    Les machines de cet utilisateur que votre
+                                      compte a le droit de voir : les vôtres si
+                                      c'est vous, sinon ce qu'il vous a accordé.
+
+    identite                          Qui est cette machine et pour qui elle
+                                      agit, sans rien joindre.
+
     diagnostic                        Dit ce qu'on sait de l'annuaire, et ce
                                       qu'on ne sait pas.
 
@@ -229,6 +240,12 @@ async fn conduire(invocation: &Invocation) -> Sortie {
             let identite = identite(&dossier)?;
             commandes::ou(invocation, &identite, *machine, service).await
         }
+        Commande::Machines { compte } => {
+            let identite = identite(&dossier)?;
+            commandes::machines(invocation, &identite, *compte).await
+        }
+        // Hors ligne : rien à joindre.
+        Commande::Identite => commandes::identite(&dossier),
     }
 }
 

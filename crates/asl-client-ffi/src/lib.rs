@@ -558,12 +558,14 @@ pub unsafe extern "C" fn asl_enroler(
 
         let issue = client.moteur.block_on(async {
             let mut connexion = ouvrir(&reglages).await?;
-            let machine = connexion
+            let enrolee = connexion
                 .enroler(&enrolement, code)
                 .await
                 .map_err(traduire)?;
             let _ = connexion.fermer().await;
-            Ok(machine)
+            // **LE PROPRIÉTAIRE N'ENTRE PAS DANS L'ABI AUJOURD'HUI** (C12) : un
+            // daemon lié ici n'a besoin que de sa machine pour s'annoncer.
+            Ok(enrolee.machine)
         });
         let machine = match issue {
             Ok(machine) => machine,

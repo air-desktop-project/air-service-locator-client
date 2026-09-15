@@ -130,6 +130,15 @@ pas un justificatif durable** : il n'ouvre qu'une opération, lier une clé.
 Le même objet des deux côtés : la machine qui héberge le daemon porte la
 capacité `annonce`, celle qui consomme porte `lecture`.
 
+**La machine sait pour qui elle agit.** L'enrôlement rend son identifiant et
+celui de son propriétaire, tous deux publics ; `asl` les range dans son fichier
+d'identité, `asl identite` les rend hors ligne, et `asl diagnostic` les demande
+à l'annuaire (`GET /v1/moi`) — et complète le fichier d'une machine enrôlée
+avant que l'annuaire ne rende le propriétaire. De là, un programme de B part
+d'un `u-…` que A lui a donné : `asl machines <u-…>` liste ce que A lui a ouvert,
+`asl ou <service>` trouve toutes les instances d'un nom qu'il a le droit de
+voir — sans qu'un humain ait à recopier des `m-…`.
+
 **Il n'existe aucun mode anonyme.** Une résolution hors d'une connexion
 authentifiée par une clé n'est pas prévue par le serveur, et un client qui
 coderait un chemin de repli « sans authentification » ouvrirait une porte qui

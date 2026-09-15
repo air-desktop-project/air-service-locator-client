@@ -392,9 +392,171 @@ pub fn vu(corps: &[u8]) -> Result<String, String> {
     Ok(format!("{ou}   (IPv{famille})"))
 }
 
+/// Une LISTE de réponses de résolution — `GET /v1/ou?service=` —, chacune
+/// rendue comme [`reponse`], séparées par une ligne.
+///
+/// **UNE LISTE VIDE LE DIT** : « aucune instance » n'est pas une panne, c'est
+/// ce que l'annuaire a répondu — rien de ce nom chez vous ni chez ceux qui vous
+/// ont accordé quelque chose.
+///
+/// # Erreurs
+///
+/// Rend `Err` avec ce qui n'a pas pu être lu.
+pub fn reponses(corps: &[u8]) -> Result<String, String> {
+    let elements = asl_proto::cadrage::elements(corps)
+        .map_err(|quoi| format!("la liste de l'annuaire ne se lit pas : {quoi:?}"))?;
+    let mut texte = String::new();
+    let mut combien = 0_usize;
+    for element in elements {
+        if combien > 0 {
+            texte.push_str("──────────────────────────────────────────────────────────\n");
+        }
+        texte.push_str(&reponse(element)?);
+        combien = combien.saturating_add(1);
+    }
+    if combien == 0 {
+        texte.push_str(
+            "aucune instance de ce service — ni chez vous, ni chez ceux qui vous\n\
+             ont accordé quelque chose.\n",
+        );
+    }
+    Ok(texte)
+}
+
+/// Les machines d'un utilisateur — `GET /v1/utilisateurs/{u}/machines` —,
+/// une par ligne : l'identifiant, puis le nom.
+///
+/// **UNE LISTE VIDE LE DIT, ET DIT CE QU'ELLE VEUT DIRE** : rien n'a été
+/// accordé — ou l'utilisateur n'a aucune machine, et l'annuaire ne distingue
+/// pas les deux (C9).
+///
+/// # Erreurs
+///
+/// Rend `Err` avec ce qui n'a pas pu être lu.
+pub fn machines(corps: &[u8]) -> Result<String, String> {
+    let elements = asl_proto::cadrage::elements(corps)
+        .map_err(|quoi| format!("la liste de l'annuaire ne se lit pas : {quoi:?}"))?;
+    let mut texte = String::new();
+    let mut combien = 0_usize;
+    for element in elements {
+        let (machine, nom) = machine_vue(element)?;
+        texte.push_str(&format!("{}   {nom}\n", machine.texte().as_str()));
+        combien = combien.saturating_add(1);
+    }
+    if combien == 0 {
+        texte.push_str(
+            "aucune machine visible : cet utilisateur ne vous a rien accordé qui en\n\
+             nomme une — ou n'en a aucune ; l'annuaire ne dit pas lequel.\n",
+        );
+    }
+    Ok(texte)
+}
+
+/// Lit `{"machine":"m-…","nom":"…"}`.
+///
+/// **LE MÊME LECTEUR QUE LE SERVEUR** (`asl_proto::cadrage`), et non une
+/// recherche de sous-chaîne : le nom est du texte libre, avec ses accents et
+/// ses émoji, et c'est `texte_libre` qui sait le lire.
+fn machine_vue(octets: &[u8]) -> Result<(asl_id::Identifiant, String), String> {
+    let mut lecteur = asl_proto::cadrage::Lecteur::nouveau(octets);
+    let faute = |quoi: asl_proto::Erreur| format!("une machine ne se lit pas : {quoi:?}");
+    lecteur.attendre(b'{', "un objet").map_err(faute)?;
+    let mut machine = None;
+    let mut nom = None;
+    loop {
+        lecteur.sauter_blancs();
+        let champ = lecteur.chaine().map_err(faute)?;
+        lecteur.attendre(b':', "deux-points").map_err(faute)?;
+        match champ {
+            "machine" => {
+                let texte = lecteur.chaine().map_err(faute)?;
+                machine = Some(
+                    asl_id::Identifiant::analyser_genre(asl_id::Genre::Machine, texte)
+                        .map_err(|quoi| format!("`{texte}` n'est pas une machine : {quoi:?}"))?,
+                );
+            }
+            "nom" => nom = Some(lecteur.texte_libre().map_err(faute)?.to_owned()),
+            // **UN CHAMP INCONNU SE SAUTE** : un annuaire plus récent peut en
+            // ajouter, et un `asl` d'hier doit encore lire ce qu'il comprend.
+            _ => {
+                lecteur.chaine().map_err(faute)?;
+            }
+        }
+        lecteur.sauter_blancs();
+        match lecteur.regarder() {
+            Some(b',') => lecteur.avancer(),
+            _ => break,
+        }
+    }
+    lecteur.attendre(b'}', "la fin de l'objet").map_err(faute)?;
+    Ok((
+        machine.ok_or_else(|| "il manque `machine`".to_owned())?,
+        nom.ok_or_else(|| "il manque `nom`".to_owned())?,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::vu;
+    use super::{machines, reponses, vu};
+
+    #[test]
+    fn une_liste_de_machines_se_rend_ligne_par_ligne() {
+        let m1 = asl_id::Identifiant::depuis_entropie(asl_id::Genre::Machine, [0x31; 16]);
+        let m2 = asl_id::Identifiant::depuis_entropie(asl_id::Genre::Machine, [0x32; 16]);
+        let corps = format!(
+            r#"[{{"machine":"{}","nom":"grenier"}},{{"machine":"{}","nom":"Mac « été » 🖥"}}]"#,
+            m1.texte().as_str(),
+            m2.texte().as_str()
+        );
+        let dit = machines(corps.as_bytes()).expect("lisible");
+        assert_eq!(
+            dit,
+            format!(
+                "{}   grenier\n{}   Mac « été » 🖥\n",
+                m1.texte().as_str(),
+                m2.texte().as_str()
+            )
+        );
+    }
+
+    #[test]
+    fn une_liste_vide_de_machines_dit_ce_qu_elle_veut_dire() {
+        let dit = machines(b"[]").expect("lisible");
+        assert!(dit.contains("aucune machine visible"), "{dit}");
+        assert!(dit.contains("ne dit pas lequel"), "{dit}");
+    }
+
+    #[test]
+    fn une_machine_mal_formee_est_refusee_et_un_champ_neuf_se_saute() {
+        let m = asl_id::Identifiant::depuis_entropie(asl_id::Genre::Machine, [0x31; 16]);
+        for corps in [
+            &b"{"[..],
+            &br#"[{"nom":"grenier"}]"#[..],
+            &br#"[{"machine":"pas-une-machine","nom":"grenier"}]"#[..],
+        ] {
+            assert!(
+                machines(corps).is_err(),
+                "{}",
+                String::from_utf8_lossy(corps)
+            );
+        }
+        let neuf = format!(
+            r#"[{{"machine":"{}","etat":"neuf","nom":"nas"}}]"#,
+            m.texte().as_str()
+        );
+        assert!(
+            machines(neuf.as_bytes())
+                .expect("lisible")
+                .ends_with("   nas\n")
+        );
+    }
+
+    #[test]
+    fn une_liste_vide_de_reponses_dit_aucune_instance() {
+        let dit = reponses(b"[]").expect("lisible");
+        assert!(dit.contains("aucune instance"), "{dit}");
+        assert!(reponses(b"{").is_err());
+    }
 
     #[test]
     fn une_adresse_v6_porte_ses_crochets() {
