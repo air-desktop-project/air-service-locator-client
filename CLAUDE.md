@@ -339,6 +339,70 @@ par appareil : `a-…`, modèle ou « ? », plate-forme, « révoqué » le cas
 échéant), l'aide en anglais, `asl-client-tokio::appareils_du_proprietaire`,
 l'ABI C inchangée, bump mineur. Rien à faire côté apps.
 
+**`asl-keystore` — l'attestation sans Google (oxygen, 2026-09-16, décision de
+Thierry).** air-desktop ne dépend ni de Google ni d'Apple pour fonctionner :
+**Play Integrity est abandonné**, aucun compte Google ne sera ouvert. La
+décision et sa raison sont en PR serveur #21 (`attestation-autonome`, 0.8.2,
+docs seules) : `protocole.md` §2.1 « Décidé le 2026-09-16 », `contraintes.md`
+**C19** (aucun tiers appelé, l'attestation est un choix de l'exploitant, les
+racines sont des fichiers), `modele.md` §2.2, et le geste de capture dans
+`docs/attestation/capture-keystore.md`. Lis-les en entier avant de coder.
+
+À faire, côté speedy, **serveur** — dans l'ordre :
+
+1. **Retirer `asl-play`** (la crate, sa ligne de lockstep, son fuzz, sa
+   section du `Cargo.toml`, ses mentions dans le README) ; la capture du
+   2026-09-12 et `capture-play.md` restent comme trace. Ne pas retirer
+   `asl-attest` ni `asl-apple` : App Attest reste, hors ligne.
+2. **Écrire `asl-keystore`**, étage 2 comme `asl-apple` (aucune entrée-sortie,
+   C1 ; 100 % couvert, C2 ; fuzzé, C3 ; pas une ligne de C) : le décodage de la
+   chaîne sur le fil (feuille d'abord, chaque DER précédé de sa longueur u16
+   BE, racine omissible, borne 8 Kio) ; la chaîne X.509 remontée jusqu'à une
+   racine épinglée par `rustls-webpki` (ECDSA P-256/P-384 ET RSA — la racine
+   de Google est RSA-4096, l'intermédiaire souvent aussi) ; l'extension
+   `1.3.6.1.4.1.11129.2.1.17` de la feuille — un lecteur ASN.1 DER borné pour
+   `KeyDescription` (versions de schéma 3, 4, 100, 200, 300 : lis la
+   documentation Android « Key and ID Attestation », le schéma a des champs
+   optionnels tagués) — avec `attestationChallenge`, `attestationSecurityLevel`,
+   `keymintSecurityLevel`, `RootOfTrust` (`verifiedBootState`,
+   `deviceLocked`), `osPatchLevel`, et `attestationApplicationId` (paquet +
+   empreintes de signature). La vérification : défi = condensat attendu, clé
+   publique de la feuille = clé enrôlée, niveaux matériels, démarrage
+   `Verified`, notre paquet sous notre empreinte. **Comme pour `asl-apple`, les
+   essais fabriquent leur propre chaîne sous leur propre racine**, avec un
+   `KeyDescription` écrit à la main, et chaque refus est éprouvé.
+3. **Brancher** : `POST /v1/comptes`, plate-forme `2` = Android →
+   `asl_keystore::verifier` ; réglages `--android-roots <PEM>` (répétable),
+   `--android-app <paquet>`, `--android-signer <empreinte SHA-256 hex>` — les
+   trois exigés ensemble, comme `--apple-app`/`--apple-environment` ;
+   `asl_auth::decider_attestation` reçoit un `atteste` pour Android ; la
+   valeur `android` dans l'enregistrement d'appareil et dans
+   `GET /v1/appareils`. Les racines de Google et de GrapheneOS expédiées en
+   exemple sous `paquet/racines-android/` (fichiers publics ; cite leur
+   provenance en commentaire), aucune épinglée par défaut.
+4. **La posture `invitation`** (`--attestation invitation`, plate-forme `3`,
+   dix octets = un code émis par l'exploitant, même forme et même durée que
+   le code d'enrôlement, l'annuaire n'en garde que l'empreinte) : tranche
+   **comment l'exploitant émet le code** — je propose un verbe de
+   `asl-server` sur la machine (`asl-server --invite --store …`, qui écrit
+   dans l'entrepôt et imprime le code ; l'entrepôt étant verrouillé par le
+   daemon, dis comment tu contournes : un socket local, ou un fichier de codes
+   que le daemon relit) — et consigne-le dans `protocole.md` §2.1. Si ça
+   grossit trop, fais-en une PR à part APRÈS `asl-keystore`.
+5. `cargo run --example verifier-une-chaine -- <dossier>` pour la capture
+   réelle (`capture-keystore.md`), sur le modèle de `verifier-un-jeton`.
+   Bump **mineur** (retrait d'une crate, un réglage exigé de plus), PR non
+   mergée, corps en français, « ce qu'oxygen doit reprendre côté Android »
+   (le format exact attendu, l'empreinte, ce que la capture doit confirmer).
+
+Côté **client** (`asl`) : rien — l'attestation est la voie appareil. Côté
+**Android** (oxygen) : `CleAppareil.kt` génère la clé avec
+`setAttestationChallenge(SHA-256(message_d_attestation))`, `AnnuaireReel`
+envoie la chaîne en plate-forme `2`, la dépendance
+`com.google.android.play:integrity` et `ActiviteCapture` sont retirées ; la
+capture réelle sur le Fairphone 5 est faite d'abord, et c'est elle qui fixe
+la politique avant que le verbe soit branché.
+
 ### Ce que speedy attend d'oxygen
 
 **Une CAPTURE réelle**, pour figer deux vérifications d'attestation aujourd'hui
@@ -352,12 +416,13 @@ fuzzés, mais leurs constantes ne sont pas confirmées par un vrai appareil, et
    l'environnement (`appattest` ou `appattestdevelop`). De quoi confirmer les
    constantes d'`asl-apple` : aaguid, chaîne jusqu'à la racine Apple, nonce =
    SHA256(authData ‖ SHA256(défi)), rpIdHash, compteur.
-2. **Play Integrity (Android réel)** — un jeton renvoyé par
-   `outils-capture/CaptureIntegrity.kt`, **plus les deux clés Play Console** de la
-   « réponse chiffrée gérée par le développeur » : la clé de déchiffrement
-   AES-256 et la clé publique de vérification EC (SPKI). De quoi écrire la
-   politique de verdict d'`asl-play` (aujourd'hui seul le cœur crypto existe :
-   JWE→JWS→JSON, sans décision sur le contenu du verdict).
+2. **L'attestation de clé Android (Fairphone 5)** — depuis le 2026-09-16, à
+   la place de Play Integrity (abandonné, C19) : la chaîne de certificats
+   d'une clé générée avec `setAttestationChallenge`, le défi, le paquet et
+   l'empreinte de signature de la build, selon
+   `docs/attestation/capture-keystore.md` du dépôt serveur. De quoi confirmer
+   la forme de `KeyDescription` et fixer la politique d'`asl-keystore`. Aucune
+   clé Play Console, aucun compte : rien à attendre de personne.
 
 **En attendant l'iPhone — une app macOS d'enrôlement (speedy, 2026-09-13).** Pour
 valider la chaîne **clé-d'appareil P-256** (Secure Enclave + Touch ID) sur du **vrai
@@ -369,11 +434,9 @@ pour macOS** (slice `aarch64-apple-darwin`, côté CE dépôt). Compte créé en
 Aucune` contre `nitrogen` → valide `asl-cle` et l'enrôlement, **pas** `asl-apple` (App
 Attest n'existe pas sur macOS ; l'iPhone reste requis pour l'attestation).
 
-**Capture Play déjà là, partielle.** Une première capture réelle est sur la branche
-serveur `capture-play-integrity` (`docs/attestation/captures/`) : elle **confirme la
-grammaire** (JWE `A256KW`/`A256GCM` → JWS, vérifié octet pour octet — 5 segments, CEK 40,
-IV 12, tag 16), mais le jeton est sous les **clés gérées par Google** ; le verdict attend
-encore les deux clés « gérées par moi » du point 2.
+**La capture Play du 2026-09-12** (branche serveur `capture-play-integrity`,
+`docs/attestation/captures/`) reste comme trace : elle avait confirmé la grammaire
+JWE/JWS, sous les clés de Google. Elle ne sert plus à rien depuis l'abandon.
 
 Dépose-les dans le dépôt serveur (`docs/attestation/`) ou signale-les à speedy.
 C'est le dernier verrou avant que l'attestation soit exigible en production.
