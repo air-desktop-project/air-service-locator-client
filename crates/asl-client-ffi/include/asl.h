@@ -302,9 +302,12 @@ int32_t asl_derniere_poussee(const asl_client *client,
 /* L'attestation la plus longue que l'annuaire admette. */
 #define ASL_ATTESTATION_MAX 8192
 
+/* ANDROID est l'attestation de clé du Keystore ; la case disait GOOGLE (Play
+ * Integrity, abandonné, C19) jusqu'en 0.5, même octet. INVITATION porte un code
+ * de l'exploitant. */
 #define ASL_PLATEFORME_AUCUNE     0
 #define ASL_PLATEFORME_APPLE      1
-#define ASL_PLATEFORME_ANDROID    2  /* l'attestation de clé du Keystore ; disait GOOGLE jusqu'en 0.5 */
+#define ASL_PLATEFORME_ANDROID    2
 #define ASL_PLATEFORME_INVITATION 3
 
 /* L'appareil. Opaque, comme asl_client. */
