@@ -10,12 +10,12 @@ use std::ptr;
 
 use asl_client_ffi::appareil::{
     ASL_ATTESTATION_MAX, ASL_CLE_APPAREIL_OCTETS, ASL_DEFI_OCTETS, ASL_MESSAGE_MAX,
-    ASL_PLATEFORME_APPLE, ASL_PLATEFORME_AUCUNE, ASL_PLATEFORME_GOOGLE, ASL_SIGNATURE_OCTETS,
+    ASL_PLATEFORME_ANDROID, ASL_PLATEFORME_APPLE, ASL_PLATEFORME_AUCUNE, ASL_SIGNATURE_OCTETS,
     AslAppareil, asl_appareil_annuaire, asl_appareil_cle, asl_appareil_connecter,
     asl_appareil_creer_compte, asl_appareil_deconnecter, asl_appareil_defi,
     asl_appareil_identifiant, asl_appareil_identite, asl_appareil_liaison, asl_appareil_libere,
-    asl_appareil_message_pour_attestation, asl_appareil_neuf, asl_appareil_racines,
-    asl_appareil_requete,
+    asl_appareil_message_pour_attestation, asl_appareil_message_pour_attestation_de_cle,
+    asl_appareil_neuf, asl_appareil_racines, asl_appareil_requete,
 };
 use asl_client_ffi::{
     ASL_ARGUMENT, ASL_CONFIGURATION, ASL_IDENTIFIANT_OCTETS, ASL_NON_CONNECTE, ASL_OK,
@@ -67,7 +67,7 @@ fn les_constantes_sont_celles_de_l_en_tete() {
         (
             ASL_PLATEFORME_AUCUNE,
             ASL_PLATEFORME_APPLE,
-            ASL_PLATEFORME_GOOGLE
+            ASL_PLATEFORME_ANDROID
         ),
         (0, 1, 2)
     );
@@ -203,6 +203,10 @@ fn sans_connexion_tout_verbe_le_dit() {
         );
         assert_eq!(
             asl_appareil_message_pour_attestation(brut, ptr::null_mut(), 0, &raw mut ecrit),
+            ASL_NON_CONNECTE
+        );
+        assert_eq!(
+            asl_appareil_message_pour_attestation_de_cle(brut, ptr::null_mut(), 0, &raw mut ecrit),
             ASL_NON_CONNECTE
         );
         // Se déconnecter sans connexion n'est pas une faute.

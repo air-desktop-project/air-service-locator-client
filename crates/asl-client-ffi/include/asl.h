@@ -302,9 +302,10 @@ int32_t asl_derniere_poussee(const asl_client *client,
 /* L'attestation la plus longue que l'annuaire admette. */
 #define ASL_ATTESTATION_MAX 8192
 
-#define ASL_PLATEFORME_AUCUNE 0
-#define ASL_PLATEFORME_APPLE  1
-#define ASL_PLATEFORME_GOOGLE 2
+#define ASL_PLATEFORME_AUCUNE     0
+#define ASL_PLATEFORME_APPLE      1
+#define ASL_PLATEFORME_ANDROID    2  /* l'attestation de clé du Keystore ; disait GOOGLE jusqu'en 0.5 */
+#define ASL_PLATEFORME_INVITATION 3
 
 /* L'appareil. Opaque, comme asl_client. */
 typedef struct asl_appareil asl_appareil;
@@ -359,6 +360,13 @@ int32_t asl_appareil_defi(asl_appareil *appareil, uint8_t defi[ASL_DEFI_OCTETS])
  * avec le défi d'asl_appareil_defi et la liaison en cours. Tampon en deux temps. */
 int32_t asl_appareil_message_pour_attestation(asl_appareil *appareil, uint8_t *sortie,
                                               size_t combien, size_t *ecrit);
+
+/* Ce qu'une ATTESTATION DE CLÉ (Android) pose à la génération de la clé, sous
+ * SHA-256 : domaine ‖ défi ‖ liaison — SANS la clé, qui n'existe pas encore.
+ * Ordre : connecter nu, asl_appareil_defi, ceci, générer la clé avec son
+ * condensat, asl_appareil_cle, asl_appareil_creer_compte(ASL_PLATEFORME_ANDROID). */
+int32_t asl_appareil_message_pour_attestation_de_cle(asl_appareil *appareil, uint8_t *sortie,
+                                                     size_t combien, size_t *ecrit);
 
 /* Crée le compte et enrôle cet appareil. LE PORTEUR EST SOLLICITÉ ICI : le
  * signataire est appelé sur la preuve de possession. Le défi est celui

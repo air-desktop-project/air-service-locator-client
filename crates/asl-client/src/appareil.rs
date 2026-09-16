@@ -22,9 +22,10 @@
 
 use asl_api::corps::{CreationDeCompte, PlateformeAttestation};
 use asl_cle::{
-    CLE_APPAREIL_OCTETS, CleAppareil, Defi, LiaisonDeCanal, MESSAGE_ATTESTATION_OCTETS,
-    MESSAGE_OCTETS, MESSAGE_POSSESSION_APPAREIL_OCTETS, SIGNATURE_APPAREIL_OCTETS,
-    message_a_signer, message_d_attestation, message_de_possession_appareil,
+    CLE_APPAREIL_OCTETS, CleAppareil, Defi, LiaisonDeCanal, MESSAGE_ATTESTATION_DE_CLE_OCTETS,
+    MESSAGE_ATTESTATION_OCTETS, MESSAGE_OCTETS, MESSAGE_POSSESSION_APPAREIL_OCTETS,
+    SIGNATURE_APPAREIL_OCTETS, message_a_signer, message_d_attestation,
+    message_d_attestation_de_cle, message_de_possession_appareil,
 };
 use asl_id::{Genre, Identifiant};
 
@@ -41,7 +42,7 @@ pub const PREUVE_AUTHENTIFICATION_OCTETS: usize = 1 + 16 + SIGNATURE_APPAREIL_OC
 /// La plate-forme d'attestation d'un appareil, telle que `POST /v1/comptes` la
 /// note sur son premier octet.
 ///
-/// `0` interdit toute attestation derrière, `1` et `2` l'exigent — et c'est
+/// `0` interdit toute attestation derrière, `1`, `2` et `3` l'exigent — et c'est
 /// `asl_api` qui le refuse, avant que rien ne parte.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Plateforme {
@@ -49,8 +50,12 @@ pub enum Plateforme {
     Aucune,
     /// App Attest.
     Apple,
-    /// Play Integrity.
-    Google,
+    /// L'attestation de clé d'Android (Keystore), contre une racine que
+    /// l'exploitant épingle. (`2` disait Google — Play Integrity — jusqu'en
+    /// 0.5 ; abandonné, C19, jamais accepté.)
+    Android,
+    /// Un code d'invitation émis par l'exploitant, dix octets dans la case.
+    Invitation,
 }
 
 impl Plateforme {
@@ -60,7 +65,8 @@ impl Plateforme {
         match self {
             Self::Aucune => 0,
             Self::Apple => 1,
-            Self::Google => 2,
+            Self::Android => 2,
+            Self::Invitation => 3,
         }
     }
 
@@ -70,7 +76,8 @@ impl Plateforme {
         match octet {
             0 => Some(Self::Aucune),
             1 => Some(Self::Apple),
-            2 => Some(Self::Google),
+            2 => Some(Self::Android),
+            3 => Some(Self::Invitation),
             _ => None,
         }
     }
@@ -79,7 +86,8 @@ impl Plateforme {
         match self {
             Self::Aucune => PlateformeAttestation::Aucune,
             Self::Apple => PlateformeAttestation::Apple,
-            Self::Google => PlateformeAttestation::Google,
+            Self::Android => PlateformeAttestation::Android,
+            Self::Invitation => PlateformeAttestation::Invitation,
         }
     }
 }
@@ -171,6 +179,19 @@ pub fn message_pour_attestation(
     Ok(message_d_attestation(&cle_publique(cle)?, defi, liaison))
 }
 
+/// Ce qu'une ATTESTATION DE CLÉ (Android) pose à la génération de la clé, sous
+/// SHA-256 : `domaine ‖ défi ‖ liaison` — sans la clé, qui n'existe pas
+/// encore à ce moment-là ; c'est le certificat qui la portera. Le pendant de
+/// [`message_pour_attestation`], qui lui contient la clé (App Attest l'atteste
+/// par un détour, et le message doit la lier).
+#[must_use]
+pub fn message_pour_attestation_de_cle(
+    defi: &Defi,
+    liaison: &LiaisonDeCanal,
+) -> [u8; MESSAGE_ATTESTATION_DE_CLE_OCTETS] {
+    message_d_attestation_de_cle(defi, liaison)
+}
+
 /// Compose le corps de `POST /v1/comptes` : `plate-forme (1) ‖ clé (33) ‖
 /// preuve (64) ‖ attestation`, et rend combien d'octets il occupe.
 ///
@@ -179,7 +200,7 @@ pub fn message_pour_attestation(
 ///
 /// # Erreurs
 ///
-/// [`FauteAppareil::Corps`] : une attestation absente pour Apple ou Google,
+/// [`FauteAppareil::Corps`] : une attestation absente pour Apple, Android ou l'invitation,
 /// présente pour « aucune », ou plus longue que ce que l'annuaire admet.
 pub fn corps_de_compte(
     plateforme: Plateforme,

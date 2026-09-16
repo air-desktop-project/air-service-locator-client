@@ -61,8 +61,11 @@ pub const ASL_ATTESTATION_MAX: usize = asl_api::corps::ATTESTATION_MAX;
 pub const ASL_PLATEFORME_AUCUNE: u8 = 0;
 /// App Attest.
 pub const ASL_PLATEFORME_APPLE: u8 = 1;
-/// Play Integrity.
-pub const ASL_PLATEFORME_GOOGLE: u8 = 2;
+/// L'attestation de clé d'Android (Keystore). Disait « Google » — Play
+/// Integrity — jusqu'en 0.5 : abandonné (C19), jamais accepté, même octet.
+pub const ASL_PLATEFORME_ANDROID: u8 = 2;
+/// Un code d'invitation émis par l'exploitant.
+pub const ASL_PLATEFORME_INVITATION: u8 = 3;
 
 /// La pile du fil sur lequel les appels bloquants tournent.
 ///
@@ -592,6 +595,56 @@ pub unsafe extern "C" fn asl_appareil_message_pour_attestation(
         else {
             return ASL_INTERNE;
         };
+        // SAFETY : `ecrit` est non nul.
+        unsafe { ecrit.write(message.len()) };
+        if sortie.is_null() || combien < message.len() {
+            return ASL_TAMPON_TROP_PETIT;
+        }
+        // SAFETY : l'appelant garantit `combien` octets inscriptibles, et l'on
+        // vient de vérifier qu'il y en a assez.
+        unsafe { core::ptr::copy_nonoverlapping(message.as_ptr(), sortie, message.len()) };
+        ASL_OK
+    })
+}
+
+/// Compose ce qu'une ATTESTATION DE CLÉ (Android) pose à la génération de la
+/// clé, sous SHA-256 : `domaine ‖ défi ‖ liaison` — avec le défi tiré par
+/// [`asl_appareil_defi`] et la liaison de la connexion en cours, et SANS la
+/// clé : elle n'existe pas encore, c'est le certificat qui la portera. D'où
+/// l'ordre : se connecter nu, tirer le défi, composer ceci, GÉNÉRER la clé
+/// avec son condensat, [`asl_appareil_cle`], puis [`asl_appareil_creer_compte`]
+/// sous `ASL_PLATEFORME_ANDROID`.
+///
+/// Le tampon se dimensionne en deux temps, comme pour `asl_ou`.
+///
+/// # Safety
+///
+/// `appareil` vient de [`asl_appareil_neuf`] ; `sortie`, s'il n'est pas nul,
+/// vise `combien` octets inscriptibles ; `ecrit` vise un `size_t`
+/// inscriptible.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn asl_appareil_message_pour_attestation_de_cle(
+    appareil: *mut AslAppareil,
+    sortie: *mut u8,
+    combien: usize,
+    ecrit: *mut usize,
+) -> i32 {
+    protege(|| {
+        // SAFETY : contrat de la fonction.
+        let Some(appareil) = (unsafe { appareil.as_mut() }) else {
+            return ASL_ARGUMENT;
+        };
+        if ecrit.is_null() {
+            return ASL_ARGUMENT;
+        }
+        let tenue = match appareil.tenue() {
+            Ok(tenue) => tenue,
+            Err(quoi) => return quoi,
+        };
+        let Some(defi) = appareil.defi else {
+            return ASL_ARGUMENT;
+        };
+        let message = regles::message_pour_attestation_de_cle(&defi, &tenue.liaison());
         // SAFETY : `ecrit` est non nul.
         unsafe { ecrit.write(message.len()) };
         if sortie.is_null() || combien < message.len() {

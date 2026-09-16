@@ -57,7 +57,7 @@ members = [
 exclude = ["fuzz"]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 # PAS DE `rust-version`, ET C'EST DÉLIBÉRÉ.
 #
@@ -73,9 +73,9 @@ authors = ["air-service-locator contributors"]
 repository = "https://github.com/air-desktop-project/air-service-locator-client"
 
 [workspace.dependencies]
-asl-client = { path = "crates/asl-client", version = "0.5.0" }
-asl-client-tokio = { path = "crates/asl-client-tokio", version = "0.5.0" }
-asl-client-ffi = { path = "crates/asl-client-ffi", version = "0.5.0" }
+asl-client = { path = "crates/asl-client", version = "0.6.0" }
+asl-client-tokio = { path = "crates/asl-client-tokio", version = "0.6.0" }
+asl-client-ffi = { path = "crates/asl-client-ffi", version = "0.6.0" }
 
 # La grammaire, tirée du dépôt qui porte les spécifications.
 #
@@ -86,10 +86,10 @@ asl-client-ffi = { path = "crates/asl-client-ffi", version = "0.5.0" }
 #
 # Le SHA est celui du serveur au 2026-09-12, avancé depuis `7174ac8` pour
 # prendre `asl-api` et la clé d'appareil P-256 d'`asl-cle`.
-asl-id = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "2cf05dc" }
-asl-proto = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "2cf05dc" }
-asl-cle = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "2cf05dc" }
-asl-api = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "2cf05dc" }
+asl-id = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "dd9497b" }
+asl-proto = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "dd9497b" }
+asl-cle = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "dd9497b" }
+asl-api = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "dd9497b" }
 
 # ── LA PILE QUIC ET HTTP/3, EMPRUNTÉE À `air-mail-server` (C15) ─────────────
 #
