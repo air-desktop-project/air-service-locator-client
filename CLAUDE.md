@@ -397,11 +397,35 @@ racines sont des fichiers), `modele.md` §2.2, et le geste de capture dans
 
 Côté **client** (`asl`) : rien — l'attestation est la voie appareil. Côté
 **Android** (oxygen) : `CleAppareil.kt` génère la clé avec
-`setAttestationChallenge(SHA-256(message_d_attestation))`, `AnnuaireReel`
+`setAttestationChallenge(SHA-256(message_d_attestation_de_cle(défi, liaison)))` — sans la clé (serveur 0.9.1, PR #23), `AnnuaireReel`
 envoie la chaîne en plate-forme `2`, la dépendance
 `com.google.android.play:integrity` et `ActiviteCapture` sont retirées ; la
 capture réelle sur le Fairphone 5 est faite d'abord, et c'est elle qui fixe
 la politique avant que le verbe soit branché.
+
+**`asl replication` — l'état de la voie entre racines (speedy, 2026-09-16).**
+La PR serveur 4/4 (réplication, `main` = 0.8.0 après merge) sert
+`GET /v1/replication` **sur la voie machine** (`Exigence::Machine`, comme
+`/v1/moi`) : l'exploitant vérifie qu'un banc réplique bien avec l'autre depuis
+une machine enrôlée. La réponse est du JSON :
+
+```jsonc
+{"pair":"n-…","voie":"ouverte","compteur":4812,"applique":4790}  // avec pair
+{"voie":"seule","compteur":4812}                                  // sans pair
+```
+
+`voie` ∈ `ouverte` | `coupée` | `seule` ; `compteur` est l'horloge de la
+racine, `applique` le curseur qu'elle tient pour le pair (jusqu'où elle a
+appliqué ce qu'il a écrit) ; voie ouverte, `applique` rejoint le `compteur` du
+pair en une seconde. `docs/replication.md` §8 porte le fond.
+
+**`asl` n'a pas encore de verbe pour ça** : le README serveur dit d'interroger
+en brut en attendant. Le chantier, côté client, quand tu voudras : `asl
+replication` (ou `asl repl status`), sortie sur le modèle d'`asl machines` —
+une ligne qui dit le pair, l'état, et l'écart `compteur − applique` s'il y en
+a un —, l'aide en anglais, `asl-client-tokio::etat_de_la_replication`, l'ABI C
+inchangée (c'est un verbe de CLI, pas d'ABI), bump mineur. La connexion est
+tenue sur la voie machine, comme `asl machines`. Rien à faire côté apps.
 
 ### Ce que speedy attend d'oxygen
 
