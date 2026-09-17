@@ -9,7 +9,7 @@ use asl_cle::{CleSecreteAppareil, Defi, LiaisonDeCanal, SignatureAppareil};
 use asl_client::appareil::{
     FauteAppareil, PREUVE_AUTHENTIFICATION_OCTETS, Plateforme, cle_publique, corps_de_compte,
     message_d_authentification, message_de_possession, message_pour_attestation,
-    preuve_d_authentification,
+    message_pour_attestation_de_cle, preuve_d_authentification,
 };
 use asl_id::{Genre, Identifiant};
 
@@ -114,15 +114,26 @@ fn le_corps_de_compte_porte_la_plate_forme_puis_la_cle_puis_la_preuve() {
         Err(FauteAppareil::Corps(_))
     ));
     let combien = corps_de_compte(
-        Plateforme::Google,
+        Plateforme::Android,
         &publique,
         &preuve,
         &[7; 100],
         &mut sortie,
     )
-    .expect("une attestation Google");
+    .expect("une attestation Android");
     assert_eq!(combien, 198);
     assert_eq!(sortie[0], 2);
+    // L'invitation : dix octets, le code, sous la plate-forme 3.
+    let combien = corps_de_compte(
+        Plateforme::Invitation,
+        &publique,
+        &preuve,
+        b"ABCDE-FGHIJ",
+        &mut sortie,
+    )
+    .expect("un code d'invitation");
+    assert_eq!(combien, 98 + 11);
+    assert_eq!(sortie[0], 3);
 }
 
 #[test]
@@ -138,6 +149,19 @@ fn le_message_d_attestation_est_celui_du_serveur_sous_son_propre_domaine() {
     // Trois domaines, trois messages : aucun ne vaut pour un autre.
     let possession = message_de_possession(&publique, &defi(), &liaison()).expect("une vraie clé");
     assert_ne!(&message[..], &possession[..]);
+}
+
+#[test]
+fn le_message_d_attestation_de_cle_est_celui_du_serveur_et_ne_porte_pas_la_cle() {
+    let message = message_pour_attestation_de_cle(&defi(), &liaison());
+    assert_eq!(
+        message,
+        asl_cle::message_d_attestation_de_cle(&defi(), &liaison())
+    );
+    assert!(message.starts_with(asl_cle::DOMAINE_ATTESTATION_DE_CLE));
+    let publique = secrete().publique().octets();
+    let avec_cle = message_pour_attestation(&publique, &defi(), &liaison()).expect("une vraie clé");
+    assert_ne!(&message[..], &avec_cle[..]);
 }
 
 #[test]
@@ -165,10 +189,15 @@ fn une_cle_hors_de_la_courbe_est_refusee_a_la_lecture() {
 
 #[test]
 fn les_plates_formes_font_l_aller_retour_sur_leur_octet() {
-    for plateforme in [Plateforme::Aucune, Plateforme::Apple, Plateforme::Google] {
+    for plateforme in [
+        Plateforme::Aucune,
+        Plateforme::Apple,
+        Plateforme::Android,
+        Plateforme::Invitation,
+    ] {
         assert_eq!(Plateforme::depuis(plateforme.etiquette()), Some(plateforme));
     }
-    assert_eq!(Plateforme::depuis(3), None);
+    assert_eq!(Plateforme::depuis(4), None);
 }
 
 #[test]

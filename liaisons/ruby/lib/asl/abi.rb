@@ -66,7 +66,8 @@ module Asl
 
     PLATEFORME_AUCUNE = 0
     PLATEFORME_APPLE = 1
-    PLATEFORME_GOOGLE = 2
+    PLATEFORME_ANDROID = 2
+    PLATEFORME_INVITATION = 3
 
     TCP = 1
     UDP = 2
@@ -219,6 +220,9 @@ module Asl
       asl_appareil_message_pour_attestation: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP,
                                                Fiddle::TYPE_SIZE_T, Fiddle::TYPE_VOIDP],
                                               Fiddle::TYPE_INT32_T],
+      asl_appareil_message_pour_attestation_de_cle: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP,
+                                                      Fiddle::TYPE_SIZE_T, Fiddle::TYPE_VOIDP],
+                                                     Fiddle::TYPE_INT32_T],
       asl_appareil_creer_compte: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_UINT8_T, Fiddle::TYPE_VOIDP,
                                    Fiddle::TYPE_SIZE_T, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP],
                                   Fiddle::TYPE_INT32_T],

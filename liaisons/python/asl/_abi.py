@@ -70,7 +70,8 @@ ASL_ATTESTATION_MAX = 8192
 
 ASL_PLATEFORME_AUCUNE = 0
 ASL_PLATEFORME_APPLE = 1
-ASL_PLATEFORME_GOOGLE = 2
+ASL_PLATEFORME_ANDROID = 2
+ASL_PLATEFORME_INVITATION = 3
 
 ASL_TCP = 1
 ASL_UDP = 2
@@ -337,6 +338,14 @@ def _declarer(lib: ctypes.CDLL) -> ctypes.CDLL:
         ctypes.POINTER(ctypes.c_size_t),
     ]
     lib.asl_appareil_message_pour_attestation.restype = i32
+
+    lib.asl_appareil_message_pour_attestation_de_cle.argtypes = [
+        opaque,
+        u8p,
+        ctypes.c_size_t,
+        ctypes.POINTER(ctypes.c_size_t),
+    ]
+    lib.asl_appareil_message_pour_attestation_de_cle.restype = i32
 
     lib.asl_appareil_creer_compte.argtypes = [
         opaque,

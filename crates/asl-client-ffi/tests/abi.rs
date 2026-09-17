@@ -418,7 +418,7 @@ fn les_constantes_de_l_en_tete_sont_celles_de_rust() {
         declarees.insert(format!("ASL_{nom}"), valeur);
     }
 
-    let attendues: [(&str, i64); 33] = [
+    let attendues: [(&str, i64); 34] = [
         ("ASL_OK", ASL_OK.into()),
         ("ASL_ARGUMENT", ASL_ARGUMENT.into()),
         ("ASL_CONFIGURATION", ASL_CONFIGURATION.into()),
@@ -480,8 +480,12 @@ fn les_constantes_de_l_en_tete_sont_celles_de_rust() {
             appareil::ASL_PLATEFORME_APPLE.into(),
         ),
         (
-            "ASL_PLATEFORME_GOOGLE",
-            appareil::ASL_PLATEFORME_GOOGLE.into(),
+            "ASL_PLATEFORME_ANDROID",
+            appareil::ASL_PLATEFORME_ANDROID.into(),
+        ),
+        (
+            "ASL_PLATEFORME_INVITATION",
+            appareil::ASL_PLATEFORME_INVITATION.into(),
         ),
     ];
 

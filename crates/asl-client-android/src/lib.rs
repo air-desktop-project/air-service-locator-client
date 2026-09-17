@@ -32,7 +32,8 @@ use asl_client_ffi::appareil::{
     asl_appareil_annuaire, asl_appareil_cle, asl_appareil_connecter, asl_appareil_creer_compte,
     asl_appareil_deconnecter, asl_appareil_defi, asl_appareil_identifiant, asl_appareil_identite,
     asl_appareil_liaison, asl_appareil_libere, asl_appareil_message_pour_attestation,
-    asl_appareil_neuf, asl_appareil_racines, asl_appareil_requete,
+    asl_appareil_message_pour_attestation_de_cle, asl_appareil_neuf, asl_appareil_racines,
+    asl_appareil_requete,
 };
 use asl_client_ffi::{ASL_ARGUMENT, ASL_IDENTIFIANT_OCTETS, ASL_INTERNE, ASL_OK, asl_faute_texte};
 use jni::JNIEnv;
@@ -442,6 +443,36 @@ pub extern "system" fn Java_org_airdesktop_servicelocator_reseau_Natif_messagePo
     // un `usize`.
     handle.dernier = unsafe {
         asl_appareil_message_pour_attestation(
+            handle.appareil,
+            sortie.as_mut_ptr(),
+            sortie.len(),
+            &raw mut ecrit,
+        )
+    };
+    if handle.dernier != ASL_OK {
+        return core::ptr::null_mut();
+    }
+    rendre_octets(&env, sortie.get(..ecrit).unwrap_or_default())
+}
+
+/// `external fun messagePourAttestationDeCle(h: Long): ByteArray?` — ce que
+/// la clé d'appareil reçoit en `setAttestationChallenge`, sous SHA-256, AVANT
+/// d'être générée.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_airdesktop_servicelocator_reseau_Natif_messagePourAttestationDeCle(
+    env: JNIEnv,
+    _classe: JClass,
+    brut: jlong,
+) -> jbyteArray {
+    let Some(handle) = handle(brut) else {
+        return core::ptr::null_mut();
+    };
+    let mut sortie = [0_u8; ASL_MESSAGE_MAX];
+    let mut ecrit = 0_usize;
+    // SAFETY : `sortie` vise `ASL_MESSAGE_MAX` octets inscriptibles, `ecrit`
+    // un `usize`.
+    handle.dernier = unsafe {
+        asl_appareil_message_pour_attestation_de_cle(
             handle.appareil,
             sortie.as_mut_ptr(),
             sortie.len(),

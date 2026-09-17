@@ -79,7 +79,8 @@ internal object Abi {
 
     const val PLATEFORME_AUCUNE: Int = 0
     const val PLATEFORME_APPLE: Int = 1
-    const val PLATEFORME_GOOGLE: Int = 2
+    const val PLATEFORME_ANDROID: Int = 2
+    const val PLATEFORME_INVITATION: Int = 3
 
     const val TCP: Int = 1
     const val UDP: Int = 2
@@ -188,6 +189,9 @@ internal object Abi {
         "asl_appareil_liaison" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE),
         "asl_appareil_defi" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE),
         "asl_appareil_message_pour_attestation" to FunctionDescriptor.of(
+            ENTIER, ADRESSE, ADRESSE, TAILLE, ADRESSE,
+        ),
+        "asl_appareil_message_pour_attestation_de_cle" to FunctionDescriptor.of(
             ENTIER, ADRESSE, ADRESSE, TAILLE, ADRESSE,
         ),
         "asl_appareil_creer_compte" to FunctionDescriptor.of(
