@@ -323,21 +323,17 @@ Les certificats des deux racines portent déjà `asl-root.air-desktop.org`
 dans leurs SAN (réémis le 15). Rien à faire côté apps : elles parlent à
 `nitrogen` par son nom et ne passent pas par l'alias.
 
-**`asl devices` — une machine voit les appareils de son compte (oxygen,
-2026-09-15, décision de Thierry).** Spécifié en PR serveur #14 (`ddc5594`,
-0.4.2, docs seules) : `GET /v1/moi/appareils` sur la voie machine rend la
-liste des appareils du compte propriétaire — celle de `GET /v1/appareils`,
-révoqués marqués, `plateforme`/`modele` quand posés — en lecture seule, pour
-soi seulement, `401` si la clé est révoquée. La raison et le coût sont écrits
-dans `protocole.md` §3 et `modele.md` §2.2.
-
-À faire, côté speedy : **serveur** — le verbe, `Exigence::Machine`, même
-objet que `GET /v1/appareils` (réemploi, pas un second décodeur), couverture,
-fuzz, un essai de bout en bout, bump mineur (0.5.0), déploiement sur les bancs ;
-**client** — `asl devices`, sortie sur le modèle d'`asl machines` (une ligne
-par appareil : `a-…`, modèle ou « ? », plate-forme, « révoqué » le cas
-échéant), l'aide en anglais, `asl-client-tokio::appareils_du_proprietaire`,
-l'ABI C inchangée, bump mineur. Rien à faire côté apps.
+**`asl enrolled` — une machine voit les appareils de son compte : FAIT
+(carbon, 2026-09-18).** Le chantier « `asl devices` » (oxygen, 2026-09-15,
+spécifié en PR serveur #14) est renommé `enrolled` (décision de Thierry) et
+livré en deux PR, branches `enrolled` : serveur #24 (`dca3cf7`, 0.10.0 —
+`GET /v1/moi/appareils`, `Exigence::Machine`, même objet et même encodeur que
+`GET /v1/appareils`, `401` clé révoquée, essai de bout en bout) et client #10
+(`8279f13`, 0.7.0 — `asl enrolled [ACCOUNT]`, `asl machines [ACCOUNT]` sans
+argument = le compte courant, `asl-client-tokio::appareils_du_proprietaire`,
+ABI inchangée). Un compte étranger à `enrolled` est refusé par `asl` avant
+toute requête. Reste : déployer 0.10.0 sur les bancs, depuis speedy, après
+merge. Rien à faire côté apps.
 
 **`asl-keystore` — l'attestation sans Google (oxygen, 2026-09-16, décision de
 Thierry).** air-desktop ne dépend ni de Google ni d'Apple pour fonctionner :
