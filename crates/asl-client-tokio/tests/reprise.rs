@@ -483,6 +483,81 @@ async fn un_annuaire_qui_ne_sert_pas_cette_route_le_dit_par_son_statut() {
     tache.abort();
 }
 
+// ── LA VOIE MACHINE : MES MACHINES, LES APPAREILS DE MON COMPTE ─────────────
+
+#[tokio::test]
+async fn les_machines_du_proprietaire_passent_par_moi_puis_par_son_compte() {
+    // **DEUX REQUÊTES** : la voie machine n'a pas `GET /v1/machines`. Le
+    // client demande d'abord qui il est (`/v1/moi`), puis les machines du
+    // compte que l'annuaire vient de nommer — et non d'un compte qu'un fichier
+    // local croirait. Le banc ne rend « grenier » que pour CE compte-là.
+    let (_atelier, autorite, cert, cle) = materiel("machines-du-proprietaire");
+    let (adresse, tache) = lever(cert, cle, FauxAnnuaire).await;
+
+    let mut connexion = Connexion::ouvrir(adresse, "localhost", &autorite, &|| [0x33; 16])
+        .await
+        .expect("la poignée de main");
+    let corps = connexion
+        .machines_du_proprietaire()
+        .await
+        .expect("l'annuaire répond");
+    let texte = String::from_utf8_lossy(&corps).into_owned();
+    assert!(texte.contains(r#""nom":"grenier""#), "{texte}");
+    assert!(texte.contains(banc::machine().texte().as_str()), "{texte}");
+    // Le même chemin, avec le compte nommé : la même liste.
+    let nomme = connexion
+        .machines_de(banc::proprietaire())
+        .await
+        .expect("l'annuaire répond");
+    assert_eq!(corps, nomme);
+
+    let _ = connexion.fermer().await;
+    tache.abort();
+}
+
+#[tokio::test]
+async fn les_appareils_du_proprietaire_se_lisent_avec_le_lecteur_de_l_ecran_compte() {
+    // **LE MÊME OBJET QUE `GET /v1/appareils`** (`protocole.md` §3) : chaque
+    // élément se relit avec `asl_api::corps::AppareilRendu`, révoqué marqué,
+    // description quand elle est là — un client qui lit l'écran Compte lit
+    // ceci sans une ligne de plus.
+    let (_atelier, autorite, cert, cle) = materiel("appareils-du-proprietaire");
+    let (adresse, tache) = lever(cert, cle, FauxAnnuaire).await;
+
+    let mut connexion = Connexion::ouvrir(adresse, "localhost", &autorite, &|| [0x34; 16])
+        .await
+        .expect("la poignée de main");
+    let corps = connexion
+        .appareils_du_proprietaire()
+        .await
+        .expect("l'annuaire répond");
+    let elements: Vec<&[u8]> = asl_proto::cadrage::elements(&corps)
+        .expect("une liste")
+        .collect();
+    assert_eq!(elements.len(), 2);
+    let premier = asl_api::corps::AppareilRendu::decoder(elements[0]).expect("il se relit");
+    assert_eq!(premier.appareil, banc::appareil(1));
+    assert!(!premier.revoque);
+    assert_eq!(
+        premier.description,
+        Some(asl_api::corps::DescriptionAppareil {
+            systeme: asl_api::corps::Systeme::Macos,
+            modele: "MacBookPro15,2",
+        })
+    );
+    let second = asl_api::corps::AppareilRendu::decoder(elements[1]).expect("il se relit");
+    assert_eq!(second.appareil, banc::appareil(2));
+    assert!(second.revoque, "révoqué, et toujours dans la liste");
+    assert_eq!(
+        second.attestation,
+        asl_api::corps::PlateformeAttestation::Android
+    );
+    assert_eq!(second.description, None);
+
+    let _ = connexion.fermer().await;
+    tache.abort();
+}
+
 // ── LE MAINTIEN, ET D'OÙ VIENT SA CADENCE ───────────────────────────────────
 
 #[tokio::test]

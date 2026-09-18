@@ -47,8 +47,18 @@ pub enum Commande {
     },
     /// Les machines d'un utilisateur que ce compte a le droit de voir.
     Machines {
-        /// L'utilisateur.
-        compte: Identifiant,
+        /// L'utilisateur — ou aucun : le compte de cette machine, celui
+        /// qu'`asl identity` rend.
+        compte: Option<Identifiant>,
+    },
+    /// Les appareils enrôlés sur le compte de cette machine, révoqués compris.
+    Enroles {
+        /// Un compte, quand il est nommé : **ce ne peut être que le
+        /// propriétaire de cette machine** — les appareils d'un compte ne se
+        /// voient que depuis ce compte (`modele.md` §2.2, C13). Le nommer
+        /// n'est admis que pour le confirmer ; un autre est refusé avant
+        /// toute requête.
+        compte: Option<Identifiant>,
     },
     /// Dire qui est cette machine et pour qui elle agit, **hors ligne**.
     Identite,
@@ -176,6 +186,19 @@ fn point(texte: &str) -> Result<PointEcoute, Faute> {
     Ok(PointEcoute::nouveau(protocole, port))
 }
 
+/// Lit un `u-…` s'il y en a un.
+///
+/// Un mot présent qui n'est pas un utilisateur est refusé comme tel — et non
+/// pris pour « aucun », ce qui ferait répondre sur le mauvais compte à une
+/// faute de frappe.
+fn utilisateur_facultatif(mot: Option<String>) -> Result<Option<Identifiant>, Faute> {
+    mot.map(|texte| {
+        Identifiant::analyser_genre(Genre::Utilisateur, &texte)
+            .map_err(|_| Faute::UtilisateurIllisible(texte.clone()))
+    })
+    .transpose()
+}
+
 /// Lit la ligne de commande.
 ///
 /// **LES OPTIONS VIENNENT AVANT LA COMMANDE**, et cette rigidité est voulue :
@@ -286,15 +309,15 @@ where
                 }
             }
         }
-        "machines" => {
-            let compte = suite.next().ok_or(Faute::ArgumentManquant {
-                commande: "machines",
-                quoi: "un utilisateur (u-…)",
-            })?;
-            let compte = Identifiant::analyser_genre(Genre::Utilisateur, &compte)
-                .map_err(|_| Faute::UtilisateurIllisible(compte.clone()))?;
-            Commande::Machines { compte }
-        }
+        // **UN COMPTE, OU AUCUN.** Sans argument, c'est le compte de cette
+        // machine — ce qu'on veut neuf fois sur dix, et qu'il fallait jusqu'ici
+        // aller recopier dans `asl identity`.
+        "machines" => Commande::Machines {
+            compte: utilisateur_facultatif(suite.next())?,
+        },
+        "enrolled" => Commande::Enroles {
+            compte: utilisateur_facultatif(suite.next())?,
+        },
         "identity" => Commande::Identite,
         _ => return Err(Faute::CommandeInconnue(commande)),
     };
@@ -544,14 +567,22 @@ mod essais {
     }
 
     #[test]
-    fn machines_exige_un_utilisateur() {
+    fn machines_prend_un_utilisateur_ou_aucun() {
         let compte = Identifiant::depuis_entropie(Genre::Utilisateur, [7; 16]);
         assert_eq!(
             lire(&["machines", compte.texte().as_str()])
                 .unwrap()
                 .commande,
-            Commande::Machines { compte }
+            Commande::Machines {
+                compte: Some(compte)
+            }
         );
+        // **SANS ARGUMENT, LE COMPTE DE CETTE MACHINE** — et non une faute.
+        assert_eq!(
+            lire(&["machines"]).unwrap().commande,
+            Commande::Machines { compte: None }
+        );
+        // Un mot qui n'est pas un utilisateur est refusé, pas pris pour « aucun ».
         let machine = Identifiant::depuis_entropie(Genre::Machine, [7; 16]);
         assert_eq!(
             lire(&["machines", machine.texte().as_str()]),
@@ -559,13 +590,41 @@ mod essais {
                 machine.texte().as_str().to_owned()
             ))
         );
-        assert!(matches!(
-            lire(&["machines"]),
-            Err(Faute::ArgumentManquant {
-                commande: "machines",
-                ..
-            })
-        ));
+        assert_eq!(
+            lire(&["machines", compte.texte().as_str(), "encore"]),
+            Err(Faute::ArgumentEnTrop("encore".to_owned()))
+        );
+    }
+
+    #[test]
+    fn enrolled_prend_un_utilisateur_ou_aucun() {
+        // La même grammaire que `machines` : le compte est facultatif, et ce
+        // qu'on en fait — le refuser s'il n'est pas le nôtre — n'est pas
+        // l'affaire de l'analyseur, qui ne connaît pas l'identité.
+        let compte = Identifiant::depuis_entropie(Genre::Utilisateur, [7; 16]);
+        assert_eq!(
+            lire(&["enrolled"]).unwrap().commande,
+            Commande::Enroles { compte: None }
+        );
+        assert_eq!(
+            lire(&["enrolled", compte.texte().as_str()])
+                .unwrap()
+                .commande,
+            Commande::Enroles {
+                compte: Some(compte)
+            }
+        );
+        let appareil = Identifiant::depuis_entropie(Genre::Appareil, [7; 16]);
+        assert_eq!(
+            lire(&["enrolled", appareil.texte().as_str()]),
+            Err(Faute::UtilisateurIllisible(
+                appareil.texte().as_str().to_owned()
+            ))
+        );
+        assert_eq!(
+            lire(&["enrolled", compte.texte().as_str(), "encore"]),
+            Err(Faute::ArgumentEnTrop("encore".to_owned()))
+        );
     }
 
     #[test]

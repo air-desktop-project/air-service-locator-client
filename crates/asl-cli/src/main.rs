@@ -141,9 +141,14 @@ COMMANDS
     where <service>                   Every instance of this name your account
                                       may see — yours, and those granted to you.
 
-    machines <u-…>                    The machines of this user your account may
+    machines [u-…]                    The machines of this user your account may
                                       see: yours if it is you, else what they
-                                      granted you.
+                                      granted you. Without argument: yours.
+
+    enrolled [u-…]                    The devices enrolled on this machine's
+                                      account, revoked ones marked. A user may
+                                      be named only to confirm it is this one:
+                                      a device never leaves its account.
 
     identity                          Who this machine is and whom it acts for,
                                       without connecting.
@@ -181,7 +186,9 @@ EXAMPLES
     asl announce depot tcp:8080 udp:9000
     asl where m-7F3A9C2E5B1D4068ABCDEFGHJK depot
     asl where depot
-    asl machines u-5884A5EE7THEKHBQ3BT0VPGJKN"
+    asl machines u-5884A5EE7THEKHBQ3BT0VPGJKN
+    asl machines
+    asl enrolled"
     );
 }
 
@@ -250,6 +257,9 @@ async fn conduire(invocation: &Invocation) -> Sortie {
             let identite = identite(&dossier)?;
             commandes::machines(invocation, &identite, *compte).await
         }
+        // Elle lit la fiche entière elle-même : le compte qu'elle porte est
+        // ce qui permet de refuser un compte étranger avant de rien joindre.
+        Commande::Enroles { compte } => commandes::enroles(invocation, &dossier, *compte).await,
         // Hors ligne : rien à joindre.
         Commande::Identite => commandes::identite(&dossier),
     }

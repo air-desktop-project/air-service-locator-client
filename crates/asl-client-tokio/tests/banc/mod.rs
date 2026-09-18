@@ -83,6 +83,47 @@ impl ams_h3::Service for FauxAnnuaire {
             place.copy_from_slice(corps);
             return ams_h3::Reponse::new(StatusCode::OK, place);
         }
+        // **LA VOIE MACHINE, SANS RIEN VÉRIFIER** : qui je suis, mes machines,
+        // les appareils de mon compte — de quoi éprouver que le client demande
+        // la bonne chose au bon chemin, et lit ce qui revient.
+        if matches!(tete.method(), Method::Get) {
+            let chemin = tete.path();
+            let mes_machines = format!(
+                "/v1/utilisateurs/{}/machines",
+                proprietaire().texte().as_str()
+            );
+            let corps: Option<String> = if chemin == b"/v1/moi" {
+                Some(format!(
+                    r#"{{"machine":"{}","proprietaire":"{}"}}"#,
+                    machine().texte().as_str(),
+                    proprietaire().texte().as_str()
+                ))
+            } else if chemin == mes_machines.as_bytes() {
+                Some(format!(
+                    r#"[{{"machine":"{}","nom":"grenier"}}]"#,
+                    machine().texte().as_str()
+                ))
+            } else if chemin.starts_with(b"/v1/utilisateurs/") && chemin.ends_with(b"/machines") {
+                // Un autre compte : rien d'accordé, une liste vide (C9).
+                Some("[]".to_owned())
+            } else if chemin == b"/v1/moi/appareils" {
+                Some(format!(
+                    concat!(
+                        r#"[{{"appareil":"{}","attestation":"aucune","revoque":false,"plateforme":"macos","modele":"MacBookPro15,2"}},"#,
+                        r#"{{"appareil":"{}","attestation":"android","revoque":true}}]"#
+                    ),
+                    appareil(1).texte().as_str(),
+                    appareil(2).texte().as_str()
+                ))
+            } else {
+                None
+            };
+            if let Some(corps) = corps {
+                let place = sortie.get_mut(..corps.len()).unwrap_or_default();
+                place.copy_from_slice(corps.as_bytes());
+                return ams_h3::Reponse::new(StatusCode::OK, place);
+            }
+        }
         let (code, combien) = match (tete.method(), tete.path()) {
             // Un défi : trente-deux octets, ni plus ni moins.
             (Method::Get, b"/v1/defi") => (StatusCode::OK, asl_cle::DEFI_OCTETS),
@@ -105,6 +146,21 @@ impl ams_h3::Service for FauxAnnuaire {
         place.fill(0x5A);
         ams_h3::Reponse::new(code, place)
     }
+}
+
+/// La machine que le faux annuaire croit être celle de toute connexion.
+pub fn machine() -> asl_id::Identifiant {
+    asl_id::Identifiant::depuis_entropie(asl_id::Genre::Machine, [0x4D; 16])
+}
+
+/// Le compte qui la possède.
+pub fn proprietaire() -> asl_id::Identifiant {
+    asl_id::Identifiant::depuis_entropie(asl_id::Genre::Utilisateur, [0x55; 16])
+}
+
+/// Le `n`-ième appareil de ce compte.
+pub fn appareil(n: u8) -> asl_id::Identifiant {
+    asl_id::Identifiant::depuis_entropie(asl_id::Genre::Appareil, [n; 16])
 }
 
 /// L'horloge que la pile attend : des microsecondes.

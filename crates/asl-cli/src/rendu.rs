@@ -495,9 +495,205 @@ fn machine_vue(octets: &[u8]) -> Result<(asl_id::Identifiant, String), String> {
     ))
 }
 
+/// Les appareils d'un compte — `GET /v1/moi/appareils` —, un par ligne :
+/// l'identifiant, le modèle (ou « ? » s'il ne s'est pas décrit), la
+/// plate-forme, l'attestation sous laquelle il est entré, et « révoqué » quand
+/// il l'est.
+///
+/// **UN RÉVOQUÉ RESTE SUR SA LIGNE** (`modele.md` §2.2 : « marqué, non
+/// effacé ») — c'est ce qu'on regarde après avoir perdu un téléphone. Et
+/// **l'identifiant est en tête**, parce que le modèle est une étiquette que
+/// l'appareil s'est posée lui-même, pas une preuve : ce qui identifie est
+/// l'`a-…`.
+///
+/// # Erreurs
+///
+/// Rend `Err` avec ce qui n'a pas pu être lu.
+pub fn appareils(corps: &[u8]) -> Result<String, String> {
+    let elements = asl_proto::cadrage::elements(corps)
+        .map_err(|quoi| format!("la liste de l'annuaire ne se lit pas : {quoi:?}"))?;
+    let mut texte = String::new();
+    let mut combien = 0_usize;
+    for element in elements {
+        let vu = appareil_vu(element)?;
+        texte.push_str(&format!(
+            "{}   {:<20}   {:<8}   {}{}\n",
+            vu.appareil.texte().as_str(),
+            vu.modele.as_deref().unwrap_or("?"),
+            vu.plateforme.as_deref().unwrap_or("?"),
+            vu.attestation,
+            if vu.revoque { "   révoqué" } else { "" }
+        ));
+        combien = combien.saturating_add(1);
+    }
+    if combien == 0 {
+        // Un compte a toujours l'appareil qui l'a ouvert : une liste vide est
+        // une réponse qu'on n'attend pas, et le dire vaut mieux qu'un silence.
+        texte.push_str("aucun appareil : l'annuaire n'en rend aucun pour ce compte.\n");
+    }
+    Ok(texte)
+}
+
+/// Un appareil tel que la liste le rend, une fois lu.
+struct AppareilVu {
+    appareil: asl_id::Identifiant,
+    attestation: String,
+    revoque: bool,
+    plateforme: Option<String>,
+    modele: Option<String>,
+}
+
+/// Lit `{"appareil":"a-…","attestation":"…","revoque":bool[,"plateforme":"…","modele":"…"]}`.
+///
+/// **LE MÊME LECTEUR QUE [`machine_vue`]**, et la même tolérance : un champ
+/// inconnu se saute, et une attestation d'un mot nouveau s'affiche telle
+/// quelle — un `asl` d'hier doit encore rendre ce qu'un annuaire de demain lui
+/// dit, et le mot que l'annuaire emploie est déjà celui qu'on veut lire.
+fn appareil_vu(octets: &[u8]) -> Result<AppareilVu, String> {
+    let mut lecteur = asl_proto::cadrage::Lecteur::nouveau(octets);
+    let faute = |quoi: asl_proto::Erreur| format!("un appareil ne se lit pas : {quoi:?}");
+    lecteur.attendre(b'{', "un objet").map_err(faute)?;
+    let mut appareil = None;
+    let mut attestation = None;
+    let mut revoque = None;
+    let mut plateforme = None;
+    let mut modele = None;
+    loop {
+        lecteur.sauter_blancs();
+        let champ = lecteur.chaine().map_err(faute)?;
+        lecteur.attendre(b':', "deux-points").map_err(faute)?;
+        match champ {
+            "appareil" => {
+                let texte = lecteur.chaine().map_err(faute)?;
+                appareil = Some(
+                    asl_id::Identifiant::analyser_genre(asl_id::Genre::Appareil, texte)
+                        .map_err(|quoi| format!("`{texte}` n'est pas un appareil : {quoi:?}"))?,
+                );
+            }
+            "attestation" => attestation = Some(lecteur.chaine().map_err(faute)?.to_owned()),
+            "revoque" => {
+                lecteur.sauter_blancs();
+                revoque = Some(if lecteur.mot("true") {
+                    true
+                } else if lecteur.mot("false") {
+                    false
+                } else {
+                    return Err("`revoque` n'est ni `true` ni `false`".to_owned());
+                });
+            }
+            "plateforme" => plateforme = Some(lecteur.chaine().map_err(faute)?.to_owned()),
+            "modele" => modele = Some(lecteur.texte_libre().map_err(faute)?.to_owned()),
+            // **UN CHAMP INCONNU SE SAUTE** — voir [`machine_vue`].
+            _ => {
+                lecteur.chaine().map_err(faute)?;
+            }
+        }
+        lecteur.sauter_blancs();
+        match lecteur.regarder() {
+            Some(b',') => lecteur.avancer(),
+            _ => break,
+        }
+    }
+    lecteur.attendre(b'}', "la fin de l'objet").map_err(faute)?;
+    Ok(AppareilVu {
+        appareil: appareil.ok_or_else(|| "il manque `appareil`".to_owned())?,
+        attestation: attestation.ok_or_else(|| "il manque `attestation`".to_owned())?,
+        revoque: revoque.ok_or_else(|| "il manque `revoque`".to_owned())?,
+        plateforme,
+        modele,
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{machines, reponses, vu};
+    use super::{appareils, machines, reponses, vu};
+
+    #[test]
+    fn une_liste_d_appareils_se_rend_ligne_par_ligne_revoques_compris() {
+        let a1 = asl_id::Identifiant::depuis_entropie(asl_id::Genre::Appareil, [0x41; 16]);
+        let a2 = asl_id::Identifiant::depuis_entropie(asl_id::Genre::Appareil, [0x42; 16]);
+        let a3 = asl_id::Identifiant::depuis_entropie(asl_id::Genre::Appareil, [0x43; 16]);
+        let corps = format!(
+            concat!(
+                r#"[{{"appareil":"{}","attestation":"aucune","revoque":false,"plateforme":"macos","modele":"MacBookPro15,2"}},"#,
+                r#"{{"appareil":"{}","attestation":"android","revoque":true,"plateforme":"android","modele":"Fairphone FP5"}},"#,
+                r#"{{"appareil":"{}","attestation":"apple","revoque":false}}]"#
+            ),
+            a1.texte().as_str(),
+            a2.texte().as_str(),
+            a3.texte().as_str()
+        );
+        let dit = appareils(corps.as_bytes()).expect("lisible");
+        let lignes: Vec<&str> = dit.lines().collect();
+        assert_eq!(lignes.len(), 3, "{dit}");
+        // Le premier : décrit, vivant.
+        assert!(lignes[0].starts_with(a1.texte().as_str()), "{dit}");
+        assert!(lignes[0].contains("MacBookPro15,2"), "{dit}");
+        assert!(lignes[0].contains("macos"), "{dit}");
+        assert!(lignes[0].contains("aucune"), "{dit}");
+        assert!(!lignes[0].contains("révoqué"), "{dit}");
+        // Le second : révoqué, ET TOUJOURS LÀ, avec sa description.
+        assert!(lignes[1].starts_with(a2.texte().as_str()), "{dit}");
+        assert!(lignes[1].contains("Fairphone FP5"), "{dit}");
+        assert!(lignes[1].ends_with("révoqué"), "{dit}");
+        // Le troisième : jamais décrit — un « ? » à la place du modèle et de
+        // la plate-forme, jamais une valeur inventée.
+        assert!(lignes[2].starts_with(a3.texte().as_str()), "{dit}");
+        assert!(lignes[2].contains("?"), "{dit}");
+        assert!(lignes[2].contains("apple"), "{dit}");
+    }
+
+    #[test]
+    fn une_liste_vide_d_appareils_le_dit() {
+        let dit = appareils(b"[]").expect("lisible");
+        assert!(dit.contains("aucun appareil"), "{dit}");
+    }
+
+    #[test]
+    fn un_appareil_mal_forme_est_refuse_et_un_champ_neuf_se_saute() {
+        let a = asl_id::Identifiant::depuis_entropie(asl_id::Genre::Appareil, [0x41; 16]);
+        let m = asl_id::Identifiant::depuis_entropie(asl_id::Genre::Machine, [0x41; 16]);
+        for corps in [
+            &b"{"[..],
+            &br#"[{"attestation":"aucune","revoque":false}]"#[..],
+            &br#"[{"appareil":"pas-un-appareil","attestation":"aucune","revoque":false}]"#[..],
+        ] {
+            assert!(
+                appareils(corps).is_err(),
+                "{}",
+                String::from_utf8_lossy(corps)
+            );
+        }
+        // Une machine n'est pas un appareil.
+        let faux = format!(
+            r#"[{{"appareil":"{}","attestation":"aucune","revoque":false}}]"#,
+            m.texte().as_str()
+        );
+        assert!(appareils(faux.as_bytes()).is_err());
+        // `revoque` qui n'est pas un booléen, ou qui manque.
+        let faux = format!(
+            r#"[{{"appareil":"{}","attestation":"aucune","revoque":"oui"}}]"#,
+            a.texte().as_str()
+        );
+        assert!(appareils(faux.as_bytes()).is_err());
+        let faux = format!(
+            r#"[{{"appareil":"{}","attestation":"aucune"}}]"#,
+            a.texte().as_str()
+        );
+        assert!(appareils(faux.as_bytes()).is_err());
+        let faux = format!(
+            r#"[{{"appareil":"{}","revoque":true}}]"#,
+            a.texte().as_str()
+        );
+        assert!(appareils(faux.as_bytes()).is_err());
+        // Un champ de demain, et une attestation d'un mot nouveau : lus.
+        let neuf = format!(
+            r#"[{{"appareil":"{}","enrole_a":"hier","attestation":"invitation","revoque":false}}]"#,
+            a.texte().as_str()
+        );
+        let dit = appareils(neuf.as_bytes()).expect("lisible");
+        assert!(dit.contains("invitation"), "{dit}");
+    }
 
     #[test]
     fn une_liste_de_machines_se_rend_ligne_par_ligne() {

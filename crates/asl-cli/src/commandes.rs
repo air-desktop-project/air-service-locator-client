@@ -1,4 +1,4 @@
-//! Les quatre verbes, et ce qu'ils demandent au réseau.
+//! Les verbes, et ce qu'ils demandent au réseau.
 
 use std::net::ToSocketAddrs as _;
 use std::path::Path;
@@ -369,10 +369,14 @@ pub async fn ou(
 /// **UNE LISTE VIDE N'EST PAS UNE PANNE** : c'est ce que l'annuaire répond à
 /// qui n'a rien reçu de cet utilisateur — et il ne dit pas s'il a des machines
 /// (C9). Le rendu le dit à la place d'un `[]` muet.
+///
+/// **SANS COMPTE, LES MIENNES** : celles du propriétaire de cette machine, que
+/// l'annuaire nomme lui-même (`GET /v1/moi`) — et non ce qu'un fichier local
+/// croit, qui peut dater d'avant un ré-enrôlement.
 pub async fn machines(
     invocation: &Invocation,
     identite: &Identite,
-    compte: asl_id::Identifiant,
+    compte: Option<asl_id::Identifiant>,
 ) -> Sortie {
     let reglages = reglages(invocation)?;
     let mut connexion = ouvrir(&reglages).await?;
@@ -380,13 +384,76 @@ pub async fn machines(
         .authentifier(identite)
         .await
         .map_err(refus_de_l_annuaire)?;
-    let corps = connexion
-        .machines_de(compte)
-        .await
-        .map_err(refus_de_l_annuaire)?;
+    let corps = match compte {
+        Some(compte) => connexion.machines_de(compte).await,
+        None => connexion.machines_du_proprietaire().await,
+    }
+    .map_err(refus_de_l_annuaire)?;
     print!("{}", rendu::machines(&corps).map_err(Issue::Injoignable)?);
     let _ = connexion.fermer().await;
     Ok(())
+}
+
+// ── `asl enrolled` ──────────────────────────────────────────────────────────
+
+/// Les appareils enrôlés sur le compte de cette machine, révoqués compris.
+///
+/// # UN COMPTE NOMMÉ NE PEUT ÊTRE QUE LE NÔTRE, ET C'EST DIT AVANT DE JOINDRE
+///
+/// `GET /v1/moi/appareils` est **pour soi seulement** (`protocole.md` §3) : il
+/// n'existe aucune forme qui nomme un compte, parce que les appareils d'un
+/// compte ne se voient que depuis ce compte (`modele.md` §2.2, C13). Nommer le
+/// propriétaire de cette machine est admis — c'est le confirmer — ; en nommer
+/// un autre est refusé **ici, avant toute requête**, et non par un `401` de
+/// l'annuaire qui enverrait chercher une clé là où c'est la demande qui n'a
+/// pas de sens. Quand le fichier d'identité ne connaît pas encore le compte,
+/// c'est `GET /v1/moi` qui le dit, sur la connexion prouvée — toujours avant
+/// de demander la liste.
+pub async fn enroles(
+    invocation: &Invocation,
+    dossier: &Path,
+    compte: Option<asl_id::Identifiant>,
+) -> Sortie {
+    let fiche =
+        etat::lire_la_fiche(dossier).map_err(|quoi| Issue::Configuration(quoi.to_string()))?;
+    if let (Some(demande), Some(connu)) = (compte, fiche.compte)
+        && demande != connu
+    {
+        return Err(compte_etranger(demande, connu));
+    }
+
+    let reglages = reglages(invocation)?;
+    let mut connexion = ouvrir(&reglages).await?;
+    connexion
+        .authentifier(&fiche.identite)
+        .await
+        .map_err(refus_de_l_annuaire)?;
+    if let (Some(demande), None) = (compte, fiche.compte) {
+        let moi = connexion.moi().await.map_err(refus_de_l_annuaire)?;
+        if demande != moi.proprietaire {
+            let _ = connexion.fermer().await;
+            return Err(compte_etranger(demande, moi.proprietaire));
+        }
+    }
+    let corps = connexion
+        .appareils_du_proprietaire()
+        .await
+        .map_err(refus_de_l_annuaire)?;
+    print!("{}", rendu::appareils(&corps).map_err(Issue::Injoignable)?);
+    let _ = connexion.fermer().await;
+    Ok(())
+}
+
+/// Le refus d'`asl enrolled u-…` pour un compte qui n'est pas celui de cette
+/// machine — une issue d'usage : ce qui a été demandé ne se demande pas.
+fn compte_etranger(demande: asl_id::Identifiant, notre: asl_id::Identifiant) -> Issue {
+    Issue::Usage(format!(
+        "les appareils d'un compte ne se voient que depuis ce compte : cette\n\
+         machine appartient à {}, et `{}` n'est pas lui. `asl enrolled` sans\n\
+         argument rend les appareils de son compte.",
+        notre.texte().as_str(),
+        demande.texte().as_str()
+    ))
 }
 
 // ── `asl identity` ──────────────────────────────────────────────────────────

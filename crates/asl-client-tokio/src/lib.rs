@@ -699,6 +699,46 @@ impl Connexion {
         Ok(reponse.corps)
     }
 
+    /// Les machines du compte qui possède cette machine — « les miennes ».
+    ///
+    /// # DEUX REQUÊTES, PARCE QUE LA VOIE MACHINE N'A PAS `GET /v1/machines`
+    ///
+    /// `GET /v1/machines` est l'écran « Machines » d'un appareil, et la voie
+    /// machine ne le sert pas. Ce qu'elle sert est `GET /v1/moi` — qui dit le
+    /// propriétaire — puis `GET /v1/utilisateurs/{u}/machines`, qui rend les
+    /// siennes à qui est lui (`protocole.md` §3). C'est le même chemin que
+    /// [`Connexion::machines_de`] avec le compte que l'annuaire vient de
+    /// nommer, et non celui qu'un fichier local croit.
+    ///
+    /// # Errors
+    ///
+    /// Celles de [`Connexion::moi`] et de [`Connexion::machines_de`].
+    pub async fn machines_du_proprietaire(&mut self) -> Result<Vec<u8>, Faute> {
+        let moi = self.moi().await?;
+        self.machines_de(moi.proprietaire).await
+    }
+
+    /// Les appareils du compte qui possède cette machine, révoqués compris —
+    /// `GET /v1/moi/appareils` (`protocole.md` §3).
+    ///
+    /// **POUR SOI SEULEMENT** : la liste est celle du propriétaire de la clé
+    /// prouvée sur cette connexion, et il n'y a pas de forme qui nomme un
+    /// compte — un appareil ne sort pas de son compte (C13). Rend une LISTE de
+    /// `{"appareil":"a-…","attestation":"…","revoque":bool}`, avec
+    /// `plateforme` et `modele` quand l'appareil s'est décrit ; c'est l'objet
+    /// que `GET /v1/appareils` rend à un appareil, et
+    /// `asl_proto::cadrage::elements` la découpe.
+    ///
+    /// # Errors
+    ///
+    /// Celles de [`Connexion::requete`], plus [`Faute::Statut`] — `401` sans
+    /// preuve ou clé révoquée, `404` sur un annuaire d'avant 0.10.0.
+    pub async fn appareils_du_proprietaire(&mut self) -> Result<Vec<u8>, Faute> {
+        let reponse = self.requete(b"GET", b"/v1/moi/appareils", &[], b"").await?;
+        reponse.exige(200)?;
+        Ok(reponse.corps)
+    }
+
     /// Annonce ce service.
     ///
     /// Rend le corps de la réponse, tel qu'`asl_proto::Reponse::decoder` le lit.
