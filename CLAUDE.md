@@ -423,6 +423,67 @@ a un —, l'aide en anglais, `asl-client-tokio::etat_de_la_replication`, l'ABI C
 inchangée (c'est un verbe de CLI, pas d'ABI), bump mineur. La connexion est
 tenue sur la voie machine, comme `asl machines`. Rien à faire côté apps.
 
+**« Effacer mon compte » — spécifié le 2026-09-18 (carbon), à coder.** PR
+serveur #25 (`effacer-mon-compte`, 0.10.1, docs seules, non mergée) :
+`modele.md` §2.1 « Effacer son compte », `protocole.md` §2.2 « Effacer mon
+compte — le dernier acte d'une clé », `replication.md` §3.2/§3.3/§5.2/§8 et
+décisions 22–24, `contraintes.md` C6/C13/C18. Lis-les en entier avant de
+coder. Ce qui est tranché :
+
+- **Le verbe : `DELETE /v1/compte`**, voie appareil, `Exigence::Appareil`,
+  sans corps. Une transaction : tous les appareils révoqués (celui qui demande
+  compris) et effacés avec jetons et descriptions ; machines révoquées
+  (connexions fermées, baux tombés, codes annulés) et effacées avec leurs
+  services ; autorisations **retirées** dans les deux sens (l'autre partie ne
+  voit plus rien) ; alias **libéré** (réclamation retirée, la file en hérite).
+  Reste le `u-…` marqué effacé, date + cause (`titulaire` | `orphelin` |
+  `exploitant`). **`204`, puis l'annuaire ferme la connexion** — ce n'est pas
+  une panne. `401` sur une clé révoquée ou un compte déjà effacé ; pas de
+  `404`. Le journal n'est pas touché à part (90 jours, C18).
+- **La règle des orphelins** : un compte dont tous les appareils sont
+  **révoqués** (jamais « silencieux », C6) est effacé par la racine **30 jours**
+  après la révocation du dernier, cause `orphelin`, journalisé. Réglage
+  serveur **`--orphans <days>`**, `0` = jamais, même valeur sur les deux
+  racines. Conséquence à dire dans les apps, à l'enrôlement et dans Compte :
+  « avec un seul appareil, perdre ce téléphone efface ce compte » (à trente
+  jours), et non seulement « pensez à enrôler un second appareil ».
+- **`asl-server --forget <u-…> --store <fichier>`**, hors ligne, entrepôt
+  arrêté, un identifiant à la fois, cause `exploitant` : l'exception pour les
+  trois orphelins de `nitrogen` (`u-24MF…`, `u-6TEE…`, `u-6J5S…`) dont la clé
+  a été perdue côté appareil sans révocation.
+- **Réplication** : opération `compte-efface`, classe « révocation,
+  toujours » ; `appareil-revoque` porte désormais `révoqué le` — l'entrepôt
+  n'a aujourd'hui aucune date, la PR de code ajoute `révoqué le` (appareil) et
+  `effacé le` + cause (compte), format d'enregistrement, cran mineur.
+
+Ce que chaque dépôt de code devra faire :
+
+1. **Serveur (carbon)** : `Ressource::Compte` (`DELETE`) ; les deux dates et
+   la cause dans `asl-registre` (+ fuzz, + reprise des entrepôts existants :
+   les appareils déjà révoqués reçoivent la date de la reprise) ; le retrait
+   par compte dans `asl-store`, dans une transaction, sur le modèle
+   d'`oublier_ce_qui_vient_de` ; le genre `compte-efface` et la date dans
+   `appareil-revoque` ; les effets vivants (fermer les connexions du compte,
+   ici et à l'application d'une opération reçue) ; `--orphans` et sa tâche,
+   à côté d'`expirer_sans_fin` ; `--forget` ; les lignes du journal
+   d'exploitation (identifiant + cause ; « appliqué » pour ce qui vient de
+   l'autre racine). Bump mineur (format + verbe).
+2. **Android (carbon)** : dans Compte, un bouton « Effacer mon compte » (rouge,
+   visible comme « Révoquer »), sous biométrie, avec une confirmation qui dit
+   ce qui part — les appareils, les machines et leurs services, les accès,
+   l'alias — et que rien ne revient ; `DELETE /v1/compte` par `Session` ;
+   lire le `204`, ne pas traiter la fermeture qui suit comme une erreur ;
+   vider le carnet local, **détruire la clé** dans le Keystore, retour à
+   l'écran d'accueil. Le texte « un seul appareil » ci-dessus.
+3. **iOS / macOS (oxygen)** : même geste, même confirmation, même séquence ;
+   clé détruite dans l'enclave ; **sur le Mac, effacer aussi l'identité de
+   machine** du conteneur
+   (`…/org.airdesktop.servicelocator.mac/Data/Library/Application Support/asl/identite`),
+   puisque sa clé est révoquée et qu'`asl` la lit par défaut.
+4. **Client (`asl`)** : **rien.** Une machine ne décide pas du compte ; elle
+   voit sa connexion fermée puis `401`, comme d'une révocation de clé. Pas de
+   verbe, pas d'ABI.
+
 ### Ce que speedy attend d'oxygen
 
 **Une CAPTURE réelle**, pour figer deux vérifications d'attestation aujourd'hui
