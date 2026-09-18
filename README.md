@@ -149,7 +149,12 @@ d'identité, `asl identity` les rend hors ligne, et `asl diagnose` les demande
 avant que l'annuaire ne rende le propriétaire. De là, un programme de B part
 d'un `u-…` que A lui a donné : `asl machines <u-…>` liste ce que A lui a ouvert,
 `asl where <service>` trouve toutes les instances d'un nom qu'il a le droit de
-voir — sans qu'un humain ait à recopier des `m-…`.
+voir — sans qu'un humain ait à recopier des `m-…`. Sans argument, `asl machines`
+rend les siennes ; et `asl enrolled` rend **les appareils enrôlés sur le compte
+de cette machine** (`GET /v1/moi/appareils`, révoqués marqués, modèle et
+plate-forme quand l'appareil s'est décrit) — pour soi seulement : nommer un
+autre compte est refusé avant toute requête, un appareil ne sort pas de son
+compte.
 
 **Il n'existe aucun mode anonyme.** Une résolution hors d'une connexion
 authentifiée par une clé n'est pas prévue par le serveur, et un client qui

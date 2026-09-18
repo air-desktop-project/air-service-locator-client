@@ -64,13 +64,25 @@ impl Drop for Bac {
 
 /// Écrit une identité, avec le mode demandé.
 fn poser_une_identite(dossier: &Path, mode: u32) -> Identifiant {
+    poser_une_identite_avec_compte(dossier, mode, None)
+}
+
+/// Écrit une identité qui sait, ou non, pour quel compte elle agit.
+fn poser_une_identite_avec_compte(
+    dossier: &Path,
+    mode: u32,
+    compte: Option<Identifiant>,
+) -> Identifiant {
     use std::os::unix::fs::PermissionsExt as _;
     let machine = Identifiant::depuis_entropie(Genre::Machine, [0x11; 16]);
     let ou = dossier.join("identite");
+    let ligne_compte = compte.map_or(String::new(), |compte| {
+        format!("compte = {}\n", compte.texte().as_str())
+    });
     std::fs::write(
         &ou,
         format!(
-            "machine = {}\ngraine = {}\n",
+            "machine = {}\ngraine = {}\n{ligne_compte}",
             machine.texte().as_str(),
             "5a".repeat(32)
         ),
@@ -90,7 +102,15 @@ fn l_aide_repond_quand_rien_n_est_configure() {
         let sortie = asl(&forme);
         assert_eq!(code(&sortie), Some(0), "{forme:?}");
         let dit = texte(&sortie.stdout);
-        for verbe in ["enroll", "announce", "where ", "diagnose"] {
+        for verbe in [
+            "enroll",
+            "announce",
+            "where ",
+            "machines [u-…]",
+            "enrolled [u-…]",
+            "identity",
+            "diagnose",
+        ] {
             assert!(dit.contains(verbe), "l'aide doit citer `{verbe}` : {dit}");
         }
         assert!(
@@ -111,6 +131,9 @@ fn ce_qui_ne_se_lit_pas_rend_un_et_le_dit_sur_stderr() {
         vec!["announce", "depot"],
         vec!["announce", "depot", "sctp:1"],
         vec!["where", "pas-un-identifiant", "depot"],
+        vec!["machines", "pas-un-utilisateur"],
+        vec!["enrolled", "pas-un-utilisateur"],
+        vec!["enrolled", "u-5884A5EE7THEKHBQ3BT0VPGJKN", "encore"],
         vec!["diagnose", "et", "puis"],
         vec!["--directory"],
     ] {
@@ -273,6 +296,118 @@ fn une_machine_non_enrolee_l_apprend_avant_toute_connexion() {
     );
     let dit = texte(&sortie.stderr);
     assert!(dit.contains("asl enroll"), "et l'on dit quoi faire : {dit}");
+}
+
+// ── `asl enrolled`, `asl machines` : les deux formes ────────────────────────
+
+#[test]
+fn enrolled_refuse_un_compte_etranger_avant_toute_connexion() {
+    // **LES APPAREILS D'UN COMPTE NE SE VOIENT QUE DEPUIS CE COMPTE** (C13) :
+    // `asl enrolled u-…` avec un compte qui n'est pas celui de cette machine
+    // est refusé par `asl` lui-même — code 1, ce qui a été demandé ne se
+    // demande pas —, sans rien joindre : l'annuaire visé ne répond pas, et
+    // l'essai tient en moins de deux secondes.
+    let bac = Bac::neuf("enrolled-etranger");
+    let notre = Identifiant::depuis_entropie(Genre::Utilisateur, [0x51; 16]);
+    let autre = Identifiant::depuis_entropie(Genre::Utilisateur, [0x52; 16]);
+    poser_une_identite_avec_compte(bac.chemin(), 0o600, Some(notre));
+
+    let depart = std::time::Instant::now();
+    let sortie = asl(&[
+        "--state",
+        &bac.chemin().to_string_lossy(),
+        "--directory",
+        "127.0.0.1:1",
+        "enrolled",
+        autre.texte().as_str(),
+    ]);
+    assert_eq!(code(&sortie), Some(1), "{}", texte(&sortie.stderr));
+    assert!(
+        depart.elapsed() < std::time::Duration::from_secs(2),
+        "elle a essayé de se connecter avant de refuser"
+    );
+    let dit = texte(&sortie.stderr);
+    assert!(
+        dit.contains("ne se voient que depuis ce compte"),
+        "la raison est dite : {dit}"
+    );
+    assert!(
+        dit.contains(notre.texte().as_str()),
+        "et le nôtre nommé : {dit}"
+    );
+    assert!(
+        dit.contains(autre.texte().as_str()),
+        "et l'autre aussi : {dit}"
+    );
+}
+
+#[test]
+fn enrolled_et_machines_avec_le_compte_de_la_machine_ou_sans_vont_a_l_annuaire() {
+    // Le compte de la machine, ou aucun : les deux formes passent l'analyse et
+    // la lecture de l'identité, puis vont joindre l'annuaire — qui, ici, ne
+    // répond pas : `4`, personne n'a répondu, et non `1` ni `2`.
+    let bac = Bac::neuf("enrolled-formes");
+    let racines = bac.chemin().join("ca.pem");
+    let atelier = ams_quic_client::atelier("asl-cli-enrolled");
+    let (autorite, _cert, _cle) =
+        ams_quic_client::materiel(atelier.chemin()).expect("`openssl` est requis pour cet essai");
+    std::fs::write(&racines, &autorite).expect("la racine s'écrit");
+    let notre = Identifiant::depuis_entropie(Genre::Utilisateur, [0x51; 16]);
+    poser_une_identite_avec_compte(bac.chemin(), 0o600, Some(notre));
+    let etat = bac.chemin().to_string_lossy().into_owned();
+    let racines = racines.to_string_lossy().into_owned();
+    let notre = notre.texte();
+
+    for ligne in [
+        vec!["enrolled"],
+        vec!["enrolled", notre.as_str()],
+        vec!["machines"],
+        vec!["machines", notre.as_str()],
+    ] {
+        let mut arguments = vec![
+            "--state",
+            etat.as_str(),
+            "--directory",
+            "127.0.0.1:1",
+            "--roots",
+            racines.as_str(),
+        ];
+        arguments.extend_from_slice(&ligne);
+        let sortie = asl(&arguments);
+        assert_eq!(
+            code(&sortie),
+            Some(4),
+            "{ligne:?} : {}",
+            texte(&sortie.stderr)
+        );
+    }
+}
+
+#[test]
+fn enrolled_sans_compte_connu_ne_refuse_pas_hors_ligne() {
+    // Un fichier d'identité d'avant 0.3.0 ne porte pas le compte : le refus
+    // ne peut pas se décider hors ligne, et c'est `GET /v1/moi` qui tranchera
+    // — donc on joint, et ici personne ne répond : `4`.
+    let bac = Bac::neuf("enrolled-sans-compte");
+    let racines = bac.chemin().join("ca.pem");
+    let atelier = ams_quic_client::atelier("asl-cli-enrolled-sans-compte");
+    let (autorite, _cert, _cle) =
+        ams_quic_client::materiel(atelier.chemin()).expect("`openssl` est requis pour cet essai");
+    std::fs::write(&racines, &autorite).expect("la racine s'écrit");
+    poser_une_identite(bac.chemin(), 0o600);
+    let autre = Identifiant::depuis_entropie(Genre::Utilisateur, [0x52; 16]);
+
+    let sortie = asl(&[
+        "--state",
+        &bac.chemin().to_string_lossy(),
+        "--directory",
+        "127.0.0.1:1",
+        "--roots",
+        &racines.to_string_lossy(),
+        "enrolled",
+        autre.texte().as_str(),
+    ]);
+    assert_eq!(code(&sortie), Some(4), "{}", texte(&sortie.stderr));
 }
 
 // ── Personne n'a répondu : code 4 ───────────────────────────────────────────
