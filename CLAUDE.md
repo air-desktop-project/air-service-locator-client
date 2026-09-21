@@ -423,6 +423,73 @@ a un —, l'aide en anglais, `asl-client-tokio::etat_de_la_replication`, l'ABI C
 inchangée (c'est un verbe de CLI, pas d'ABI), bump mineur. La connexion est
 tenue sur la voie machine, comme `asl machines`. Rien à faire côté apps.
 
+~~Pas encore de verbe~~ — **`asl replication`, PR client #11 (0.8.0, branche
+`replication`, ouverte le 2026-09-21, carbon)** : `Connexion::etat_de_la_replication`
+et `Connexion::distante` dans `asl-client-tokio`, `Commande::Replication`,
+une ligne par racine jointe (pair, voie, `compteur`, `appliqué`). **Sans
+l'écart `compteur − applique`** : le premier jet le rendait, et le journal
+des bancs l'a démenti — le curseur `applique` de nitrogen pour argon est
+resté à 23 depuis l'amorçage du 19/09 parce qu'argon n'a rien écrit depuis,
+et les 12 de différence sont les écritures propres de nitrogen. Ce qui se
+conclut : à jour quand l'`appliqué` de l'une égale le `compteur` de l'autre.
+**Ce que carbon attend du serveur** : `replication.md` §8 dit « `applique`
+rejoint le `compteur` du pair », c'est inexact — à corriger, et la réponse
+gagnerait un champ « dernière estampille écrite ici ». Les règles client de
+§6 (`asl enroll` essaie l'autre racine sur code refusé ; `401` non définitif
+dans la reprise du daemon) restent à faire, à part.
+
+**« Attester un appareil qui rejoint » — spécifié le 2026-09-21 (carbon), à
+coder.** PR serveur #27 (`attestation-rejoindre`, 0.11.1, docs seules, non
+mergée) : `protocole.md` §2.2 « Attester un appareil qui rejoint — la preuve
+et la chaîne, d'un même défi », `modele.md` §2.2 (valeur `attendue`),
+`contraintes.md` C19, `replication.md` §3.2/§5.2 et décision 25. Lis-les en
+entier avant de coder. Ce qui est tranché :
+
+- **Le verbe : `POST /v1/attestation`**, sans exigence, sur la connexion où
+  `GET /v1/defi` a été tiré AVANT de générer la clé. Corps : genre `a` ‖
+  `a-…` ‖ signature (celle de `POST /v1/defi`) ‖ plate-forme ‖ chaîne. Un
+  seul défi couvre la preuve et l'attestation. `204`, la connexion est celle
+  de l'appareil ; `401` (signature, pas de défi, révoqué, effacé — le même
+  pour les quatre) ; `403` (chaîne refusée sous `required`) ; `400`.
+- **L'ordre côté nouvel appareil** : connexion nue → défi → clé générée avec
+  `SHA-256(message_d_attestation_de_cle(défi, liaison))` → QR → attendre
+  `u-…`/`a-…` de l'ancien → `POST /v1/attestation` **sur la même connexion
+  tenue**. **Le défi vit ce que vit la connexion** : si elle tombe entre le
+  QR et la preuve, nouvelle clé, nouveau QR, et le premier `a-…` reste à
+  révoquer depuis Appareils.
+- **Posture** : `optional`/`invitation` → `POST /v1/appareils` écrit
+  `aucune` comme aujourd'hui, la chaîne fait passer à `android`/`apple`
+  (refusée : `204` quand même, journalisé) ; `required` → **`attendue`**,
+  cinquième valeur d'`attestation`, `401` à la preuve nue, jamais expirée,
+  révocable, vivante pour les orphelins. Les apps 0.6.0/0.7.0 rejoignent une
+  racine `optional` comme hier.
+- **Réplication** : `appareil-atteste` (identifiant ‖ attestation), appliquée
+  toujours, révoqué ou non ; le défi n'est pas répliqué.
+
+Ce que chaque dépôt devra faire :
+
+1. **Serveur (carbon)** : `Ressource::Attestation` (`POST`, `Exigence::Aucune`,
+   traité avant l'exigence comme `/v1/defi`) ; le corps à queue variable dans
+   `asl-api` (modèle `CreationDeCompte`) ; `Attestation::Attendue` dans
+   `asl-registre` (format, cran mineur) ; `creer_un_appareil` écrit `attendue`
+   sous `required` au lieu de refuser ; la garde `attendue → 401` sur la
+   preuve nue ; `attester_un_appareil` (preuve + `verifier_l_attestation` +
+   écriture, une transaction) ; l'opération `appareil-atteste` ; `attendue`
+   rendu par les deux `GET …/appareils` ; fuzz du décodeur ; journal.
+2. **Client (carbon)** : `asl-client::appareil` — le message d'attestation
+   de clé avant la clé sur une connexion **tenue sans identité**, puis la
+   preuve avec chaîne ; `asl-client-tokio` — ne plus fermer la connexion nue à
+   `connecter` sous identité quand un défi y attend ; ABI
+   `asl_appareil_rejoindre_atteste` (ou équivalent), les quatre liaisons, JNI ;
+   `asl enrolled` affiche « en attente ». Bump mineur.
+3. **Android (carbon)** : `AnnuaireReel.rejoindre` — le défi et la clé AVANT
+   le QR, sur la connexion tenue ; la clé générée avec le condensat ;
+   `POST /v1/attestation` à la preuve ; `Appareil.Attestation.ATTENDUE`
+   (« en attente d'attestation ») ; le cas de la coupure (recommencer,
+   nouvelle clé).
+4. **iOS / macOS (oxygen)** : les mêmes ; App Attest quand un iPhone sera là.
+   Le Mac (sans enclave attestable) rejoint en `aucune`.
+
 **« Effacer mon compte » — spécifié le 2026-09-18 (carbon), ~~à coder~~
 fait :** serveur PR #26 (0.11.0, `5c89c08`, déployé sur les deux racines le
 19/09), Android PR #10 (0.6.0, versionCode 9), iOS/macOS PR #14 (0.7.0,
