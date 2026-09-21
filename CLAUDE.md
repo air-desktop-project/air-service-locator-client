@@ -423,8 +423,8 @@ a un —, l'aide en anglais, `asl-client-tokio::etat_de_la_replication`, l'ABI C
 inchangée (c'est un verbe de CLI, pas d'ABI), bump mineur. La connexion est
 tenue sur la voie machine, comme `asl machines`. Rien à faire côté apps.
 
-~~Pas encore de verbe~~ — **`asl replication`, PR client #11 (0.8.0, branche
-`replication`, ouverte le 2026-09-21, carbon)** : `Connexion::etat_de_la_replication`
+~~Pas encore de verbe~~ — **`asl replication`, PR client #11 (0.8.0, `c37793c`,
+mergée le 2026-09-21, carbon)** : `Connexion::etat_de_la_replication`
 et `Connexion::distante` dans `asl-client-tokio`, `Commande::Replication`,
 une ligne par racine jointe (pair, voie, `compteur`, `appliqué`). **Sans
 l'écart `compteur − applique`** : le premier jet le rendait, et le journal
@@ -439,8 +439,8 @@ gagnerait un champ « dernière estampille écrite ici ». Les règles client de
 dans la reprise du daemon) restent à faire, à part.
 
 **« Attester un appareil qui rejoint » — spécifié le 2026-09-21 (carbon), à
-coder.** PR serveur #27 (`attestation-rejoindre`, 0.11.1, docs seules, non
-mergée) : `protocole.md` §2.2 « Attester un appareil qui rejoint — la preuve
+coder.** PR serveur #27 (`attestation-rejoindre`, 0.11.1, docs seules, mergée
+`6aa9f93`) : `protocole.md` §2.2 « Attester un appareil qui rejoint — la preuve
 et la chaîne, d'un même défi », `modele.md` §2.2 (valeur `attendue`),
 `contraintes.md` C19, `replication.md` §3.2/§5.2 et décision 25. Lis-les en
 entier avant de coder. Ce qui est tranché :
