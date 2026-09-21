@@ -165,9 +165,12 @@ pair réglé), son horloge (`compteur`) et le curseur qu'elle tient pour l'autre
 appliquée — `replication.md` §8 du serveur). **L'écart entre les deux n'est
 pas un retard** : l'horloge compte aussi les écritures de la racine jointe, le
 curseur ne compte que celles de l'autre. Ce qui se conclut se conclut depuis
-les deux — lancé deux fois, il joint en général les deux racines — : une
-racine est à jour sur l'autre quand son `appliqué` égale le `compteur` de
-l'autre, et `coupée` est ce qui laisse quelque chose en attente.
+les deux — lancé deux fois, il joint en général les deux racines — : si
+l'`appliqué` d'une racine égale le `compteur` de l'autre, elle a tout
+appliqué ; en dessous, **on ne sait pas** — l'autre a peut-être haussé son
+horloge sur ce qu'elle recevait sans rien écrire (les racines du 21/09 :
+`23` contre `35`, et rien en retard). Ce qui prouve l'état, c'est la voie :
+`ouverte` ne laisse rien en attente plus d'une seconde, `coupée` si.
 
 **Il n'existe aucun mode anonyme.** Une résolution hors d'une connexion
 authentifiée par une clé n'est pas prévue par le serveur, et un client qui

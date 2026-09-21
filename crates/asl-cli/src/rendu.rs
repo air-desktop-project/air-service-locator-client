@@ -632,9 +632,13 @@ fn appareil_vu(octets: &[u8]) -> Result<AppareilVu, String> {
 ///
 /// Ce qui se conclut, et depuis les DEUX racines — l'alias en joint une à la
 /// fois, et `asl replication` lancé deux fois joint en général les deux — :
-/// une racine est à jour sur l'autre quand son `applique` égale le `compteur`
-/// de l'autre ; et la voie dite `coupée` est ce qui laisse quelque chose en
-/// attente. Le reste, c'est au serveur de le rendre, s'il veut le dire.
+/// si l'`applique` d'une racine égale le `compteur` de l'autre, elle a tout
+/// appliqué ; en dessous, on ne sait pas — l'autre hausse aussi son horloge
+/// sur ce qu'elle reçoit, sans rien écrire (le 21/09 : `23` contre `35`, rien
+/// en retard). La preuve de l'état, c'est la voie : `ouverte` ne laisse rien
+/// en attente plus d'une seconde, `coupée` si. Le reste — la dernière
+/// estampille écrite par chaque racine, seule à rendre l'écart lisible —,
+/// c'est au serveur de le rendre (`replication.md` §8, à faire).
 ///
 /// **UNE RACINE SEULE LE DIT**, et dit ce que cela veut dire : sans pair réglé,
 /// il n'y a rien à répliquer — c'est un banc, pas une panne.
