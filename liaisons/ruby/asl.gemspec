@@ -20,7 +20,7 @@
 
 Gem::Specification.new do |gemme|
   gemme.name = "asl-client"
-  gemme.version = "0.8.0"
+  gemme.version = "0.8.1"
   gemme.summary = "Annoncer un service et retrouver un port, par l'annuaire air-service-locator."
   gemme.description = <<~TEXTE
     Un daemon qui écoute sur un port choisi au démarrage est un daemon que ses
