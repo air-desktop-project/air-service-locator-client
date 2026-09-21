@@ -106,6 +106,13 @@ impl ams_h3::Service for FauxAnnuaire {
             } else if chemin.starts_with(b"/v1/utilisateurs/") && chemin.ends_with(b"/machines") {
                 // Un autre compte : rien d'accordé, une liste vide (C9).
                 Some("[]".to_owned())
+            } else if chemin == b"/v1/replication" {
+                // La voie vers l'autre racine, telle que `asl-session` l'écrit :
+                // ouverte, et vingt-deux opérations pas encore appliquées.
+                Some(format!(
+                    r#"{{"pair":"{}","voie":"ouverte","compteur":4812,"applique":4790}}"#,
+                    pair().texte().as_str()
+                ))
             } else if chemin == b"/v1/moi/appareils" {
                 Some(format!(
                     concat!(
@@ -156,6 +163,11 @@ pub fn machine() -> asl_id::Identifiant {
 /// Le compte qui la possède.
 pub fn proprietaire() -> asl_id::Identifiant {
     asl_id::Identifiant::depuis_entropie(asl_id::Genre::Utilisateur, [0x55; 16])
+}
+
+/// L'autre racine, telle que le faux annuaire la nomme.
+pub fn pair() -> asl_id::Identifiant {
+    asl_id::Identifiant::depuis_entropie(asl_id::Genre::Annuaire, [0x4E; 16])
 }
 
 /// Le `n`-ième appareil de ce compte.

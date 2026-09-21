@@ -456,6 +456,43 @@ fn compte_etranger(demande: asl_id::Identifiant, notre: asl_id::Identifiant) -> 
     ))
 }
 
+// ── `asl replication` ───────────────────────────────────────────────────────
+
+/// L'état de la voie entre les deux racines, vu de celle qu'on a jointe.
+///
+/// # ELLE DIT D'ABORD QUI A RÉPONDU, PARCE QUE L'ALIAS NE LE DIT PAS
+///
+/// `asl-root.air-desktop.org` rend les deux racines, et la tournée en joint
+/// une — sans dire laquelle, et la réponse ne le dit pas non plus
+/// (`replication.md` §6). Or ce que `GET /v1/replication` rend est **l'état vu
+/// de cette racine-là** : son horloge, son curseur sur l'autre. Une ligne qui
+/// dirait « ouverte, à jour » sans dire de qui ne prouverait rien sur l'autre
+/// ; `asl replication` lancé deux fois joint, en général, les deux.
+///
+/// C'est un verbe de CLI, sans ABI (C12 n'est pas touchée) : comme
+/// `asl machines`, il vit sur la voie machine, une connexion prouvée, une
+/// requête, et la main rendue.
+pub async fn replication(invocation: &Invocation, identite: &Identite) -> Sortie {
+    let reglages = reglages(invocation)?;
+    let mut connexion = ouvrir(&reglages).await?;
+    connexion
+        .authentifier(identite)
+        .await
+        .map_err(refus_de_l_annuaire)?;
+    let corps = connexion
+        .etat_de_la_replication()
+        .await
+        .map_err(refus_de_l_annuaire)?;
+    let dit = rendu::replication(&corps).map_err(Issue::Injoignable)?;
+    match connexion.distante() {
+        Ok(ou) => println!("annuaire       {ou}"),
+        Err(quoi) => println!("annuaire       inconnu — {quoi}"),
+    }
+    print!("{dit}");
+    let _ = connexion.fermer().await;
+    Ok(())
+}
+
 // ── `asl identity` ──────────────────────────────────────────────────────────
 
 /// Dit qui est cette machine et pour qui elle agit, **sans rien joindre**.

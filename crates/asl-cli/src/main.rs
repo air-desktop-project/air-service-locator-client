@@ -150,6 +150,11 @@ COMMANDS
                                       be named only to confirm it is this one:
                                       a device never leaves its account.
 
+    replication                       The state of the link between the two
+                                      root directories, as seen by the one
+                                      reached: peer, open or cut, clock, and
+                                      what is left to catch up.
+
     identity                          Who this machine is and whom it acts for,
                                       without connecting.
 
@@ -188,7 +193,8 @@ EXAMPLES
     asl where depot
     asl machines u-5884A5EE7THEKHBQ3BT0VPGJKN
     asl machines
-    asl enrolled"
+    asl enrolled
+    asl replication"
     );
 }
 
@@ -260,6 +266,10 @@ async fn conduire(invocation: &Invocation) -> Sortie {
         // Elle lit la fiche entière elle-même : le compte qu'elle porte est
         // ce qui permet de refuser un compte étranger avant de rien joindre.
         Commande::Enroles { compte } => commandes::enroles(invocation, &dossier, *compte).await,
+        Commande::Replication => {
+            let identite = identite(&dossier)?;
+            commandes::replication(invocation, &identite).await
+        }
         // Hors ligne : rien à joindre.
         Commande::Identite => commandes::identite(&dossier),
     }

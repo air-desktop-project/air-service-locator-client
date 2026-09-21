@@ -558,6 +558,36 @@ async fn les_appareils_du_proprietaire_se_lisent_avec_le_lecteur_de_l_ecran_comp
     tache.abort();
 }
 
+#[tokio::test]
+async fn l_etat_de_la_replication_se_lit_sur_la_voie_machine() {
+    // **UN OBJET, PAS UNE LISTE** (`replication.md` §8) : le pair, la voie,
+    // l'horloge et le curseur — rendus tels quels, c'est `asl` qui les met en
+    // français. Le banc les sert sans vérifier la preuve ; ce qu'on éprouve
+    // est le chemin demandé et le corps rendu intact.
+    let (_atelier, autorite, cert, cle) = materiel("etat-de-la-replication");
+    let (adresse, tache) = lever(cert, cle, FauxAnnuaire).await;
+
+    let mut connexion = Connexion::ouvrir(adresse, "localhost", &autorite, &|| [0x35; 16])
+        .await
+        .expect("la poignée de main");
+    let corps = connexion
+        .etat_de_la_replication()
+        .await
+        .expect("l'annuaire répond");
+    let texte = String::from_utf8_lossy(&corps).into_owned();
+    assert!(texte.starts_with('{'), "un objet, pas une liste : {texte}");
+    assert!(texte.contains(banc::pair().texte().as_str()), "{texte}");
+    assert!(texte.contains(r#""voie":"ouverte""#), "{texte}");
+    assert!(texte.contains(r#""compteur":4812"#), "{texte}");
+    assert!(texte.contains(r#""applique":4790"#), "{texte}");
+    // Et l'on sait à qui l'on a parlé : c'est ce qu'un alias à deux racines
+    // ne dit pas.
+    assert_eq!(connexion.distante().expect("la socket le sait"), adresse);
+
+    let _ = connexion.fermer().await;
+    tache.abort();
+}
+
 // ── LE MAINTIEN, ET D'OÙ VIENT SA CADENCE ───────────────────────────────────
 
 #[tokio::test]

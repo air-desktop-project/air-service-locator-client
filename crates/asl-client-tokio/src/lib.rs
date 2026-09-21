@@ -500,6 +500,20 @@ impl Connexion {
         self.socket.local_addr().map_err(Faute::Socket)
     }
 
+    /// L'adresse de l'annuaire que cette connexion a joint.
+    ///
+    /// **UN NOM QUI REND PLUSIEURS ADRESSES N'EN JOINT QU'UNE**, et la tournée
+    /// choisit laquelle : ce qu'une réponse dit vaut pour cette racine-là, et
+    /// une réponse ne dit pas d'où elle vient (`replication.md` §6). C'est ici
+    /// qu'on l'apprend.
+    ///
+    /// # Errors
+    ///
+    /// [`Faute::Socket`] si la socket ne sait plus dire à qui elle parle.
+    pub fn distante(&self) -> Result<SocketAddr, Faute> {
+        self.socket.peer_addr().map_err(Faute::Socket)
+    }
+
     /// La connexion est-elle encore là ?
     #[must_use]
     pub const fn vivante(&self) -> bool {
@@ -735,6 +749,34 @@ impl Connexion {
     /// preuve ou clé révoquée, `404` sur un annuaire d'avant 0.10.0.
     pub async fn appareils_du_proprietaire(&mut self) -> Result<Vec<u8>, Faute> {
         let reponse = self.requete(b"GET", b"/v1/moi/appareils", &[], b"").await?;
+        reponse.exige(200)?;
+        Ok(reponse.corps)
+    }
+
+    /// L'état de la voie entre cette racine et l'autre — `GET /v1/replication`
+    /// (`replication.md` §8), **vu de la racine que cette connexion a jointe**.
+    ///
+    /// # SUR LA VOIE MACHINE, ET C'EST POURQUOI IL EST ICI
+    ///
+    /// L'annuaire ne le rend qu'à une machine qui a prouvé sa clé
+    /// (`Exigence::Machine`, comme `/v1/moi`) : dire à un inconnu que la voie
+    /// est coupée, c'est lui dire l'heure où une unicité se gagne sur une
+    /// racine isolée. L'exploitant le demande depuis une machine enrôlée, ce
+    /// qu'il a toujours sous la main — et ce verbe est le sien.
+    ///
+    /// Rend UN objet : `{"pair":"n-…","voie":"ouverte"|"coupée","compteur":N,
+    /// "applique":M}` quand un pair est réglé, `{"voie":"seule","compteur":N}`
+    /// quand la racine tourne seule — **sans `pair` ni `applique`**, et un
+    /// lecteur regarde `voie` d'abord. Les deux nombres sont l'horloge de la
+    /// racine et le curseur qu'elle tient pour le pair ; voie ouverte, le
+    /// second rejoint le premier en moins d'une seconde.
+    ///
+    /// # Errors
+    ///
+    /// Celles de [`Connexion::requete`], plus [`Faute::Statut`] — `401` sans
+    /// preuve ou clé révoquée, `404` sur un annuaire d'avant 0.8.0.
+    pub async fn etat_de_la_replication(&mut self) -> Result<Vec<u8>, Faute> {
+        let reponse = self.requete(b"GET", b"/v1/replication", &[], b"").await?;
         reponse.exige(200)?;
         Ok(reponse.corps)
     }
