@@ -108,6 +108,7 @@ fn l_aide_repond_quand_rien_n_est_configure() {
             "where ",
             "machines [u-…]",
             "enrolled [u-…]",
+            "replication",
             "identity",
             "diagnose",
         ] {
@@ -134,6 +135,7 @@ fn ce_qui_ne_se_lit_pas_rend_un_et_le_dit_sur_stderr() {
         vec!["machines", "pas-un-utilisateur"],
         vec!["enrolled", "pas-un-utilisateur"],
         vec!["enrolled", "u-5884A5EE7THEKHBQ3BT0VPGJKN", "encore"],
+        vec!["replication", "n-0PWT8HZDQ7V4XK2M9RJ3TB6ANE"],
         vec!["diagnose", "et", "puis"],
         vec!["--directory"],
     ] {
@@ -363,6 +365,8 @@ fn enrolled_et_machines_avec_le_compte_de_la_machine_ou_sans_vont_a_l_annuaire()
         vec!["enrolled", notre.as_str()],
         vec!["machines"],
         vec!["machines", notre.as_str()],
+        // Même voie, même identité, même issue quand personne ne répond.
+        vec!["replication"],
     ] {
         let mut arguments = vec![
             "--state",

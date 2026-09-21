@@ -60,6 +60,8 @@ pub enum Commande {
         /// toute requête.
         compte: Option<Identifiant>,
     },
+    /// L'état de la voie entre les deux racines, vu de celle qu'on a jointe.
+    Replication,
     /// Dire qui est cette machine et pour qui elle agit, **hors ligne**.
     Identite,
     /// Dire ce qu'on sait de l'annuaire, et ce qu'on ne sait pas.
@@ -318,6 +320,9 @@ where
         "enrolled" => Commande::Enroles {
             compte: utilisateur_facultatif(suite.next())?,
         },
+        // Sans argument : l'annuaire joint dit lui-même de quelle voie il
+        // parle, et le client n'a pas à nommer un pair qu'il ne connaît pas.
+        "replication" => Commande::Replication,
         "identity" => Commande::Identite,
         _ => return Err(Faute::CommandeInconnue(commande)),
     };
@@ -477,6 +482,22 @@ mod essais {
                 machine: Some(machine),
                 service: "depot".to_owned()
             }
+        );
+    }
+
+    #[test]
+    fn replication_ne_prend_rien() {
+        // Pas de pair à nommer : c'est l'annuaire joint qui dit de quelle voie
+        // il parle. Un mot de plus est donc un mot de trop.
+        assert_eq!(
+            lire(&["replication"]).unwrap().commande,
+            Commande::Replication
+        );
+        assert_eq!(
+            lire(&["replication", "n-0PWT8HZDQ7V4XK2M9RJ3TB6ANE"]),
+            Err(Faute::ArgumentEnTrop(
+                "n-0PWT8HZDQ7V4XK2M9RJ3TB6ANE".to_owned()
+            ))
         );
     }
 

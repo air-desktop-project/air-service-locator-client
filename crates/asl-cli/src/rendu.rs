@@ -512,21 +512,29 @@ fn machine_vue(octets: &[u8]) -> Result<(asl_id::Identifiant, String), String> {
 pub fn appareils(corps: &[u8]) -> Result<String, String> {
     let elements = asl_proto::cadrage::elements(corps)
         .map_err(|quoi| format!("la liste de l'annuaire ne se lit pas : {quoi:?}"))?;
+    let vus = elements
+        .map(appareil_vu)
+        .collect::<Result<Vec<AppareilVu>, String>>()?;
+    // **LA COLONNE DU MODÈLE SE MESURE SUR LA LISTE**, et non sur une largeur
+    // fixe : un modèle est du texte libre jusqu'à soixante-quatre octets, et
+    // une largeur devinée décalait tout ce qui suit dès qu'un seul la passait.
+    let largeur = vus
+        .iter()
+        .map(|vu| vu.modele.as_deref().unwrap_or("?").chars().count())
+        .max()
+        .unwrap_or(1);
     let mut texte = String::new();
-    let mut combien = 0_usize;
-    for element in elements {
-        let vu = appareil_vu(element)?;
+    for vu in &vus {
         texte.push_str(&format!(
-            "{}   {:<20}   {:<8}   {}{}\n",
+            "{}   {:<largeur$}   {:<8}   {}{}\n",
             vu.appareil.texte().as_str(),
             vu.modele.as_deref().unwrap_or("?"),
             vu.plateforme.as_deref().unwrap_or("?"),
             vu.attestation,
             if vu.revoque { "   révoqué" } else { "" }
         ));
-        combien = combien.saturating_add(1);
     }
-    if combien == 0 {
+    if vus.is_empty() {
         // Un compte a toujours l'appareil qui l'a ouvert : une liste vide est
         // une réponse qu'on n'attend pas, et le dire vaut mieux qu'un silence.
         texte.push_str("aucun appareil : l'annuaire n'en rend aucun pour ce compte.\n");
@@ -604,9 +612,219 @@ fn appareil_vu(octets: &[u8]) -> Result<AppareilVu, String> {
     })
 }
 
+/// L'état de la voie entre les deux racines — `GET /v1/replication` —, sur
+/// une ligne, comme une machine d'`asl machines` : le pair, la voie, et les
+/// deux nombres, **sans en tirer un écart**.
+///
+/// # POURQUOI L'ÉCART N'EST PAS ÉCRIT, ALORS QU'IL SEMBLE ÊTRE CE QU'ON VEUT
+///
+/// `compteur` est l'horloge de Lamport de la racine jointe ; `applique` est le
+/// curseur qu'elle tient pour le pair — l'estampille de la dernière opération
+/// du pair qu'elle a appliquée (`replication.md` §4, §5.3). **L'horloge compte
+/// aussi les écritures de la racine elle-même**, et le curseur ne compte que
+/// celles du pair : les deux ne coïncident qu'au moment où la dernière
+/// écriture vue est celle du pair. Vérifié sur les racines le 2026-09-21 :
+/// `compteur 35, applique 23`, voie ouverte, rien à rattraper — les douze
+/// d'écart étaient les propres écritures de la racine jointe, l'autre n'ayant
+/// rien écrit depuis l'amorçage. Un « en retard de 12 » aurait menti, et c'est
+/// précisément le genre de mensonge qu'un outil de diagnostic ne peut pas se
+/// permettre (voir l'en-tête de ce module).
+///
+/// Ce qui se conclut, et depuis les DEUX racines — l'alias en joint une à la
+/// fois, et `asl replication` lancé deux fois joint en général les deux — :
+/// une racine est à jour sur l'autre quand son `applique` égale le `compteur`
+/// de l'autre ; et la voie dite `coupée` est ce qui laisse quelque chose en
+/// attente. Le reste, c'est au serveur de le rendre, s'il veut le dire.
+///
+/// **UNE RACINE SEULE LE DIT**, et dit ce que cela veut dire : sans pair réglé,
+/// il n'y a rien à répliquer — c'est un banc, pas une panne.
+///
+/// # Erreurs
+///
+/// Rend `Err` avec ce qui n'a pas pu être lu.
+pub fn replication(corps: &[u8]) -> Result<String, String> {
+    let etat = replication_vue(corps)?;
+    let mut texte = String::new();
+    match etat.pair {
+        Some((pair, applique)) => {
+            texte.push_str(&format!(
+                "{}   {:<8}   compteur {}   appliqué {}\n",
+                pair.texte().as_str(),
+                etat.voie,
+                etat.compteur,
+                applique
+            ));
+        }
+        None => {
+            texte.push_str(&format!("{:<8}   compteur {}\n", etat.voie, etat.compteur));
+            texte.push_str(
+                "aucun pair réglé : cette racine tourne seule, et rien n'y est à\n\
+                 répliquer — un banc, pas une panne.\n",
+            );
+        }
+    }
+    Ok(texte)
+}
+
+/// L'état de la réplication tel que l'annuaire le rend, une fois lu.
+struct ReplicationVue {
+    /// Le pair et le curseur qu'on tient pour lui — ensemble, ou ni l'un ni
+    /// l'autre : c'est la cohérence que le lecteur vérifie.
+    pair: Option<(asl_id::Identifiant, u64)>,
+    voie: String,
+    compteur: u64,
+}
+
+/// Lit `{"pair":"n-…","voie":"…","compteur":N,"applique":M}` — ou, seule,
+/// `{"voie":"seule","compteur":N}`.
+///
+/// **LE MÊME LECTEUR QUE [`machine_vue`]**, et la même tolérance pour un champ
+/// de demain, à ceci près qu'un champ inconnu peut ici porter un nombre : on
+/// regarde ce qui vient, et l'on saute ce qu'on trouve. **Le mot `voie` est
+/// rendu tel quel**, même s'il n'est pas l'un des trois qu'on connaît — un
+/// annuaire de demain peut en dire un quatrième, et le mot qu'il emploie est
+/// déjà celui qu'on veut lire. Ce qui est vérifié est la COHÉRENCE : un pair
+/// sans curseur, ou un curseur sans pair, n'est pas un état, c'est une réponse
+/// qu'on ne comprend pas.
+fn replication_vue(octets: &[u8]) -> Result<ReplicationVue, String> {
+    let mut lecteur = asl_proto::cadrage::Lecteur::nouveau(octets);
+    let faute =
+        |quoi: asl_proto::Erreur| format!("l'état de la réplication ne se lit pas : {quoi:?}");
+    lecteur.attendre(b'{', "un objet").map_err(faute)?;
+    let mut pair = None;
+    let mut voie = None;
+    let mut compteur = None;
+    let mut applique = None;
+    loop {
+        lecteur.sauter_blancs();
+        let champ = lecteur.chaine().map_err(faute)?;
+        lecteur.attendre(b':', "deux-points").map_err(faute)?;
+        match champ {
+            "pair" => {
+                let texte = lecteur.chaine().map_err(faute)?;
+                pair = Some(
+                    asl_id::Identifiant::analyser_genre(asl_id::Genre::Annuaire, texte)
+                        .map_err(|quoi| format!("`{texte}` n'est pas une racine : {quoi:?}"))?,
+                );
+            }
+            // `coupée` porte un accent : c'est `texte_libre` qui sait le lire.
+            "voie" => voie = Some(lecteur.texte_libre().map_err(faute)?.to_owned()),
+            "compteur" => compteur = Some(lecteur.entier().map_err(faute)?),
+            "applique" => applique = Some(lecteur.entier().map_err(faute)?),
+            // **UN CHAMP INCONNU SE SAUTE**, qu'il porte un mot ou un nombre.
+            _ => {
+                lecteur.sauter_blancs();
+                if lecteur.regarder() == Some(b'"') {
+                    lecteur.texte_libre().map_err(faute)?;
+                } else {
+                    lecteur.entier().map_err(faute)?;
+                }
+            }
+        }
+        lecteur.sauter_blancs();
+        match lecteur.regarder() {
+            Some(b',') => lecteur.avancer(),
+            _ => break,
+        }
+    }
+    lecteur.attendre(b'}', "la fin de l'objet").map_err(faute)?;
+    lecteur.fin().map_err(faute)?;
+    let voie = voie.ok_or_else(|| "il manque `voie`".to_owned())?;
+    let compteur = compteur.ok_or_else(|| "il manque `compteur`".to_owned())?;
+    let pair = match (pair, applique) {
+        (Some(pair), Some(applique)) => Some((pair, applique)),
+        (None, None) => None,
+        (Some(_), None) => return Err("un pair est nommé, sans `applique`".to_owned()),
+        (None, Some(_)) => return Err("`applique` est rendu, sans pair".to_owned()),
+    };
+    Ok(ReplicationVue {
+        pair,
+        voie,
+        compteur,
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{appareils, machines, reponses, vu};
+    use super::{appareils, machines, replication, reponses, vu};
+
+    #[test]
+    fn la_replication_se_rend_sur_une_ligne_sans_inventer_un_retard() {
+        let pair = asl_id::Identifiant::depuis_entropie(asl_id::Genre::Annuaire, [0x4E; 16]);
+        // Voie ouverte, curseur égal à l'horloge.
+        let corps = format!(
+            r#"{{"pair":"{}","voie":"ouverte","compteur":4812,"applique":4812}}"#,
+            pair.texte().as_str()
+        );
+        let dit = replication(corps.as_bytes()).expect("lisible");
+        assert_eq!(dit.lines().count(), 1, "{dit}");
+        assert!(dit.starts_with(pair.texte().as_str()), "{dit}");
+        assert!(dit.contains("ouverte"), "{dit}");
+        assert!(dit.contains("compteur 4812"), "{dit}");
+        assert!(dit.contains("appliqué 4812"), "{dit}");
+        // Voie coupée, et un curseur en deçà de l'horloge : les deux nombres
+        // sont rendus tels quels, **et rien n'est dit d'un retard** — l'écart
+        // peut n'être que les écritures de la racine jointe.
+        let corps = format!(
+            r#"{{"pair":"{}","voie":"coupée","compteur":4812,"applique":4790}}"#,
+            pair.texte().as_str()
+        );
+        let dit = replication(corps.as_bytes()).expect("lisible");
+        assert!(dit.contains("coupée"), "{dit}");
+        assert!(dit.contains("appliqué 4790"), "{dit}");
+        assert!(!dit.contains("retard"), "{dit}");
+        assert!(!dit.contains("22"), "{dit}");
+    }
+
+    #[test]
+    fn une_racine_seule_le_dit() {
+        let dit = replication(br#"{"voie":"seule","compteur":4812}"#).expect("lisible");
+        assert!(dit.starts_with("seule"), "{dit}");
+        assert!(dit.contains("compteur 4812"), "{dit}");
+        assert!(dit.contains("tourne seule"), "{dit}");
+        assert!(!dit.contains("appliqué"), "{dit}");
+    }
+
+    #[test]
+    fn un_etat_mal_forme_est_refuse_et_un_champ_neuf_se_saute() {
+        let pair = asl_id::Identifiant::depuis_entropie(asl_id::Genre::Annuaire, [0x4E; 16]);
+        let machine = asl_id::Identifiant::depuis_entropie(asl_id::Genre::Machine, [0x4E; 16]);
+        for corps in [
+            &b"{"[..],
+            &b"[]"[..],
+            &br#"{"voie":"seule"}"#[..],
+            &br#"{"compteur":4812}"#[..],
+            &br#"{"voie":"seule","compteur":"4812"}"#[..],
+            &br#"{"voie":"seule","compteur":4812}{}"#[..],
+        ] {
+            assert!(
+                replication(corps).is_err(),
+                "{}",
+                String::from_utf8_lossy(corps)
+            );
+        }
+        // Une machine n'est pas une racine.
+        let faux = format!(
+            r#"{{"pair":"{}","voie":"ouverte","compteur":1,"applique":1}}"#,
+            machine.texte().as_str()
+        );
+        assert!(replication(faux.as_bytes()).is_err());
+        // Un pair sans curseur, un curseur sans pair : incohérents.
+        let faux = format!(
+            r#"{{"pair":"{}","voie":"ouverte","compteur":1}}"#,
+            pair.texte().as_str()
+        );
+        assert!(replication(faux.as_bytes()).is_err());
+        assert!(replication(br#"{"voie":"seule","compteur":1,"applique":1}"#).is_err());
+        // Un champ de demain — un mot, un nombre — et une voie d'un mot
+        // nouveau : lus.
+        let neuf = format!(
+            r#"{{"depuis":"hier","pair":"{}","voie":"en attente","retard_ms":12,"compteur":7,"applique":7}}"#,
+            pair.texte().as_str()
+        );
+        let dit = replication(neuf.as_bytes()).expect("lisible");
+        assert!(dit.contains("en attente"), "{dit}");
+    }
 
     #[test]
     fn une_liste_d_appareils_se_rend_ligne_par_ligne_revoques_compris() {
@@ -647,6 +865,36 @@ mod tests {
     fn une_liste_vide_d_appareils_le_dit() {
         let dit = appareils(b"[]").expect("lisible");
         assert!(dit.contains("aucun appareil"), "{dit}");
+    }
+
+    #[test]
+    fn les_colonnes_des_appareils_s_alignent_sur_le_modele_le_plus_long() {
+        // Un modèle plus long que la largeur qu'on aurait devinée ne décale
+        // pas les colonnes des autres : la plate-forme commence au même rang
+        // sur chaque ligne, accents comptés en caractères et non en octets.
+        let a1 = asl_id::Identifiant::depuis_entropie(asl_id::Genre::Appareil, [0x41; 16]);
+        let a2 = asl_id::Identifiant::depuis_entropie(asl_id::Genre::Appareil, [0x42; 16]);
+        let corps = format!(
+            concat!(
+                r#"[{{"appareil":"{}","attestation":"aucune","revoque":false,"plateforme":"macos","modele":"MacBook Pro 16 pouces, 2019, éprouvé"}},"#,
+                r#"{{"appareil":"{}","attestation":"android","revoque":false,"plateforme":"android","modele":"FP5"}}]"#
+            ),
+            a1.texte().as_str(),
+            a2.texte().as_str()
+        );
+        let dit = appareils(corps.as_bytes()).expect("lisible");
+        // La colonne « attestation » est la dernière de ces deux lignes ; elle
+        // commence au même rang de caractères sur l'une et l'autre.
+        let rang_du_dernier_mot = |ligne: &str| {
+            let dernier = ligne.split(' ').next_back().unwrap_or_default();
+            ligne
+                .chars()
+                .count()
+                .saturating_sub(dernier.chars().count())
+        };
+        let rangs: Vec<usize> = dit.lines().map(rang_du_dernier_mot).collect();
+        assert_eq!(rangs.len(), 2, "{dit}");
+        assert_eq!(rangs[0], rangs[1], "{dit}");
     }
 
     #[test]

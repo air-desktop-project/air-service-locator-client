@@ -156,6 +156,19 @@ plate-forme quand l'appareil s'est décrit) — pour soi seulement : nommer un
 autre compte est refusé avant toute requête, un appareil ne sort pas de son
 compte.
 
+**L'exploitant vérifie la voie entre les deux racines depuis une machine
+enrôlée** : `asl replication` demande `GET /v1/replication` à la racine que
+l'alias lui a donnée — et dit laquelle, puisque l'alias en rend deux — puis
+rend, sur une ligne, le pair, la voie (`ouverte`, `coupée`, ou `seule` sans
+pair réglé), son horloge (`compteur`) et le curseur qu'elle tient pour l'autre
+(`appliqué`, l'estampille de la dernière opération de l'autre qu'elle a
+appliquée — `replication.md` §8 du serveur). **L'écart entre les deux n'est
+pas un retard** : l'horloge compte aussi les écritures de la racine jointe, le
+curseur ne compte que celles de l'autre. Ce qui se conclut se conclut depuis
+les deux — lancé deux fois, il joint en général les deux racines — : une
+racine est à jour sur l'autre quand son `appliqué` égale le `compteur` de
+l'autre, et `coupée` est ce qui laisse quelque chose en attente.
+
 **Il n'existe aucun mode anonyme.** Une résolution hors d'une connexion
 authentifiée par une clé n'est pas prévue par le serveur, et un client qui
 coderait un chemin de repli « sans authentification » ouvrirait une porte qui
