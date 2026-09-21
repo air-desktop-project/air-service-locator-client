@@ -50,6 +50,7 @@ ASL_DEJA = -8
 ASL_PAS_DE_POUSSEE = -9
 ASL_NON_CONNECTE = -10
 ASL_SIGNATURE_REFUSEE = -11
+ASL_CHAINE_REFUSEE = -12
 
 ASL_IDENTIFIANT_OCTETS = 29
 ASL_GRAINE_OCTETS = 32
@@ -356,6 +357,15 @@ def _declarer(lib: ctypes.CDLL) -> ctypes.CDLL:
         ctypes.c_char_p,
     ]
     lib.asl_appareil_creer_compte.restype = i32
+
+    lib.asl_appareil_rejoindre_atteste.argtypes = [
+        opaque,
+        ctypes.c_char_p,
+        ctypes.c_uint8,
+        u8p,
+        ctypes.c_size_t,
+    ]
+    lib.asl_appareil_rejoindre_atteste.restype = i32
 
     lib.asl_appareil_requete.argtypes = [
         opaque,

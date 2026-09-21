@@ -7,9 +7,9 @@
 
 use asl_cle::{CleSecreteAppareil, Defi, LiaisonDeCanal, SignatureAppareil};
 use asl_client::appareil::{
-    FauteAppareil, PREUVE_AUTHENTIFICATION_OCTETS, Plateforme, cle_publique, corps_de_compte,
-    message_d_authentification, message_de_possession, message_pour_attestation,
-    message_pour_attestation_de_cle, preuve_d_authentification,
+    ATTESTATION_CORPS_MAX, FauteAppareil, PREUVE_AUTHENTIFICATION_OCTETS, Plateforme, cle_publique,
+    corps_d_attestation, corps_de_compte, message_d_authentification, message_de_possession,
+    message_pour_attestation, message_pour_attestation_de_cle, preuve_d_authentification,
 };
 use asl_id::{Genre, Identifiant};
 
@@ -205,4 +205,69 @@ fn une_signature_r_s_se_relit_telle_quelle() {
     // Ce que l'application rend : soixante-quatre octets, et rien à déplier.
     let signature = SignatureAppareil::depuis_octets([0x5A; 64]);
     assert_eq!(signature.octets(), &[0x5A; 64]);
+}
+
+#[test]
+fn le_corps_d_attestation_est_la_preuve_de_defi_puis_la_plate_forme_puis_la_chaine() {
+    let appareil = Identifiant::depuis_entropie(Genre::Appareil, [9; 16]);
+    let signature = [0x42; 64];
+    let preuve = preuve_d_authentification(appareil, &signature).expect("un appareil");
+    let mut sortie = [0_u8; ATTESTATION_CORPS_MAX];
+    assert_eq!(ATTESTATION_CORPS_MAX, asl_api::corps::ATTESTATION_CORPS_MAX);
+
+    // Sans chaîne, sous « aucune » : les quatre-vingt-un octets de
+    // `POST /v1/defi`, puis l'octet de plate-forme, et rien derrière.
+    let combien = corps_d_attestation(appareil, &signature, Plateforme::Aucune, &[], &mut sortie)
+        .expect("une preuve nue");
+    assert_eq!(combien, PREUVE_AUTHENTIFICATION_OCTETS + 1);
+    assert_eq!(&sortie[..PREUVE_AUTHENTIFICATION_OCTETS], &preuve[..]);
+    assert_eq!(sortie[PREUVE_AUTHENTIFICATION_OCTETS], 0);
+
+    // Avec une chaîne, sous Android : elle suit l'octet de plate-forme, et le
+    // serveur relit exactement ce qui a été composé.
+    let chaine = [7_u8; 300];
+    let combien = corps_d_attestation(
+        appareil,
+        &signature,
+        Plateforme::Android,
+        &chaine,
+        &mut sortie,
+    )
+    .expect("une chaîne Android");
+    assert_eq!(combien, PREUVE_AUTHENTIFICATION_OCTETS + 1 + chaine.len());
+    let relu = asl_api::corps::AttestationDAppareil::decoder(&sortie[..combien])
+        .expect("le serveur le relit");
+    assert_eq!(relu.appareil, appareil);
+    assert_eq!(relu.preuve, &signature);
+    assert_eq!(
+        relu.plateforme,
+        asl_api::corps::PlateformeAttestation::Android
+    );
+    assert_eq!(relu.attestation, &chaine);
+
+    // Une chaîne sous « aucune », ou aucune chaîne sous Android : refusé
+    // avant de partir, comme pour un compte.
+    assert!(matches!(
+        corps_d_attestation(appareil, &signature, Plateforme::Aucune, &[1], &mut sortie),
+        Err(FauteAppareil::Corps(_))
+    ));
+    assert!(matches!(
+        corps_d_attestation(appareil, &signature, Plateforme::Android, &[], &mut sortie),
+        Err(FauteAppareil::Corps(_))
+    ));
+    // Un tampon trop court est dit, et non tronqué.
+    let mut court = [0_u8; 10];
+    assert!(matches!(
+        corps_d_attestation(appareil, &signature, Plateforme::Aucune, &[], &mut court),
+        Err(FauteAppareil::Corps(_))
+    ));
+
+    // Une machine n'atteste rien : refusée avant de composer.
+    let machine = Identifiant::depuis_entropie(Genre::Machine, [9; 16]);
+    assert_eq!(
+        corps_d_attestation(machine, &signature, Plateforme::Aucune, &[], &mut sortie),
+        Err(FauteAppareil::PasUnAppareil {
+            obtenu: Genre::Machine
+        })
+    );
 }

@@ -11,6 +11,7 @@ use ams_proto_http::{Method, StatusCode};
 use asl_cle::CleSecreteAppareil;
 use asl_client::appareil::{
     Plateforme, corps_de_compte, message_d_authentification, message_de_possession,
+    message_pour_attestation_de_cle,
 };
 use asl_client_tokio::{Connexion, Faute, Tenue};
 use asl_id::{Genre, Identifiant};
@@ -35,6 +36,18 @@ impl ams_h3::Service for FauxAnnuaireMobile {
                 (StatusCode::NO_CONTENT, Vec::new())
             }
             (Method::Post, b"/v1/defi") => (StatusCode::UNAUTHORIZED, Vec::new()),
+            // La preuve d'un appareil qui rejoint, puis la plate-forme, puis
+            // la chaîne. Une chaîne qui commence par `0xFF` est « refusée » —
+            // le banc feint la posture exigée : `403`.
+            (Method::Post, b"/v1/attestation") if corps.len() >= 82 && corps[0] == b'a' => {
+                match (corps[81], corps.get(82)) {
+                    (0, None) => (StatusCode::NO_CONTENT, Vec::new()),
+                    (2, Some(0xFF)) => (StatusCode::FORBIDDEN, Vec::new()),
+                    (2, Some(_)) => (StatusCode::NO_CONTENT, Vec::new()),
+                    _ => (StatusCode::BAD_REQUEST, Vec::new()),
+                }
+            }
+            (Method::Post, b"/v1/attestation") => (StatusCode::UNAUTHORIZED, Vec::new()),
             // Un corps de compte sans attestation fait exactement 98 octets.
             (Method::Post, b"/v1/comptes") if corps.len() == 98 && corps[0] == 0 => (
                 StatusCode::CREATED,
@@ -169,6 +182,72 @@ async fn creer_un_compte_puis_servir_un_ecran_sur_la_connexion_tenue() {
     assert!(matches!(
         tenue.requete("GET", "/v1/autorisations", &[]).await,
         Err(Faute::Delai)
+    ));
+    tache.abort();
+}
+
+#[tokio::test]
+async fn un_appareil_qui_rejoint_prouve_et_atteste_sur_la_connexion_du_defi() {
+    let (_atelier, autorite, cert, cle) = materiel("rejoindre");
+    let (adresse, tache) = lever(cert, cle, FauxAnnuaireMobile).await;
+    let mut connexion = Connexion::ouvrir(adresse, "localhost", &autorite, &|| [0x33; 16])
+        .await
+        .expect("la connexion s'ouvre");
+
+    // **L'ORDRE DE `protocole.md` §2.2** : le défi d'abord, sur la connexion
+    // nue ; le condensat du message d'attestation de clé entre dans la
+    // génération de la clé ; l'ancien appareil apporte la clé et rend `a-…`.
+    let defi = connexion.defi().await.expect("un défi");
+    let liaison = connexion.liaison();
+    let _condensat_pour_le_keystore = message_pour_attestation_de_cle(&defi, &liaison);
+    let appareil = Identifiant::depuis_entropie(Genre::Appareil, [8; 16]);
+
+    // Puis la preuve — la même signature que `POST /v1/defi` — et la chaîne,
+    // sur la MÊME connexion.
+    let signature = secrete()
+        .signer(appareil, &defi, &liaison)
+        .expect("un appareil");
+    connexion
+        .attester(
+            appareil,
+            signature.octets(),
+            Plateforme::Android,
+            &[0x30; 200],
+        )
+        .await
+        .expect("la preuve tient, la chaîne est jugée, et le banc dit oui");
+
+    // Une chaîne refusée sous une posture exigée : `403`, rendu tel quel.
+    assert!(matches!(
+        connexion
+            .attester(
+                appareil,
+                signature.octets(),
+                Plateforme::Android,
+                &[0xFF; 200]
+            )
+            .await,
+        Err(Faute::Statut(403))
+    ));
+    // Sans chaîne, sous « aucune » : le verbe vaut `POST /v1/defi`.
+    connexion
+        .attester(appareil, signature.octets(), Plateforme::Aucune, &[])
+        .await
+        .expect("une preuve nue");
+    // Une chaîne sous « aucune » ne part pas : refusée avant de composer.
+    assert!(matches!(
+        connexion
+            .attester(appareil, signature.octets(), Plateforme::Aucune, &[1])
+            .await,
+        Err(Faute::Illisible)
+    ));
+    // Une machine n'atteste rien.
+    let machine = Identifiant::depuis_entropie(Genre::Machine, [8; 16]);
+    assert!(matches!(
+        connexion
+            .attester(machine, signature.octets(), Plateforme::Aucune, &[])
+            .await,
+        Err(Faute::Illisible)
     ));
     tache.abort();
 }

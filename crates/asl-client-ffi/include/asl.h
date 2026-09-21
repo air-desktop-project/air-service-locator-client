@@ -56,6 +56,10 @@ extern "C" {
 /* Voie mobile : le signataire de l'application n'a pas rendu de signature.
  * Pas une panne : le PORTEUR n'a pas confirmé, ou a annulé. Rien n'est parti. */
 #define ASL_SIGNATURE_REFUSEE -11
+/* Voie mobile : l'annuaire a vérifié la preuve et REFUSÉ la chaîne d'attestation,
+ * sous une posture qui l'exige (403). Cette clé ne s'attestera plus : nouvelle
+ * connexion, nouveau défi, nouvelle clé, et l'appareil apporté reste à révoquer. */
+#define ASL_CHAINE_REFUSEE    -12
 
 /* Tailles de tampons que l'appelant doit fournir. */
 #define ASL_IDENTIFIANT_OCTETS 29
@@ -342,9 +346,13 @@ void asl_appareil_libere(asl_appareil *appareil);
 
 /* Ouvre la connexion — IPv6 d'abord, la tournée des annuaires — et PROUVE LA CLÉ
  * si une identité est posée : c'est ici que le signataire est appelé, une fois.
- * Sans identité, la connexion s'ouvre nue, d'où l'on crée un compte. Une
- * connexion déjà ouverte est fermée d'abord. ASL_INJOIGNABLE si personne ne
- * répond, ASL_REFUSE si la preuve ne vérifie pas. */
+ * Sans identité, la connexion s'ouvre nue, d'où l'on crée un compte ou l'on
+ * rejoint. Une connexion déjà ouverte est fermée d'abord — SAUF une connexion
+ * nue qui tient un défi (asl_appareil_defi) quand une identité vient d'être
+ * posée : c'est un appareil qui rejoint, son défi a été tiré avant sa clé, et la
+ * preuve est portée sur cette connexion-là, sans chaîne (le chemin d'un Mac ; un
+ * appareil qui a une chaîne appelle asl_appareil_rejoindre_atteste). ASL_INJOIGNABLE
+ * si personne ne répond, ASL_REFUSE si la preuve ne vérifie pas. */
 int32_t asl_appareil_connecter(asl_appareil *appareil);
 
 /* Ferme la connexion, proprement. */
@@ -355,8 +363,9 @@ int32_t asl_appareil_deconnecter(asl_appareil *appareil);
 int32_t asl_appareil_liaison(asl_appareil *appareil, uint8_t liaison[ASL_DEFI_OCTETS]);
 
 /* Tire un défi (32 octets) sur la connexion en cours. Il ne sert qu'une fois,
- * et c'est le prochain asl_appareil_creer_compte qui le dépense — utile
- * seulement pour composer une attestation par-dessus. */
+ * et c'est le prochain asl_appareil_creer_compte, asl_appareil_rejoindre_atteste
+ * ou asl_appareil_connecter qui le dépense — utile seulement pour composer une
+ * attestation par-dessus, ou pour rejoindre. */
 int32_t asl_appareil_defi(asl_appareil *appareil, uint8_t defi[ASL_DEFI_OCTETS]);
 
 /* Ce dont une attestation couvre le condensat : domaine ‖ clé ‖ défi ‖ liaison,
@@ -381,6 +390,24 @@ int32_t asl_appareil_creer_compte(asl_appareil *appareil, uint8_t plateforme,
                                   const uint8_t *attestation, size_t taille,
                                   char compte_sortie[ASL_IDENTIFIANT_OCTETS],
                                   char appareil_sortie[ASL_IDENTIFIANT_OCTETS]);
+
+/* Prouve la clé de cet appareil — qui vient de REJOINDRE un compte — et présente
+ * sa chaîne, en un verbe (POST /v1/attestation), sur la connexion tenue. L'ORDRE :
+ * connecter nu, asl_appareil_defi, asl_appareil_message_pour_attestation_de_cle,
+ * générer la clé avec son condensat, asl_appareil_cle, montrer la clé à l'ancien
+ * appareil (qui l'apporte et rend `u-…` et `a-…`), puis ceci SUR LA MÊME
+ * CONNEXION — le défi vit ce que vit la connexion ; tombée, on recommence avec
+ * une nouvelle clé, et le premier `a-…` reste à révoquer. LE PORTEUR EST
+ * SOLLICITÉ ICI : la même signature que POST /v1/defi. `attestation` est vide
+ * pour ASL_PLATEFORME_AUCUNE (le verbe vaut alors POST /v1/defi), exigée sinon.
+ * ASL_OK : preuve tenue, chaîne jugée, identité INSTALLÉE, la connexion est
+ * celle de cet appareil (sous une posture facultative, une chaîne refusée rend
+ * ASL_OK quand même : l'appareil reste sans preuve). ASL_CHAINE_REFUSEE : 403.
+ * ASL_REFUSE : 401 (preuve, défi, révoqué, compte effacé — sans dire lequel)
+ * ou 400. */
+int32_t asl_appareil_rejoindre_atteste(asl_appareil *appareil, const char *identifiant,
+                                       uint8_t plateforme, const uint8_t *attestation,
+                                       size_t taille);
 
 /* Une requête de protocole.md §2 sur la connexion tenue : méthode (GET, POST,
  * PUT, PATCH, DELETE), chemin (`/v1/…`), corps JSON ou vide.

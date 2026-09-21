@@ -525,12 +525,22 @@ pub fn appareils(corps: &[u8]) -> Result<String, String> {
         .unwrap_or(1);
     let mut texte = String::new();
     for vu in &vus {
+        // **`attendue` SE DIT EN CLAIR** (`protocole.md` §2.2, 2026-09-21) :
+        // une clé apportée par un autre appareil du compte, que son porteur
+        // n'a pas encore prouvée ni attestée sous une posture exigée — il
+        // n'est pas entré. C'est le seul mot de la colonne qui décrit un état
+        // et non une caution ; les autres s'affichent tels quels.
+        let attestation = if vu.attestation == "attendue" {
+            "en attente d'attestation"
+        } else {
+            vu.attestation.as_str()
+        };
         texte.push_str(&format!(
             "{}   {:<largeur$}   {:<8}   {}{}\n",
             vu.appareil.texte().as_str(),
             vu.modele.as_deref().unwrap_or("?"),
             vu.plateforme.as_deref().unwrap_or("?"),
-            vu.attestation,
+            attestation,
             if vu.revoque { "   révoqué" } else { "" }
         ));
     }
@@ -945,6 +955,14 @@ mod tests {
         );
         let dit = appareils(neuf.as_bytes()).expect("lisible");
         assert!(dit.contains("invitation"), "{dit}");
+        // Un appareil apporté, pas encore prouvé : « en attente », en clair.
+        let attendu = format!(
+            r#"[{{"appareil":"{}","attestation":"attendue","revoque":false,"plateforme":"android","modele":"FP5"}}]"#,
+            a.texte().as_str()
+        );
+        let dit = appareils(attendu.as_bytes()).expect("lisible");
+        assert!(dit.contains("en attente d'attestation"), "{dit}");
+        assert!(!dit.contains("attendue"), "{dit}");
     }
 
     #[test]

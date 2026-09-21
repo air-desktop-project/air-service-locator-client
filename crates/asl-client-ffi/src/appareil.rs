@@ -41,9 +41,9 @@ use asl_client_tokio::{Annuaire, Reglages, Tenue};
 use asl_id::{Genre, Identifiant};
 
 use crate::{
-    ASL_ARGUMENT, ASL_CONFIGURATION, ASL_IDENTIFIANT_OCTETS, ASL_INJOIGNABLE, ASL_INTERNE,
-    ASL_NON_CONNECTE, ASL_OK, ASL_PAS_D_IDENTITE, ASL_SIGNATURE_REFUSEE, ASL_TAMPON_TROP_PETIT,
-    PLAFOND_MS, chaine, ecrire_chaine, ouvrir, protege, traduire,
+    ASL_ARGUMENT, ASL_CHAINE_REFUSEE, ASL_CONFIGURATION, ASL_IDENTIFIANT_OCTETS, ASL_INJOIGNABLE,
+    ASL_INTERNE, ASL_NON_CONNECTE, ASL_OK, ASL_PAS_D_IDENTITE, ASL_REFUSE, ASL_SIGNATURE_REFUSEE,
+    ASL_TAMPON_TROP_PETIT, PLAFOND_MS, chaine, ecrire_chaine, ouvrir, protege, traduire,
 };
 
 /// Combien d'octets fait une clé publique d'appareil : P-256, SEC1 compressé.
@@ -396,10 +396,19 @@ pub unsafe extern "C" fn asl_appareil_libere(appareil: *mut AslAppareil) {
 /// **C'EST ICI QUE LE PORTEUR EST SOLLICITÉ**, une fois : si une identité est
 /// posée, le signataire est appelé sur le message d'authentification, et la
 /// connexion en hérite pour toute sa durée. Sans identité, la connexion s'ouvre
-/// nue — c'est l'état d'où l'on crée un compte.
+/// nue — c'est l'état d'où l'on crée un compte, ou d'où l'on rejoint.
 ///
-/// Une connexion déjà ouverte est fermée d'abord. Rend `ASL_INJOIGNABLE` si
-/// aucun annuaire ne répond, `ASL_REFUSE` si la preuve ne vérifie pas.
+/// Une connexion déjà ouverte est fermée d'abord — **sauf une connexion nue
+/// qui tient un défi**, quand une identité vient d'être posée : c'est un
+/// appareil qui rejoint (`protocole.md` §2.2), son défi a été tiré AVANT sa
+/// clé, et la fermer tuerait le défi avec elle. La preuve est alors portée
+/// sur cette connexion-là, avec ce défi-là, par `POST /v1/defi` — sans
+/// chaîne : c'est le chemin d'un appareil qui n'a rien à attester, un Mac.
+/// Un appareil qui a une chaîne appelle [`asl_appareil_rejoindre_atteste`] à
+/// la place.
+///
+/// Rend `ASL_INJOIGNABLE` si aucun annuaire ne répond, `ASL_REFUSE` si la
+/// preuve ne vérifie pas.
 ///
 /// # Safety
 ///
@@ -415,6 +424,36 @@ pub unsafe extern "C" fn asl_appareil_connecter(appareil: *mut AslAppareil) -> i
             Ok(reglages) => reglages,
             Err(quoi) => return quoi,
         };
+        if let (Some(identite), Some(defi), Ok(tenue)) =
+            (appareil.identite, appareil.defi, appareil.tenue())
+        {
+            let tenue = tenue.clone();
+            let signataire = match appareil.signataire() {
+                Ok(signataire) => *signataire,
+                Err(quoi) => return quoi,
+            };
+            // **LE DÉFI EST DÉPENSÉ, QUE LA PREUVE TIENNE OU NON** : l'annuaire
+            // le consomme à la première preuve, et un second essai avec lui
+            // rendrait `401` sans rien dire de plus.
+            appareil.defi = None;
+            let issue = bloquer(&appareil.moteur, async move {
+                let message = regles::message_d_authentification(identite, &defi, &tenue.liaison())
+                    .map_err(|_| ASL_INTERNE)?;
+                let signature = signataire.signer(&message)?;
+                let corps = regles::preuve_d_authentification(identite, &signature)
+                    .map_err(|_| ASL_INTERNE)?;
+                let reponse = tenue
+                    .requete("POST", "/v1/defi", &corps)
+                    .await
+                    .map_err(traduire)?;
+                reponse.exige(204).map_err(traduire)
+            })
+            .and_then(|issue| issue);
+            return match issue {
+                Ok(()) => ASL_OK,
+                Err(quoi) => quoi,
+            };
+        }
         if let Some(ancienne) = appareil.tenue.take() {
             appareil.moteur.block_on(ancienne.fermer());
         }
@@ -761,6 +800,135 @@ pub unsafe extern "C" fn asl_appareil_creer_compte(
                     ecrire_chaine(cree.compte.texte().as_str(), compte_sortie);
                     ecrire_chaine(cree.appareil.texte().as_str(), appareil_sortie);
                 }
+                ASL_OK
+            }
+            Err(quoi) => quoi,
+        }
+    })
+}
+
+/// Prouve la clé de cet appareil — qui vient de REJOINDRE un compte — et
+/// présente sa chaîne d'attestation, en un verbe (`POST /v1/attestation`,
+/// `protocole.md` §2.2), sur la connexion tenue.
+///
+/// # L'ORDRE, ET IL NE SE NÉGOCIE PAS
+///
+/// [`asl_appareil_connecter`] nu ; [`asl_appareil_defi`] ;
+/// [`asl_appareil_message_pour_attestation_de_cle`] ; GÉNÉRER la clé avec son
+/// condensat ; [`asl_appareil_cle`] ; montrer la clé à l'ancien appareil, qui
+/// l'apporte (`POST /v1/appareils`, sur SA connexion) et rend `u-…` et
+/// `a-…` ; puis ceci, **sur la connexion tenue depuis le début** — c'est
+/// elle qui tient le défi, et la chaîne ne vaut que sur lui. Si elle est
+/// tombée entre-temps (`ASL_NON_CONNECTE`, ou `ASL_INJOIGNABLE` en cours de
+/// route), la clé ne s'attestera plus : on recommence du début, avec une
+/// nouvelle clé, et le premier `a-…` reste à révoquer.
+///
+/// **LE PORTEUR EST SOLLICITÉ ICI** : le signataire est appelé sur le message
+/// d'authentification — la même signature que `POST /v1/defi`. Le défi est
+/// celui d'[`asl_appareil_defi`] s'il en reste un, un neuf sinon (ce qui ne
+/// sert qu'à `ASL_PLATEFORME_AUCUNE` : une chaîne liée à un autre défi serait
+/// refusée). `attestation` est vide pour `ASL_PLATEFORME_AUCUNE` — et le verbe
+/// vaut alors `POST /v1/defi` —, exigée pour les autres.
+///
+/// Rend `ASL_OK` : la preuve tient, la chaîne est jugée, **l'identité est
+/// installée** et la connexion est désormais celle de cet appareil — sous une
+/// posture facultative, une chaîne refusée rend `ASL_OK` quand même, et
+/// l'appareil reste sans preuve, ce que `GET /v1/appareils` dit.
+/// `ASL_CHAINE_REFUSEE` : la preuve tient, la chaîne est refusée et la posture
+/// l'exige (`403`) — cette clé ne s'attestera plus. `ASL_REFUSE` : la preuve
+/// ne tient pas, il n'y a pas de défi, l'appareil est révoqué ou son compte
+/// effacé (`401`, et l'annuaire ne dit pas lequel), ou le corps est mal formé
+/// (`400`).
+///
+/// # Safety
+///
+/// `appareil` vient de [`asl_appareil_neuf`] ; `identifiant` est une chaîne C
+/// valide ; `attestation` vise `taille` octets lisibles, ou est nul avec
+/// `taille` à zéro.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn asl_appareil_rejoindre_atteste(
+    appareil: *mut AslAppareil,
+    identifiant: *const c_char,
+    plateforme: u8,
+    attestation: *const u8,
+    taille: usize,
+) -> i32 {
+    protege(|| {
+        // SAFETY : contrat de la fonction.
+        let Some(appareil) = (unsafe { appareil.as_mut() }) else {
+            return ASL_ARGUMENT;
+        };
+        // SAFETY : contrat de la fonction.
+        let Some(texte) = (unsafe { chaine(identifiant) }) else {
+            return ASL_ARGUMENT;
+        };
+        let Ok(identite) = Identifiant::analyser_genre(Genre::Appareil, texte) else {
+            return ASL_ARGUMENT;
+        };
+        let Some(plateforme) = Plateforme::depuis(plateforme) else {
+            return ASL_ARGUMENT;
+        };
+        if attestation.is_null() != (taille == 0) || taille > ASL_ATTESTATION_MAX {
+            return ASL_ARGUMENT;
+        }
+        let attestation: Vec<u8> = if taille == 0 {
+            Vec::new()
+        } else {
+            // SAFETY : contrat de la fonction.
+            unsafe { core::slice::from_raw_parts(attestation, taille) }.to_vec()
+        };
+        let (tenue, signataire) = match (appareil.tenue(), appareil.signataire()) {
+            (Ok(tenue), Ok(signataire)) => (tenue.clone(), *signataire),
+            (Err(quoi), _) | (_, Err(quoi)) => return quoi,
+        };
+        // **DÉPENSÉ AVANT DE PARTIR**, comme dans `asl_appareil_connecter` : un
+        // défi ne sert qu'une fois, que la preuve tienne ou non.
+        let defi_tire = appareil.defi.take();
+
+        let issue = bloquer(&appareil.moteur, async move {
+            let defi = match defi_tire {
+                Some(defi) => defi,
+                None => {
+                    let reponse = tenue
+                        .requete("GET", "/v1/defi", &[])
+                        .await
+                        .map_err(traduire)?;
+                    reponse.exige(200).map_err(traduire)?;
+                    let mut octets = [0_u8; ASL_DEFI_OCTETS];
+                    if reponse.corps.len() != octets.len() {
+                        return Err(ASL_INTERNE);
+                    }
+                    octets.copy_from_slice(&reponse.corps);
+                    asl_cle::Defi::depuis_octets(octets)
+                }
+            };
+            let message = regles::message_d_authentification(identite, &defi, &tenue.liaison())
+                .map_err(|_| ASL_INTERNE)?;
+            let signature = signataire.signer(&message)?;
+            let mut corps = vec![0_u8; regles::ATTESTATION_CORPS_MAX];
+            let combien = regles::corps_d_attestation(
+                identite,
+                &signature,
+                plateforme,
+                &attestation,
+                &mut corps,
+            )
+            .map_err(|_| ASL_ARGUMENT)?;
+            corps.truncate(combien);
+            let reponse = tenue
+                .requete("POST", "/v1/attestation", &corps)
+                .await
+                .map_err(traduire)?;
+            match reponse.statut {
+                204 => Ok(()),
+                403 => Err(ASL_CHAINE_REFUSEE),
+                _ => Err(ASL_REFUSE),
+            }
+        })
+        .and_then(|issue| issue);
+        match issue {
+            Ok(()) => {
+                appareil.identite = Some(identite);
                 ASL_OK
             }
             Err(quoi) => quoi,

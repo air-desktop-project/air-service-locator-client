@@ -15,7 +15,7 @@ use asl_client_ffi::appareil::{
     asl_appareil_creer_compte, asl_appareil_deconnecter, asl_appareil_defi,
     asl_appareil_identifiant, asl_appareil_identite, asl_appareil_liaison, asl_appareil_libere,
     asl_appareil_message_pour_attestation, asl_appareil_message_pour_attestation_de_cle,
-    asl_appareil_neuf, asl_appareil_racines, asl_appareil_requete,
+    asl_appareil_neuf, asl_appareil_racines, asl_appareil_rejoindre_atteste, asl_appareil_requete,
 };
 use asl_client_ffi::{
     ASL_ARGUMENT, ASL_CONFIGURATION, ASL_IDENTIFIANT_OCTETS, ASL_NON_CONNECTE, ASL_OK,
@@ -209,6 +209,16 @@ fn sans_connexion_tout_verbe_le_dit() {
             asl_appareil_message_pour_attestation_de_cle(brut, ptr::null_mut(), 0, &raw mut ecrit),
             ASL_NON_CONNECTE
         );
+        let a = std::ffi::CString::new(
+            Identifiant::depuis_entropie(Genre::Appareil, [4; 16])
+                .texte()
+                .as_str(),
+        )
+        .expect("un identifiant");
+        assert_eq!(
+            asl_appareil_rejoindre_atteste(brut, a.as_ptr(), ASL_PLATEFORME_AUCUNE, ptr::null(), 0),
+            ASL_NON_CONNECTE
+        );
         // Se déconnecter sans connexion n'est pas une faute.
         assert_eq!(asl_appareil_deconnecter(brut), ASL_OK);
         asl_appareil_libere(brut);
@@ -314,6 +324,59 @@ fn une_requete_mal_formee_est_refusee_avant_de_chercher_une_connexion() {
                 trop.len(),
                 compte.as_mut_ptr(),
                 app.as_mut_ptr()
+            ),
+            ASL_ARGUMENT
+        );
+        // Rejoindre : une machine à la place d'un appareil, un identifiant nul,
+        // une plate-forme inconnue, une chaîne sans octets, une chaîne trop
+        // longue — chacun refusé avant de chercher une connexion.
+        let a = std::ffi::CString::new(
+            Identifiant::depuis_entropie(Genre::Appareil, [4; 16])
+                .texte()
+                .as_str(),
+        )
+        .expect("un identifiant");
+        let m = std::ffi::CString::new(
+            Identifiant::depuis_entropie(Genre::Machine, [4; 16])
+                .texte()
+                .as_str(),
+        )
+        .expect("un identifiant");
+        assert_eq!(
+            asl_appareil_rejoindre_atteste(brut, m.as_ptr(), ASL_PLATEFORME_AUCUNE, ptr::null(), 0),
+            ASL_ARGUMENT
+        );
+        assert_eq!(
+            asl_appareil_rejoindre_atteste(
+                brut,
+                ptr::null(),
+                ASL_PLATEFORME_AUCUNE,
+                ptr::null(),
+                0
+            ),
+            ASL_ARGUMENT
+        );
+        assert_eq!(
+            asl_appareil_rejoindre_atteste(brut, a.as_ptr(), 9, ptr::null(), 0),
+            ASL_ARGUMENT
+        );
+        assert_eq!(
+            asl_appareil_rejoindre_atteste(
+                brut,
+                a.as_ptr(),
+                ASL_PLATEFORME_ANDROID,
+                ptr::null(),
+                12
+            ),
+            ASL_ARGUMENT
+        );
+        assert_eq!(
+            asl_appareil_rejoindre_atteste(
+                brut,
+                a.as_ptr(),
+                ASL_PLATEFORME_ANDROID,
+                trop.as_ptr(),
+                trop.len()
             ),
             ASL_ARGUMENT
         );

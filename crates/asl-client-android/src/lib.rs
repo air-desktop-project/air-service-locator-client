@@ -33,7 +33,7 @@ use asl_client_ffi::appareil::{
     asl_appareil_deconnecter, asl_appareil_defi, asl_appareil_identifiant, asl_appareil_identite,
     asl_appareil_liaison, asl_appareil_libere, asl_appareil_message_pour_attestation,
     asl_appareil_message_pour_attestation_de_cle, asl_appareil_neuf, asl_appareil_racines,
-    asl_appareil_requete,
+    asl_appareil_rejoindre_atteste, asl_appareil_requete,
 };
 use asl_client_ffi::{ASL_ARGUMENT, ASL_IDENTIFIANT_OCTETS, ASL_INTERNE, ASL_OK, asl_faute_texte};
 use jni::JNIEnv;
@@ -563,6 +563,56 @@ pub extern "system" fn Java_org_airdesktop_servicelocator_reseau_Natif_creerComp
         }
     }
     tableau.into_raw()
+}
+
+/// `external fun rejoindreAtteste(h: Long, identifiant: String, plateforme: Int, attestation: ByteArray?): Int`
+///
+/// La preuve d'un appareil qui rejoint, et sa chaîne, sur la connexion tenue
+/// depuis le défi — `asl_appareil_rejoindre_atteste`, et son code tel quel :
+/// `OK` (identité installée), `CHAINE_REFUSEE` (403), `REFUSE` (401, 400),
+/// `SIGNATURE_REFUSEE`, `NON_CONNECTE`, `INJOIGNABLE`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_airdesktop_servicelocator_reseau_Natif_rejoindreAtteste(
+    mut env: JNIEnv,
+    _classe: JClass,
+    brut: jlong,
+    identifiant: JString,
+    plateforme: jint,
+    attestation: JByteArray,
+) -> jint {
+    let Some(handle) = handle(brut) else {
+        return ASL_ARGUMENT;
+    };
+    let Some(identifiant) = lire_chaine(&mut env, &identifiant) else {
+        return ASL_ARGUMENT;
+    };
+    let Ok(plateforme) = u8::try_from(plateforme) else {
+        return ASL_ARGUMENT;
+    };
+    let attestation = if attestation.is_null() {
+        Vec::new()
+    } else {
+        match lire_octets(&env, &attestation) {
+            Some(octets) => octets,
+            None => return ASL_ARGUMENT,
+        }
+    };
+    let pointeur = if attestation.is_empty() {
+        core::ptr::null()
+    } else {
+        attestation.as_ptr()
+    };
+    // SAFETY : une chaîne C valide, un handle vivant ; `attestation` vise ses
+    // octets ou est nul avec zéro.
+    unsafe {
+        asl_appareil_rejoindre_atteste(
+            handle.appareil,
+            identifiant.as_ptr(),
+            plateforme,
+            pointeur,
+            attestation.len(),
+        )
+    }
 }
 
 /// `external fun requete(h: Long, methode: String, chemin: String, corps: ByteArray?): ByteArray?`

@@ -61,6 +61,59 @@ impl Connexion {
         reponse.exige(204)
     }
 
+    /// Prouve la clé de cet appareil — qui vient de REJOINDRE un compte — et
+    /// présente sa chaîne d'attestation, en un verbe, sur CETTE connexion.
+    ///
+    /// # LA CONNEXION EST CELLE OÙ LE DÉFI A ÉTÉ TIRÉ AVANT LA CLÉ
+    ///
+    /// `protocole.md` §2.2, « Attester un appareil qui rejoint » : le nouvel
+    /// appareil se connecte nu, tire son défi, GÉNÈRE sa clé avec le condensat
+    /// de `asl_client::appareil::message_pour_attestation_de_cle`, la montre à
+    /// l'ancien appareil, attend son `a-…`, puis prouve ici — la signature
+    /// couvre `message_d_authentification`, comme pour [`Self::prouver_appareil`],
+    /// et la chaîne suit. **Le défi vit ce que vit la connexion** : si elle est
+    /// tombée entre le code montré et cet appel, la clé ne s'attestera plus, et
+    /// c'est l'application qui recommence — nouvelle connexion, nouvelle clé.
+    ///
+    /// Après `204`, la connexion est celle de cet appareil. Sous
+    /// [`asl_client::appareil::Plateforme::Aucune`], sans chaîne, ce verbe vaut
+    /// `POST /v1/defi`.
+    ///
+    /// # Errors
+    ///
+    /// Celles de [`Connexion::requete`], plus [`Faute::Statut`] — `401` : la
+    /// preuve ne tient pas, il n'y a pas de défi, l'appareil est révoqué ou son
+    /// compte effacé, et l'annuaire ne dit pas lequel ; `403` : la preuve
+    /// tient, la chaîne est refusée et la posture l'exige ; `400` : le corps —
+    /// et [`Faute::Illisible`] si le corps ne se compose pas.
+    pub async fn attester(
+        &mut self,
+        appareil: Identifiant,
+        signature: &[u8; asl_cle::SIGNATURE_APPAREIL_OCTETS],
+        plateforme: asl_client::appareil::Plateforme,
+        attestation: &[u8],
+    ) -> Result<(), Faute> {
+        let mut corps = vec![0_u8; asl_client::appareil::ATTESTATION_CORPS_MAX];
+        let combien = asl_client::appareil::corps_d_attestation(
+            appareil,
+            signature,
+            plateforme,
+            attestation,
+            &mut corps,
+        )
+        .map_err(|_| Faute::Illisible)?;
+        corps.truncate(combien);
+        let reponse = self
+            .requete(
+                b"POST",
+                b"/v1/attestation",
+                &[(b"content-type", b"application/octet-stream")],
+                &corps,
+            )
+            .await?;
+        reponse.exige(204)
+    }
+
     /// Crée le compte et enrôle cet appareil, avec un corps déjà composé par
     /// `asl_client::appareil::corps_de_compte`.
     ///

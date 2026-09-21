@@ -48,6 +48,7 @@ module Asl
     PAS_DE_POUSSEE = -9
     NON_CONNECTE = -10
     SIGNATURE_REFUSEE = -11
+    CHAINE_REFUSEE = -12
 
     IDENTIFIANT_OCTETS = 29
     GRAINE_OCTETS = 32
@@ -226,6 +227,9 @@ module Asl
       asl_appareil_creer_compte: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_UINT8_T, Fiddle::TYPE_VOIDP,
                                    Fiddle::TYPE_SIZE_T, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP],
                                   Fiddle::TYPE_INT32_T],
+      asl_appareil_rejoindre_atteste: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_UINT8_T,
+                                        Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T],
+                                       Fiddle::TYPE_INT32_T],
       asl_appareil_requete: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP,
                               Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T, Fiddle::TYPE_VOIDP,
                               Fiddle::TYPE_SIZE_T, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP],
