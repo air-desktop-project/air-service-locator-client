@@ -613,19 +613,28 @@ fn appareil_vu(octets: &[u8]) -> Result<AppareilVu, String> {
 }
 
 /// L'état de la voie entre les deux racines — `GET /v1/replication` —, sur
-/// une ligne, comme une machine d'`asl machines` : le pair, la voie, les deux
-/// nombres, et **l'écart s'il y en a un**.
+/// une ligne, comme une machine d'`asl machines` : le pair, la voie, et les
+/// deux nombres, **sans en tirer un écart**.
 ///
-/// # L'ÉCART EST CE QU'ON REGARDE, ET IL N'EST ÉCRIT QUE S'IL EXISTE
+/// # POURQUOI L'ÉCART N'EST PAS ÉCRIT, ALORS QU'IL SEMBLE ÊTRE CE QU'ON VEUT
 ///
-/// `compteur` est l'horloge de la racine jointe, `applique` le curseur qu'elle
-/// tient pour le pair (`replication.md` §5.3, §8). Voie ouverte, le second
-/// rejoint le premier en moins d'une seconde ; ce qui reste entre les deux est
-/// ce qu'il reste à rattraper, et c'est la seule chose qu'une vérification de
-/// déploiement veut lire. Zéro ne s'écrit pas : « en retard de 0 » aurait
-/// l'air d'un retard. Et un curseur qui dépasserait l'horloge — ce que
-/// l'estampille de Lamport interdit (§4) — ne se rend pas négatif : rien à
-/// rattraper, et c'est tout ce que le mot dit.
+/// `compteur` est l'horloge de Lamport de la racine jointe ; `applique` est le
+/// curseur qu'elle tient pour le pair — l'estampille de la dernière opération
+/// du pair qu'elle a appliquée (`replication.md` §4, §5.3). **L'horloge compte
+/// aussi les écritures de la racine elle-même**, et le curseur ne compte que
+/// celles du pair : les deux ne coïncident qu'au moment où la dernière
+/// écriture vue est celle du pair. Vérifié sur les racines le 2026-09-21 :
+/// `compteur 35, applique 23`, voie ouverte, rien à rattraper — les douze
+/// d'écart étaient les propres écritures de la racine jointe, l'autre n'ayant
+/// rien écrit depuis l'amorçage. Un « en retard de 12 » aurait menti, et c'est
+/// précisément le genre de mensonge qu'un outil de diagnostic ne peut pas se
+/// permettre (voir l'en-tête de ce module).
+///
+/// Ce qui se conclut, et depuis les DEUX racines — l'alias en joint une à la
+/// fois, et `asl replication` lancé deux fois joint en général les deux — :
+/// une racine est à jour sur l'autre quand son `applique` égale le `compteur`
+/// de l'autre ; et la voie dite `coupée` est ce qui laisse quelque chose en
+/// attente. Le reste, c'est au serveur de le rendre, s'il veut le dire.
 ///
 /// **UNE RACINE SEULE LE DIT**, et dit ce que cela veut dire : sans pair réglé,
 /// il n'y a rien à répliquer — c'est un banc, pas une panne.
@@ -639,17 +648,12 @@ pub fn replication(corps: &[u8]) -> Result<String, String> {
     match etat.pair {
         Some((pair, applique)) => {
             texte.push_str(&format!(
-                "{}   {:<8}   compteur {}   appliqué {}",
+                "{}   {:<8}   compteur {}   appliqué {}\n",
                 pair.texte().as_str(),
                 etat.voie,
                 etat.compteur,
                 applique
             ));
-            let retard = etat.compteur.saturating_sub(applique);
-            if retard > 0 {
-                texte.push_str(&format!("   en retard de {retard}"));
-            }
-            texte.push('\n');
         }
         None => {
             texte.push_str(&format!("{:<8}   compteur {}\n", etat.voie, etat.compteur));
@@ -745,9 +749,9 @@ mod tests {
     use super::{appareils, machines, replication, reponses, vu};
 
     #[test]
-    fn la_replication_se_rend_sur_une_ligne_avec_l_ecart_s_il_y_en_a_un() {
+    fn la_replication_se_rend_sur_une_ligne_sans_inventer_un_retard() {
         let pair = asl_id::Identifiant::depuis_entropie(asl_id::Genre::Annuaire, [0x4E; 16]);
-        // Voie ouverte, curseur à jour : pas d'écart écrit.
+        // Voie ouverte, curseur égal à l'horloge.
         let corps = format!(
             r#"{{"pair":"{}","voie":"ouverte","compteur":4812,"applique":4812}}"#,
             pair.texte().as_str()
@@ -758,22 +762,18 @@ mod tests {
         assert!(dit.contains("ouverte"), "{dit}");
         assert!(dit.contains("compteur 4812"), "{dit}");
         assert!(dit.contains("appliqué 4812"), "{dit}");
-        assert!(!dit.contains("retard"), "{dit}");
-        // Voie coupée, et vingt-deux opérations à rattraper : l'écart est dit.
+        // Voie coupée, et un curseur en deçà de l'horloge : les deux nombres
+        // sont rendus tels quels, **et rien n'est dit d'un retard** — l'écart
+        // peut n'être que les écritures de la racine jointe.
         let corps = format!(
             r#"{{"pair":"{}","voie":"coupée","compteur":4812,"applique":4790}}"#,
             pair.texte().as_str()
         );
         let dit = replication(corps.as_bytes()).expect("lisible");
         assert!(dit.contains("coupée"), "{dit}");
-        assert!(dit.contains("en retard de 22"), "{dit}");
-        // Un curseur qui dépasse l'horloge ne rend pas un retard négatif.
-        let corps = format!(
-            r#"{{"pair":"{}","voie":"ouverte","compteur":10,"applique":12}}"#,
-            pair.texte().as_str()
-        );
-        let dit = replication(corps.as_bytes()).expect("lisible");
+        assert!(dit.contains("appliqué 4790"), "{dit}");
         assert!(!dit.contains("retard"), "{dit}");
+        assert!(!dit.contains("22"), "{dit}");
     }
 
     #[test]

@@ -152,8 +152,8 @@ COMMANDS
 
     replication                       The state of the link between the two
                                       root directories, as seen by the one
-                                      reached: peer, open or cut, clock, and
-                                      what is left to catch up.
+                                      reached: peer, open or cut, its clock,
+                                      and how far it has applied the peer.
 
     identity                          Who this machine is and whom it acts for,
                                       without connecting.

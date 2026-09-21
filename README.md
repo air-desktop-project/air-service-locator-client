@@ -160,10 +160,14 @@ compte.
 enrôlée** : `asl replication` demande `GET /v1/replication` à la racine que
 l'alias lui a donnée — et dit laquelle, puisque l'alias en rend deux — puis
 rend, sur une ligne, le pair, la voie (`ouverte`, `coupée`, ou `seule` sans
-pair réglé), son horloge et le curseur qu'elle tient pour l'autre, avec l'écart
-s'il y en a un (`replication.md` §8 du serveur). Voie ouverte, l'écart se
-résorbe en moins d'une seconde ; ce qui reste est ce qu'une coupure a laissé à
-rattraper. Lancé deux fois, il joint en général les deux racines.
+pair réglé), son horloge (`compteur`) et le curseur qu'elle tient pour l'autre
+(`appliqué`, l'estampille de la dernière opération de l'autre qu'elle a
+appliquée — `replication.md` §8 du serveur). **L'écart entre les deux n'est
+pas un retard** : l'horloge compte aussi les écritures de la racine jointe, le
+curseur ne compte que celles de l'autre. Ce qui se conclut se conclut depuis
+les deux — lancé deux fois, il joint en général les deux racines — : une
+racine est à jour sur l'autre quand son `appliqué` égale le `compteur` de
+l'autre, et `coupée` est ce qui laisse quelque chose en attente.
 
 **Il n'existe aucun mode anonyme.** Une résolution hors d'une connexion
 authentifiée par une clé n'est pas prévue par le serveur, et un client qui

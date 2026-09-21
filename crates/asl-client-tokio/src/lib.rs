@@ -768,8 +768,11 @@ impl Connexion {
     /// "applique":M}` quand un pair est réglé, `{"voie":"seule","compteur":N}`
     /// quand la racine tourne seule — **sans `pair` ni `applique`**, et un
     /// lecteur regarde `voie` d'abord. Les deux nombres sont l'horloge de la
-    /// racine et le curseur qu'elle tient pour le pair ; voie ouverte, le
-    /// second rejoint le premier en moins d'une seconde.
+    /// racine et le curseur qu'elle tient pour le pair — l'estampille de la
+    /// dernière opération du pair qu'elle a appliquée. **Leur différence n'est
+    /// pas un retard** : l'horloge compte aussi les écritures de la racine
+    /// elle-même. Rendus tels quels ; c'est à l'appelant de les lire depuis
+    /// les deux racines.
     ///
     /// # Errors
     ///
