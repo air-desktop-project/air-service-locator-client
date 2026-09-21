@@ -483,13 +483,28 @@ Ce que chaque dépôt devra faire :
    preuve nue ; `attester_un_appareil` (preuve + `verifier_l_attestation` +
    écriture, une transaction) ; l'opération `appareil-atteste` ; `attendue`
    rendu par les deux `GET …/appareils` ; fuzz du décodeur ; journal.
-2. **Client (carbon)** : `asl-client::appareil` — le message d'attestation
+2. ~~**Client (carbon)**~~ — **fait** : PR #13 (0.9.0, `55858c7`) :
+   `corps_d_attestation`, `Connexion::attester`, ABI
+   `asl_appareil_rejoindre_atteste` + `ASL_CHAINE_REFUSEE = -12`, JNI
+   `Natif_rejoindreAtteste`, `connecter` garde la connexion nue qui tient un
+   défi, `asl enrolled` dit « en attente d'attestation ». **À reprendre** :
+   sur un refus biométrique, le défi est consommé (`defi.take()` avant
+   `signer`) — l'app doit recommencer avec une clé neuve alors qu'un nouvel
+   essai du geste suffirait ; remettre le défi si le signataire refuse.
+   Pour mémoire : `asl-client::appareil` — le message d'attestation
    de clé avant la clé sur une connexion **tenue sans identité**, puis la
    preuve avec chaîne ; `asl-client-tokio` — ne plus fermer la connexion nue à
    `connecter` sous identité quand un défi y attend ; ABI
    `asl_appareil_rejoindre_atteste` (ou équivalent), les quatre liaisons, JNI ;
    `asl enrolled` affiche « en attente ». Bump mineur.
-3. **Android (carbon)** : `AnnuaireReel.rejoindre` — le défi et la clé AVANT
+3. ~~**Android (carbon)**~~ — **fait** : PR #12 (0.7.0, versionCode 11,
+   `bf5d478`) : `clePourRejoindre()` (connexion nue → défi → clé avec le
+   condensat → QR, tenue), `rejoindreAtteste` sur la même connexion,
+   `ATTENDUE` dans Appareils, « recommencer » avec clé neuve à la coupure.
+   **Pas encore prouvé en vrai** : le chemin n'existe que sans compte, et le
+   FP5 est sur `u-5884…` — il faut révoquer `a-18EJ…` depuis le Mac, vider
+   l'app, rejoindre avec le Mac comme ancien appareil. Pour mémoire :
+   `AnnuaireReel.rejoindre` — le défi et la clé AVANT
    le QR, sur la connexion tenue ; la clé générée avec le condensat ;
    `POST /v1/attestation` à la preuve ; `Appareil.Attestation.ATTENDUE`
    (« en attente d'attestation ») ; le cas de la coupure (recommencer,
