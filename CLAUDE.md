@@ -423,8 +423,11 @@ a un —, l'aide en anglais, `asl-client-tokio::etat_de_la_replication`, l'ABI C
 inchangée (c'est un verbe de CLI, pas d'ABI), bump mineur. La connexion est
 tenue sur la voie machine, comme `asl machines`. Rien à faire côté apps.
 
-**« Effacer mon compte » — spécifié le 2026-09-18 (carbon), à coder.** PR
-serveur #25 (`effacer-mon-compte`, 0.10.1, docs seules, non mergée) :
+**« Effacer mon compte » — spécifié le 2026-09-18 (carbon), ~~à coder~~
+fait :** serveur PR #26 (0.11.0, `5c89c08`, déployé sur les deux racines le
+19/09), Android PR #10 (0.6.0, versionCode 9), iOS/macOS PR #14 (0.7.0,
+build 12), prouvé sur le FP5 le 20/09 ; client : rien, comme prévu. PR
+serveur #25 (`effacer-mon-compte`, 0.10.1, docs seules, mergée) :
 `modele.md` §2.1 « Effacer son compte », `protocole.md` §2.2 « Effacer mon
 compte — le dernier acte d'une clé », `replication.md` §3.2/§3.3/§5.2/§8 et
 décisions 22–24, `contraintes.md` C6/C13/C18. Lis-les en entier avant de
