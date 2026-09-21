@@ -52,5 +52,6 @@ asl_appareil_defi
 asl_appareil_message_pour_attestation
 asl_appareil_message_pour_attestation_de_cle
 asl_appareil_creer_compte
+asl_appareil_rejoindre_atteste
 asl_appareil_requete
 asl_appareil_identifiant

@@ -60,6 +60,7 @@ internal object Abi {
     const val PAS_DE_POUSSEE: Int = -9
     const val NON_CONNECTE: Int = -10
     const val SIGNATURE_REFUSEE: Int = -11
+    const val CHAINE_REFUSEE: Int = -12
 
     const val IDENTIFIANT_OCTETS: Int = 29
     const val GRAINE_OCTETS: Int = 32
@@ -196,6 +197,9 @@ internal object Abi {
         ),
         "asl_appareil_creer_compte" to FunctionDescriptor.of(
             ENTIER, ADRESSE, ValueLayout.JAVA_BYTE, ADRESSE, TAILLE, ADRESSE, ADRESSE,
+        ),
+        "asl_appareil_rejoindre_atteste" to FunctionDescriptor.of(
+            ENTIER, ADRESSE, ADRESSE, ValueLayout.JAVA_BYTE, ADRESSE, TAILLE,
         ),
         "asl_appareil_requete" to FunctionDescriptor.of(
             ENTIER, ADRESSE, ADRESSE, ADRESSE, ADRESSE, TAILLE, ADRESSE, TAILLE, ADRESSE, ADRESSE,

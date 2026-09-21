@@ -550,7 +550,7 @@ async fn les_appareils_du_proprietaire_se_lisent_avec_le_lecteur_de_l_ecran_comp
     assert!(second.revoque, "révoqué, et toujours dans la liste");
     assert_eq!(
         second.attestation,
-        asl_api::corps::PlateformeAttestation::Android
+        asl_api::corps::AttestationRendue::Android
     );
     assert_eq!(second.description, None);
 

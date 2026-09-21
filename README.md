@@ -31,7 +31,12 @@ Depuis le 2026-09-12, ce dépôt porte aussi ce que les deux applications
 `asl-client::appareil` (ce qu'un téléphone compose, sans signer — sa clé vit
 dans son matériel), la connexion tenue d'`asl-client-tokio::Tenue`, l'ABI
 `asl_appareil_*` d'`asl-client-ffi` avec sa **signature par rappel**, et
-`asl-client-android`, les symboles JNI exportés depuis Rust.
+`asl-client-android`, les symboles JNI exportés depuis Rust. Depuis 0.9.0,
+**un appareil qui rejoint un compte entre attesté comme le premier** : il tire
+son défi sur sa connexion nue AVANT de générer sa clé, la montre à l'ancien
+appareil, puis prouve et présente sa chaîne d'un même verbe, sur la même
+connexion (`asl_appareil_rejoindre_atteste`, `POST /v1/attestation`) — un Mac,
+sans chaîne, prouve sur cette connexion-là par `asl_appareil_connecter`.
 `scripts/construire-mobile.sh` produit l'xcframework et l'objet JNI. Le détail,
 et ce que le serveur doit encore servir, est dans [`CLAUDE.md`](CLAUDE.md).
 
@@ -152,9 +157,10 @@ d'un `u-…` que A lui a donné : `asl machines <u-…>` liste ce que A lui a ou
 voir — sans qu'un humain ait à recopier des `m-…`. Sans argument, `asl machines`
 rend les siennes ; et `asl enrolled` rend **les appareils enrôlés sur le compte
 de cette machine** (`GET /v1/moi/appareils`, révoqués marqués, modèle et
-plate-forme quand l'appareil s'est décrit) — pour soi seulement : nommer un
-autre compte est refusé avant toute requête, un appareil ne sort pas de son
-compte.
+plate-forme quand l'appareil s'est décrit, « en attente d'attestation » pour
+une clé apportée par un autre appareil et pas encore prouvée sous une posture
+exigée) — pour soi seulement : nommer un autre compte est refusé avant toute
+requête, un appareil ne sort pas de son compte.
 
 **L'exploitant vérifie la voie entre les deux racines depuis une machine
 enrôlée** : `asl replication` demande `GET /v1/replication` à la racine que

@@ -20,7 +20,7 @@
 //! un annuaire réel ; écrit ici, il s'éprouve sur des octets littéraux, et le
 //! serveur peut les recouper avec les siens.
 
-use asl_api::corps::{CreationDeCompte, PlateformeAttestation};
+use asl_api::corps::{AttestationDAppareil, CreationDeCompte, PlateformeAttestation};
 use asl_cle::{
     CLE_APPAREIL_OCTETS, CleAppareil, Defi, LiaisonDeCanal, MESSAGE_ATTESTATION_DE_CLE_OCTETS,
     MESSAGE_ATTESTATION_OCTETS, MESSAGE_OCTETS, MESSAGE_POSSESSION_APPAREIL_OCTETS,
@@ -38,6 +38,12 @@ use asl_id::{Genre, Identifiant};
 /// le même ; c'est la clé rangée dans l'annuaire qui dit, par sa forme, comment
 /// vérifier.
 pub const PREUVE_AUTHENTIFICATION_OCTETS: usize = 1 + 16 + SIGNATURE_APPAREIL_OCTETS;
+
+/// Ce que le corps de `POST /v1/attestation` peut occuper, au plus : la preuve
+/// d'authentification, l'octet de plate-forme, puis la chaîne la plus longue
+/// que l'annuaire admette. C'est ce que [`corps_d_attestation`] demande à sa
+/// `sortie`.
+pub const ATTESTATION_CORPS_MAX: usize = asl_api::corps::ATTESTATION_CORPS_MAX;
 
 /// La plate-forme d'attestation d'un appareil, telle que `POST /v1/comptes` la
 /// note sur son premier octet.
@@ -244,4 +250,50 @@ pub fn preuve_d_authentification(
         *place = *octet;
     }
     Ok(corps)
+}
+
+/// Compose le corps de `POST /v1/attestation` — la preuve d'un appareil qui
+/// REJOINT, augmentée de sa chaîne : `a ‖ identifiant (16) ‖ signature (64) ‖
+/// plate-forme (1) ‖ attestation`, et rend combien d'octets il occupe.
+///
+/// # LA MÊME SIGNATURE QUE `POST /v1/defi`, ET C'EST LE POINT
+///
+/// Les quatre-vingt-un premiers octets sont ceux de
+/// [`preuve_d_authentification`] : ce que l'appareil signe est
+/// [`message_d_authentification`], sur le défi de SA connexion — celui qu'il a
+/// tiré avant de générer sa clé, et dont le condensat de
+/// [`message_pour_attestation_de_cle`] est entré dans la chaîne. Un seul défi
+/// couvre la preuve et l'attestation (`protocole.md` §2.2, « Attester un
+/// appareil qui rejoint »). Sous [`Plateforme::Aucune`], sans chaîne, ce corps
+/// vaut exactement `POST /v1/defi` : c'est le chemin d'un Mac, dont l'enclave
+/// n'atteste rien.
+///
+/// `sortie` doit pouvoir contenir [`ATTESTATION_CORPS_MAX`] octets pour
+/// qu'aucune chaîne admise ne soit refusée faute de place.
+///
+/// # Erreurs
+///
+/// [`FauteAppareil::PasUnAppareil`], et [`FauteAppareil::Corps`] : une chaîne
+/// absente pour Apple, Android ou l'invitation, présente pour « aucune », ou
+/// plus longue que ce que l'annuaire admet.
+pub fn corps_d_attestation(
+    appareil: Identifiant,
+    signature: &[u8; SIGNATURE_APPAREIL_OCTETS],
+    plateforme: Plateforme,
+    attestation: &[u8],
+    sortie: &mut [u8],
+) -> Result<usize, FauteAppareil> {
+    if appareil.genre() != Genre::Appareil {
+        return Err(FauteAppareil::PasUnAppareil {
+            obtenu: appareil.genre(),
+        });
+    }
+    AttestationDAppareil {
+        appareil,
+        preuve: signature,
+        plateforme: plateforme.vers_api(),
+        attestation,
+    }
+    .encoder(sortie)
+    .map_err(FauteAppareil::Corps)
 }

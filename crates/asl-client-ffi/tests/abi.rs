@@ -25,14 +25,14 @@ use std::ptr;
 
 use asl_client_ffi::appareil;
 use asl_client_ffi::{
-    ASL_ANNONCE, ASL_ARGUMENT, ASL_CONFIGURATION, ASL_DEJA, ASL_EN_COURS, ASL_GRAINE_OCTETS,
-    ASL_IDENTIFIANT_OCTETS, ASL_INJOIGNABLE, ASL_INJOIGNABLE_POINT, ASL_INTERNE, ASL_JOIGNABLE,
-    ASL_NAT_INDETERMINE, ASL_NAT_NON, ASL_NAT_OUI, ASL_NON_CONNECTE, ASL_NON_SONDE, ASL_OK,
-    ASL_PAS_D_IDENTITE, ASL_PAS_DE_POUSSEE, ASL_REFLEXIF, ASL_REFUSE, ASL_SIGNATURE_REFUSEE,
-    ASL_TAMPON_TROP_PETIT, ASL_TCP, ASL_UDP, AslCandidat, AslClient, AslEtat, AslPoint,
-    asl_annoncer, asl_client_annuaire, asl_client_identite, asl_client_libere, asl_client_neuf,
-    asl_client_racines, asl_derniere_poussee, asl_enroler, asl_etat, asl_faute_texte, asl_ou,
-    asl_poussees_recues, asl_version,
+    ASL_ANNONCE, ASL_ARGUMENT, ASL_CHAINE_REFUSEE, ASL_CONFIGURATION, ASL_DEJA, ASL_EN_COURS,
+    ASL_GRAINE_OCTETS, ASL_IDENTIFIANT_OCTETS, ASL_INJOIGNABLE, ASL_INJOIGNABLE_POINT, ASL_INTERNE,
+    ASL_JOIGNABLE, ASL_NAT_INDETERMINE, ASL_NAT_NON, ASL_NAT_OUI, ASL_NON_CONNECTE, ASL_NON_SONDE,
+    ASL_OK, ASL_PAS_D_IDENTITE, ASL_PAS_DE_POUSSEE, ASL_REFLEXIF, ASL_REFUSE,
+    ASL_SIGNATURE_REFUSEE, ASL_TAMPON_TROP_PETIT, ASL_TCP, ASL_UDP, AslCandidat, AslClient,
+    AslEtat, AslPoint, asl_annoncer, asl_client_annuaire, asl_client_identite, asl_client_libere,
+    asl_client_neuf, asl_client_racines, asl_derniere_poussee, asl_enroler, asl_etat,
+    asl_faute_texte, asl_ou, asl_poussees_recues, asl_version,
 };
 use asl_id::{Genre, Identifiant};
 
@@ -93,6 +93,7 @@ fn chaque_code_a_sa_phrase_et_aucune_n_est_partagee() {
         ASL_PAS_DE_POUSSEE,
         ASL_NON_CONNECTE,
         ASL_SIGNATURE_REFUSEE,
+        ASL_CHAINE_REFUSEE,
     ];
     let mut vues = std::collections::BTreeSet::new();
     for code in codes {
@@ -418,7 +419,7 @@ fn les_constantes_de_l_en_tete_sont_celles_de_rust() {
         declarees.insert(format!("ASL_{nom}"), valeur);
     }
 
-    let attendues: [(&str, i64); 34] = [
+    let attendues: [(&str, i64); 35] = [
         ("ASL_OK", ASL_OK.into()),
         ("ASL_ARGUMENT", ASL_ARGUMENT.into()),
         ("ASL_CONFIGURATION", ASL_CONFIGURATION.into()),
@@ -451,6 +452,7 @@ fn les_constantes_de_l_en_tete_sont_celles_de_rust() {
         // La voie mobile.
         ("ASL_NON_CONNECTE", ASL_NON_CONNECTE.into()),
         ("ASL_SIGNATURE_REFUSEE", ASL_SIGNATURE_REFUSEE.into()),
+        ("ASL_CHAINE_REFUSEE", ASL_CHAINE_REFUSEE.into()),
         (
             "ASL_CLE_APPAREIL_OCTETS",
             i64::try_from(appareil::ASL_CLE_APPAREIL_OCTETS).expect("il tient"),

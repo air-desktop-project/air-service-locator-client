@@ -101,6 +101,15 @@ pub const ASL_NON_CONNECTE: i32 = -10;
 /// **CE N'EST PAS UNE PANNE, C'EST LE PORTEUR** : il n'a pas confirmé son
 /// identité, ou a annulé. Rien n'est parti, et rien n'est à réessayer sans lui.
 pub const ASL_SIGNATURE_REFUSEE: i32 = -11;
+/// L'annuaire a vérifié la preuve, et refusé la chaîne d'attestation — sous une
+/// posture qui l'exige (`403`, `protocole.md` §2.2).
+///
+/// **CETTE CLÉ NE S'ATTESTERA PLUS** : son défi est dépensé, et la chaîne ne
+/// vaut que sur lui. L'application recommence du début — nouvelle connexion,
+/// nouveau défi, nouvelle clé, nouveau code à montrer —, et l'appareil apporté
+/// reste dans le compte, à révoquer depuis l'écran Appareils. Distinct
+/// d'`ASL_REFUSE`, qui ne dit pas si la preuve tenait.
+pub const ASL_CHAINE_REFUSEE: i32 = -12;
 
 pub mod appareil;
 
@@ -316,6 +325,7 @@ pub extern "C" fn asl_faute_texte(code: i32) -> *const c_char {
         ASL_PAS_DE_POUSSEE => c"rien n'a ete pousse",
         ASL_NON_CONNECTE => c"pas connecte: appelez asl_appareil_connecter",
         ASL_SIGNATURE_REFUSEE => c"le porteur n'a pas signe",
+        ASL_CHAINE_REFUSEE => c"l'annuaire a refuse la chaine d'attestation",
         _ => c"code inconnu",
     };
     texte.as_ptr()
