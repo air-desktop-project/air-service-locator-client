@@ -468,7 +468,14 @@ entier avant de coder. Ce qui est tranché :
 
 Ce que chaque dépôt devra faire :
 
-1. **Serveur (carbon)** : `Ressource::Attestation` (`POST`, `Exigence::Aucune`,
+1. ~~**Serveur (carbon)**~~ — **fait** : PR #29 (0.13.0, `50dbbaf`), déployée
+   sur les deux racines le 2026-09-21, voie ouverte, sans reprise de format
+   (`attendue` est un octet dans un champ existant). Le corps est
+   `asl_api::AttestationDAppareil` ; deux précisions de convergence :
+   `appareil-atteste` hisse l'estampille même sans changer la valeur, et
+   l'instantané l'émet pour tout appareil prouvé. Le SHA serveur à prendre
+   côté client : `50dbbaf`. Ce que le serveur devait faire, pour mémoire :
+   `Ressource::Attestation` (`POST`, `Exigence::Aucune`,
    traité avant l'exigence comme `/v1/defi`) ; le corps à queue variable dans
    `asl-api` (modèle `CreationDeCompte`) ; `Attestation::Attendue` dans
    `asl-registre` (format, cran mineur) ; `creer_un_appareil` écrit `attendue`
