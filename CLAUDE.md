@@ -497,7 +497,15 @@ Ce que chaque dépôt devra faire :
    `connecter` sous identité quand un défi y attend ; ABI
    `asl_appareil_rejoindre_atteste` (ou équivalent), les quatre liaisons, JNI ;
    `asl enrolled` affiche « en attente ». Bump mineur.
-3. ~~**Android (carbon)**~~ — **fait** : PR #12 (0.7.0, versionCode 11,
+3. ~~**Android (carbon)**~~ — **fait et PROUVÉ EN VRAI le 2026-09-23** :
+   le FP5 a rejoint `u-5884…` sous attestation (`a-0FKB0FDCNFSXB4SR15BJEWW2C0`,
+   `android` sur les deux racines, répliqué en 19 ms). PR #13 (0.7.1,
+   versionCode 12, `05b74ed`) a corrigé ce que l'essai réel a trouvé :
+   `AnnuaireReel.rejoindre` prenait le verrou en deux passages (preuve, puis
+   l'alias par le réseau, puis le carnet) et ce qui attendait derrière passait
+   dans l'intervalle — le temps d'une empreinte — pour détruire une clé qui
+   venait de réussir. **À retenir pour iOS** : preuve et carnet sous le même
+   verrou, l'alias après en best-effort. PR #12 (0.7.0, versionCode 11,
    `bf5d478`) : `clePourRejoindre()` (connexion nue → défi → clé avec le
    condensat → QR, tenue), `rejoindreAtteste` sur la même connexion,
    `ATTENDUE` dans Appareils, « recommencer » avec clé neuve à la coupure.
