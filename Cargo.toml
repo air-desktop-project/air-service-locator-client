@@ -57,7 +57,7 @@ members = [
 exclude = ["fuzz"]
 
 [workspace.package]
-version = "0.10.0"
+version = "0.11.0"
 edition = "2024"
 # PAS DE `rust-version`, ET C'EST DÉLIBÉRÉ.
 #
@@ -73,9 +73,9 @@ authors = ["air-service-locator contributors"]
 repository = "https://github.com/air-desktop-project/air-service-locator-client"
 
 [workspace.dependencies]
-asl-client = { path = "crates/asl-client", version = "0.10.0" }
-asl-client-tokio = { path = "crates/asl-client-tokio", version = "0.10.0" }
-asl-client-ffi = { path = "crates/asl-client-ffi", version = "0.10.0" }
+asl-client = { path = "crates/asl-client", version = "0.11.0" }
+asl-client-tokio = { path = "crates/asl-client-tokio", version = "0.11.0" }
+asl-client-ffi = { path = "crates/asl-client-ffi", version = "0.11.0" }
 
 # La grammaire, tirée du dépôt qui porte les spécifications.
 #

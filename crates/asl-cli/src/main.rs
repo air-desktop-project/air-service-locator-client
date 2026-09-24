@@ -80,7 +80,7 @@ impl Issue {
     }
 
     /// Ce qu'on en dit sur `stderr`.
-    fn dire(&self) -> String {
+    pub(crate) fn dire(&self) -> String {
         match self {
             Self::Usage(quoi) | Self::Configuration(quoi) | Self::Injoignable(quoi) => quoi.clone(),
             // **CHAQUE CODE EST TRADUIT**, parce qu'un nombre nu envoie chercher
@@ -165,9 +165,10 @@ COMMANDS
                                       a device never leaves its account.
 
     replication                       The state of the link between the two
-                                      root directories, as seen by the one
-                                      reached: peer, open or cut, its clock,
-                                      and how far it has applied the peer.
+                                      root directories. Reaches BOTH — one
+                                      alone concludes nothing — and says, for
+                                      each, whether it has applied everything
+                                      the other wrote.
 
     identity                          Who this machine is and whom it acts for,
                                       without connecting.

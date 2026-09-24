@@ -163,20 +163,27 @@ exigée) — pour soi seulement : nommer un autre compte est refusé avant toute
 requête, un appareil ne sort pas de son compte.
 
 **L'exploitant vérifie la voie entre les deux racines depuis une machine
-enrôlée** : `asl replication` demande `GET /v1/replication` à la racine que
-l'alias lui a donnée — et dit laquelle, puisque l'alias en rend deux — puis
-rend, sur une ligne, le pair, la voie (`ouverte`, `coupée`, ou `seule` sans
-pair réglé), son horloge (`compteur`) et le curseur qu'elle tient pour l'autre
-(`appliqué`, l'estampille de la dernière opération de l'autre qu'elle a
-appliquée — `replication.md` §8 du serveur). **L'écart entre les deux n'est
-pas un retard** : l'horloge compte aussi les écritures de la racine jointe, le
-curseur ne compte que celles de l'autre. Ce qui se conclut se conclut depuis
-les deux — lancé deux fois, il joint en général les deux racines — : si
-l'`appliqué` d'une racine égale le `compteur` de l'autre, elle a tout
-appliqué ; en dessous, **on ne sait pas** — l'autre a peut-être haussé son
-horloge sur ce qu'elle recevait sans rien écrire (les racines du 21/09 :
-`23` contre `35`, et rien en retard). Ce qui prouve l'état, c'est la voie :
-`ouverte` ne laisse rien en attente plus d'une seconde, `coupée` si.
+enrôlée** : `asl replication` **joint les DEUX** et rend, pour chacune, le
+pair, la voie (`ouverte`, `coupée`, ou `seule` sans pair réglé), son horloge
+(`compteur`), le curseur qu'elle tient pour l'autre (`appliqué`) et la
+dernière estampille qu'elle a écrite (`écrit`, servi depuis l'annuaire
+0.17.0 — `replication.md` §8 du serveur). Puis il conclut.
+
+**Il en joint deux parce qu'une seule ne conclut rien**, et l'écart ne se lit
+pas où l'on croit : l'`appliqué` d'une racine se compare à l'`écrit` de
+l'AUTRE, jamais à son `compteur` — l'horloge compte aussi les écritures de la
+racine elle-même. Les vraies racines le 21/09 : `compteur 35, appliqué 23`
+des deux côtés, et rien en retard, parce que l'une avait écrit douze fois et
+l'autre rien. Avec `écrit`, ces mêmes nombres se concluent sans ambiguïté.
+
+Une seconde tentative, et pas une de plus, sur l'autre adresse de l'alias.
+Si la seconde racine ne répond pas, ou si les deux réponses nomment le même
+pair — l'alias rend quatre adresses, deux par banc —, la commande rend ce
+qu'elle a et **dit qu'elle ne conclut pas**, plutôt que de conclure sur une
+moitié. Une racine d'avant 0.17.0, qui ne rend pas `écrit`, se lit aussi :
+sa ligne ne montre pas d'`écrit`, et la conclusion dit ce qui manque. Ce qui
+prouve l'état reste la voie : `ouverte` ne laisse rien en attente plus d'une
+seconde, `coupée` si.
 
 **Il n'existe aucun mode anonyme.** Une résolution hors d'une connexion
 authentifiée par une clé n'est pas prévue par le serveur, et un client qui
