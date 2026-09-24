@@ -715,6 +715,24 @@ pub async fn diagnostic(invocation: &Invocation, dossier: &Path) -> Sortie {
     println!();
     let mut connexion = ouvrir(&reglages).await?;
     println!("connexion      établie");
+
+    // **À QUOI PARLE-T-ON, ET QU'EXIGE-T-IL ?** `GET /v1/version` n'exige
+    // aucune preuve : c'est la ressource que peut lire qui n'a pas encore de
+    // clé, et cette ligne sort donc aussi sur une machine non enrôlée — là où
+    // le diagnostic sert le plus. Un annuaire qui ne la sert pas, ou qui
+    // répond de travers, ne fait pas échouer le reste : on le dit et on
+    // continue, comme pour `GET /v1/vu` juste en dessous.
+    match connexion.version().await {
+        Ok(corps) => match rendu::version(&corps) {
+            Ok((version, posture)) => {
+                println!("version        {version}");
+                println!("posture        {posture}");
+            }
+            Err(quoi) => println!("version        ILLISIBLE — {quoi}"),
+        },
+        Err(quoi) => println!("version        INDISPONIBLE — {quoi}"),
+    }
+
     match connexion.locale() {
         Ok(ou) => println!("locale         {ou}"),
         Err(quoi) => println!("locale         inconnue — {quoi}"),
