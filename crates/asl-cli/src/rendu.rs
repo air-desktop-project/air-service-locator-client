@@ -624,57 +624,166 @@ fn appareil_vu(octets: &[u8]) -> Result<AppareilVu, String> {
 
 /// L'état de la voie entre les deux racines — `GET /v1/replication` —, sur
 /// une ligne, comme une machine d'`asl machines` : le pair, la voie, et les
-/// deux nombres, **sans en tirer un écart**.
+/// trois nombres. **L'écart, lui, ne se tire pas d'ici** : il faut les deux
+/// racines, et c'est [`conclusion`] qui les rapproche.
 ///
-/// # POURQUOI L'ÉCART N'EST PAS ÉCRIT, ALORS QU'IL SEMBLE ÊTRE CE QU'ON VEUT
+/// # POURQUOI UNE SEULE RACINE NE CONCLUT RIEN, MÊME MAINTENANT
 ///
 /// `compteur` est l'horloge de Lamport de la racine jointe ; `applique` est le
 /// curseur qu'elle tient pour le pair — l'estampille de la dernière opération
 /// du pair qu'elle a appliquée (`replication.md` §4, §5.3). **L'horloge compte
 /// aussi les écritures de la racine elle-même**, et le curseur ne compte que
-/// celles du pair : les deux ne coïncident qu'au moment où la dernière
-/// écriture vue est celle du pair. Vérifié sur les racines le 2026-09-21 :
-/// `compteur 35, applique 23`, voie ouverte, rien à rattraper — les douze
-/// d'écart étaient les propres écritures de la racine jointe, l'autre n'ayant
-/// rien écrit depuis l'amorçage. Un « en retard de 12 » aurait menti, et c'est
-/// précisément le genre de mensonge qu'un outil de diagnostic ne peut pas se
-/// permettre (voir l'en-tête de ce module).
+/// celles du pair : soustraire l'un de l'autre revient à compter les écritures
+/// de la racine jointe comme un retard de l'autre. Vérifié sur les racines le
+/// 2026-09-21 : `compteur 35, applique 23`, voie ouverte, rien à rattraper —
+/// les douze d'écart étaient les propres écritures de la racine jointe,
+/// l'autre n'ayant rien écrit depuis l'amorçage. Un « en retard de 12 » aurait
+/// menti, et c'est précisément le genre de mensonge qu'un outil de diagnostic
+/// ne peut pas se permettre (voir l'en-tête de ce module).
 ///
-/// Ce qui se conclut, et depuis les DEUX racines — l'alias en joint une à la
-/// fois, et `asl replication` lancé deux fois joint en général les deux — :
-/// si l'`applique` d'une racine égale le `compteur` de l'autre, elle a tout
-/// appliqué ; en dessous, on ne sait pas — l'autre hausse aussi son horloge
-/// sur ce qu'elle reçoit, sans rien écrire (le 21/09 : `23` contre `35`, rien
-/// en retard). La preuve de l'état, c'est la voie : `ouverte` ne laisse rien
-/// en attente plus d'une seconde, `coupée` si. Le reste — la dernière
-/// estampille écrite par chaque racine, seule à rendre l'écart lisible —,
-/// c'est au serveur de le rendre (`replication.md` §8, à faire).
+/// **Ce qui a changé le 2026-09-24** : l'annuaire rend `ecrit`, la dernière
+/// estampille que CETTE racine a écrite elle-même (`replication.md` §8, servi
+/// depuis 0.17.0). Le même exemple se lit alors sans ambiguïté — l'`applique`
+/// d'une racine se compare à l'`ecrit` de l'AUTRE, jamais à son `compteur` :
+/// `23` contre l'`ecrit` d'argon, qui vaut `23`, et tout est appliqué. C'est
+/// exactement ce que le compteur ne pouvait pas dire.
+///
+/// La ligne rend donc les trois nombres, et rien de plus. Un annuaire d'avant
+/// 0.17.0 n'en rend que deux : la ligne le dit en ne montrant pas `écrit`,
+/// plutôt qu'en affichant un zéro qui se confondrait avec une racine qui n'a
+/// jamais rien écrit.
 ///
 /// **UNE RACINE SEULE LE DIT**, et dit ce que cela veut dire : sans pair réglé,
-/// il n'y a rien à répliquer — c'est un banc, pas une panne.
+/// il n'y a rien à répliquer — c'est un banc, pas une panne. Elle rend
+/// néanmoins son `ecrit` : elle écrit comme une autre, et c'est ce qu'un futur
+/// pair devra rattraper.
 ///
 /// # Erreurs
 ///
 /// Rend `Err` avec ce qui n'a pas pu être lu.
 pub fn replication(corps: &[u8]) -> Result<String, String> {
     let etat = replication_vue(corps)?;
+    let ecrit = match etat.ecrit {
+        Some(ecrit) => format!("   écrit {ecrit}"),
+        None => String::new(),
+    };
     let mut texte = String::new();
     match etat.pair {
         Some((pair, applique)) => {
             texte.push_str(&format!(
-                "{}   {:<8}   compteur {}   appliqué {}\n",
+                "{}   {:<8}   compteur {}   appliqué {}{}\n",
                 pair.texte().as_str(),
                 etat.voie,
                 etat.compteur,
-                applique
+                applique,
+                ecrit
             ));
         }
         None => {
-            texte.push_str(&format!("{:<8}   compteur {}\n", etat.voie, etat.compteur));
+            texte.push_str(&format!(
+                "{:<8}   compteur {}{}\n",
+                etat.voie, etat.compteur, ecrit
+            ));
             texte.push_str(
                 "aucun pair réglé : cette racine tourne seule, et rien n'y est à\n\
                  répliquer — un banc, pas une panne.\n",
             );
+        }
+    }
+    Ok(texte)
+}
+
+/// Ce que les DEUX racines, rapprochées, permettent de conclure.
+///
+/// # L'`APPLIQUE` DE L'UNE SE COMPARE À L'`ECRIT` DE L'AUTRE
+///
+/// Et jamais à son `compteur` : c'est toute la leçon du 2026-09-21, et
+/// [`replication`] la raconte. `applique` chez A est l'estampille de la
+/// dernière opération de B que A a appliquée ; `ecrit` chez B est l'estampille
+/// de la dernière opération que B a écrite. Les deux nombres parlent donc de
+/// la même suite — ce que B a écrit —, et se comparent. Égaux, A a tout
+/// appliqué de B ; en deçà, il manque ce que B a écrit depuis.
+///
+/// # CE QUI N'EST PAS DIT : « IL MANQUE N OPÉRATIONS »
+///
+/// La différence de deux estampilles n'est pas un nombre d'opérations.
+/// L'horloge de Lamport de B se hisse aussi sur ce que B REÇOIT (§4) : entre
+/// deux écritures de B, son compteur a pu grimper de dix sans que B écrive une
+/// ligne. Annoncer « douze opérations en retard » referait, sous une autre
+/// forme, l'erreur que ce module a déjà commise une fois. On nomme donc les
+/// deux estampilles, et on laisse l'exploitant lire.
+///
+/// # POURQUOI ON VÉRIFIE QU'IL S'AGIT BIEN DE DEUX RACINES
+///
+/// L'alias rend QUATRE adresses — l'A et l'AAAA de chacun des deux bancs — et
+/// rien dans une réponse ne dit de quelle racine elle vient
+/// (`replication.md` §6). Joindre « une autre adresse » ne garantit donc pas
+/// d'avoir joint l'autre racine : on peut retomber sur la même par sa seconde
+/// famille. Mais **chaque racine nomme son pair**, et c'est ce qui sauve : si
+/// les deux réponses nomment le MÊME pair, c'est la même racine deux fois, et
+/// l'on ne conclut pas. Si elles nomment des pairs différents, chacune nomme
+/// l'autre — la première est celle que la seconde appelle son pair, et
+/// réciproquement. C'est ainsi qu'on peut dire QUI est à jour sans qu'aucune
+/// racine ait eu à décliner son propre nom.
+///
+/// # Erreurs
+///
+/// Rend `Err` avec ce qui n'a pas pu être lu.
+pub fn conclusion(premier: &[u8], second: &[u8]) -> Result<String, String> {
+    let ici = replication_vue(premier)?;
+    let la_bas = replication_vue(second)?;
+    let (Some((pair_ici, applique_ici)), Some((pair_la_bas, applique_la_bas))) =
+        (ici.pair, la_bas.pair)
+    else {
+        return Ok(
+            "sans conclusion   l'une des deux tourne seule : il n'y a pas de voie
+                   à juger.
+"
+            .to_owned(),
+        );
+    };
+    if pair_ici == pair_la_bas {
+        return Ok(format!(
+            "sans conclusion   les deux réponses nomment le même pair ({}) : c'est la
+             même racine jointe deux fois, et l'alias en rend quatre adresses.
+",
+            pair_ici.texte().as_str()
+        ));
+    }
+    // Chacune nomme l'autre : celle qu'on a jointe d'abord est le pair de la
+    // seconde, et inversement.
+    let nom_ici = pair_la_bas.texte();
+    let nom_la_bas = pair_ici.texte();
+    let mut texte = String::new();
+    for (qui, applique, chez_qui, ecrit) in [
+        (
+            nom_ici.as_str(),
+            applique_ici,
+            nom_la_bas.as_str(),
+            la_bas.ecrit,
+        ),
+        (
+            nom_la_bas.as_str(),
+            applique_la_bas,
+            nom_ici.as_str(),
+            ici.ecrit,
+        ),
+    ] {
+        match ecrit {
+            None => texte.push_str(&format!(
+                "sans conclusion   {chez_qui} ne rend pas `ecrit` : un annuaire d'avant 0.17.0,
+                 et ce que {qui} a appliqué ne se compare à rien.
+"
+            )),
+            Some(ecrit) if applique >= ecrit => texte.push_str(&format!(
+                "à jour            {qui} a appliqué tout ce que {chez_qui} a écrit ({ecrit}).
+"
+            )),
+            Some(ecrit) => texte.push_str(&format!(
+                "en retard         {qui} s'est arrêtée à {applique} ; {chez_qui} a écrit
+                 jusqu'à {ecrit}.
+"
+            )),
         }
     }
     Ok(texte)
@@ -687,6 +796,11 @@ struct ReplicationVue {
     pair: Option<(asl_id::Identifiant, u64)>,
     voie: String,
     compteur: u64,
+    /// La dernière estampille que CETTE racine a écrite (`replication.md` §8,
+    /// servi depuis 0.17.0). **`None` est un annuaire d'avant**, pas un zéro :
+    /// une racine qui n'a jamais rien écrit rend `0`, et les deux ne se
+    /// concluent pas de la même façon.
+    ecrit: Option<u64>,
 }
 
 /// Lit `{"pair":"n-…","voie":"…","compteur":N,"applique":M}` — ou, seule,
@@ -709,6 +823,7 @@ fn replication_vue(octets: &[u8]) -> Result<ReplicationVue, String> {
     let mut voie = None;
     let mut compteur = None;
     let mut applique = None;
+    let mut ecrit = None;
     loop {
         lecteur.sauter_blancs();
         let champ = lecteur.chaine().map_err(faute)?;
@@ -725,6 +840,7 @@ fn replication_vue(octets: &[u8]) -> Result<ReplicationVue, String> {
             "voie" => voie = Some(lecteur.texte_libre().map_err(faute)?.to_owned()),
             "compteur" => compteur = Some(lecteur.entier().map_err(faute)?),
             "applique" => applique = Some(lecteur.entier().map_err(faute)?),
+            "ecrit" => ecrit = Some(lecteur.entier().map_err(faute)?),
             // **UN CHAMP INCONNU SE SAUTE**, qu'il porte un mot ou un nombre.
             _ => {
                 lecteur.sauter_blancs();
@@ -755,12 +871,13 @@ fn replication_vue(octets: &[u8]) -> Result<ReplicationVue, String> {
         pair,
         voie,
         compteur,
+        ecrit,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{appareils, machines, replication, reponses, vu};
+    use super::{appareils, conclusion, machines, replication, reponses, vu};
 
     #[test]
     fn la_replication_se_rend_sur_une_ligne_sans_inventer_un_retard() {
@@ -788,6 +905,135 @@ mod tests {
         assert!(dit.contains("appliqué 4790"), "{dit}");
         assert!(!dit.contains("retard"), "{dit}");
         assert!(!dit.contains("22"), "{dit}");
+    }
+
+    /// **LE CAS RÉEL DU 2026-09-21, ENFIN CONCLU.** Sur les vraies racines :
+    /// `compteur 35, applique 23` des deux côtés, voie ouverte, et rien en
+    /// retard — nitrogen avait écrit douze fois depuis l'amorçage, argon rien.
+    /// Le `compteur` ne pouvait pas le dire ; l'`ecrit` de l'autre le dit.
+    #[test]
+    fn deux_racines_a_jour_se_concluent_meme_quand_les_compteurs_different() {
+        let (r1, r2) = deux_racines();
+        // Vue de nitrogen : elle a écrit jusqu'à 35, et a appliqué 23 d'argon.
+        let ici = format!(
+            r#"{{"pair":"{}","voie":"ouverte","compteur":35,"applique":23,"ecrit":35}}"#,
+            r2.texte().as_str()
+        );
+        // Vue d'argon : elle n'a écrit que jusqu'à 23, et a tout appliqué.
+        let la_bas = format!(
+            r#"{{"pair":"{}","voie":"ouverte","compteur":35,"applique":35,"ecrit":23}}"#,
+            r1.texte().as_str()
+        );
+        let dit = conclusion(ici.as_bytes(), la_bas.as_bytes()).expect("lisible");
+        assert_eq!(dit.lines().count(), 2, "{dit}");
+        assert!(!dit.contains("en retard"), "{dit}");
+        assert!(!dit.contains("sans conclusion"), "{dit}");
+        // Chacune est nommée par le pair de l'autre, et dite à jour.
+        assert!(dit.contains(r1.texte().as_str()), "{dit}");
+        assert!(dit.contains(r2.texte().as_str()), "{dit}");
+        // **L'ÉCART DE DOUZE N'EST JAMAIS NOMMÉ** : il n'a jamais existé.
+        assert!(!dit.contains("12"), "{dit}");
+    }
+
+    #[test]
+    fn une_racine_en_retard_est_nommee_sans_compter_des_operations() {
+        let (r1, r2) = deux_racines();
+        let ici = format!(
+            r#"{{"pair":"{}","voie":"coupée","compteur":40,"applique":23,"ecrit":40}}"#,
+            r2.texte().as_str()
+        );
+        let la_bas = format!(
+            r#"{{"pair":"{}","voie":"coupée","compteur":40,"applique":40,"ecrit":30}}"#,
+            r1.texte().as_str()
+        );
+        let dit = conclusion(ici.as_bytes(), la_bas.as_bytes()).expect("lisible");
+        assert!(dit.contains("en retard"), "{dit}");
+        // Les deux estampilles sont dites, telles quelles.
+        assert!(dit.contains("23"), "{dit}");
+        assert!(dit.contains("30"), "{dit}");
+        // **PAS DE « 7 OPÉRATIONS »** : une différence d'estampilles n'est pas
+        // un compte d'écritures (`replication.md` §4).
+        assert!(!dit.contains("opération"), "{dit}");
+        assert!(!dit.contains(" 7 "), "{dit}");
+        // L'autre sens, lui, est à jour : 40 ≥ 40.
+        assert!(dit.contains("à jour"), "{dit}");
+    }
+
+    #[test]
+    fn un_annuaire_d_avant_ne_conclut_pas_et_ne_ment_pas() {
+        let (r1, r2) = deux_racines();
+        // La seconde ne rend pas `ecrit` : 0.16.1 ou avant.
+        let ici = format!(
+            r#"{{"pair":"{}","voie":"ouverte","compteur":35,"applique":23,"ecrit":35}}"#,
+            r2.texte().as_str()
+        );
+        let la_bas = format!(
+            r#"{{"pair":"{}","voie":"ouverte","compteur":35,"applique":35}}"#,
+            r1.texte().as_str()
+        );
+        let dit = conclusion(ici.as_bytes(), la_bas.as_bytes()).expect("lisible");
+        assert!(dit.contains("sans conclusion"), "{dit}");
+        assert!(dit.contains("0.17.0"), "{dit}");
+        // L'autre sens se conclut quand même : ce qu'on sait, on le dit.
+        assert!(dit.contains("à jour"), "{dit}");
+        // Et la ligne d'une telle racine ne montre pas d'`écrit` inventé.
+        let ligne = replication(la_bas.as_bytes()).expect("lisible");
+        assert!(!ligne.contains("écrit"), "{ligne}");
+    }
+
+    #[test]
+    fn la_meme_racine_jointe_deux_fois_ne_conclut_rien() {
+        let (r1, r2) = deux_racines();
+        // Les deux réponses nomment le MÊME pair : l'alias a rendu deux
+        // adresses du même banc.
+        let corps = format!(
+            r#"{{"pair":"{}","voie":"ouverte","compteur":35,"applique":23,"ecrit":35}}"#,
+            r2.texte().as_str()
+        );
+        let dit = conclusion(corps.as_bytes(), corps.as_bytes()).expect("lisible");
+        assert!(dit.contains("sans conclusion"), "{dit}");
+        assert!(dit.contains("même racine"), "{dit}");
+        assert!(!dit.contains("à jour"), "{dit}");
+        let _ = r1;
+    }
+
+    #[test]
+    fn une_racine_seule_ne_se_conclut_pas() {
+        let (_, r2) = deux_racines();
+        let seule = br#"{"voie":"seule","compteur":35,"ecrit":35}"#;
+        let avec_pair = format!(
+            r#"{{"pair":"{}","voie":"ouverte","compteur":35,"applique":35,"ecrit":35}}"#,
+            r2.texte().as_str()
+        );
+        let dit = conclusion(seule, avec_pair.as_bytes()).expect("lisible");
+        assert!(dit.contains("sans conclusion"), "{dit}");
+        assert!(dit.contains("tourne seule"), "{dit}");
+        // Dans l'autre ordre aussi.
+        let dit = conclusion(avec_pair.as_bytes(), seule).expect("lisible");
+        assert!(dit.contains("sans conclusion"), "{dit}");
+        // **UNE RACINE SEULE REND SON `ecrit`** : elle écrit comme une autre.
+        let ligne = replication(seule).expect("lisible");
+        assert!(ligne.contains("écrit 35"), "{ligne}");
+        assert!(ligne.contains("tourne seule"), "{ligne}");
+    }
+
+    #[test]
+    fn une_conclusion_illisible_est_refusee() {
+        let (_, r2) = deux_racines();
+        let bon = format!(
+            r#"{{"pair":"{}","voie":"ouverte","compteur":35,"applique":35,"ecrit":35}}"#,
+            r2.texte().as_str()
+        );
+        assert!(conclusion(b"{", bon.as_bytes()).is_err());
+        assert!(conclusion(bon.as_bytes(), b"{").is_err());
+    }
+
+    /// Deux racines distinctes, pour les essais de conclusion.
+    fn deux_racines() -> (asl_id::Identifiant, asl_id::Identifiant) {
+        (
+            asl_id::Identifiant::depuis_entropie(asl_id::Genre::Annuaire, [0x4E; 16]),
+            asl_id::Identifiant::depuis_entropie(asl_id::Genre::Annuaire, [0x41; 16]),
+        )
     }
 
     #[test]

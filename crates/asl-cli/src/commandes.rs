@@ -537,16 +537,31 @@ fn compte_etranger(demande: asl_id::Identifiant, notre: asl_id::Identifiant) -> 
 
 // ── `asl replication` ───────────────────────────────────────────────────────
 
-/// L'état de la voie entre les deux racines, vu de celle qu'on a jointe.
+/// L'état de la voie entre les deux racines — les DEUX, puis la conclusion.
 ///
 /// # ELLE DIT D'ABORD QUI A RÉPONDU, PARCE QUE L'ALIAS NE LE DIT PAS
 ///
 /// `asl-root.air-desktop.org` rend les deux racines, et la tournée en joint
 /// une — sans dire laquelle, et la réponse ne le dit pas non plus
 /// (`replication.md` §6). Or ce que `GET /v1/replication` rend est **l'état vu
-/// de cette racine-là** : son horloge, son curseur sur l'autre. Une ligne qui
-/// dirait « ouverte, à jour » sans dire de qui ne prouverait rien sur l'autre
-/// ; `asl replication` lancé deux fois joint, en général, les deux.
+/// de cette racine-là** : son horloge, son curseur sur l'autre, et depuis
+/// 0.17.0 la dernière estampille qu'elle a écrite.
+///
+/// # POURQUOI ELLE EN JOINT DEUX, ET NON UNE
+///
+/// Parce qu'une seule ne conclut rien. L'`applique` d'une racine se compare à
+/// l'`ecrit` de l'AUTRE (`rendu::conclusion`), et une ligne qui dirait
+/// « ouverte, à jour » sans avoir vu l'autre ne prouverait rien. Le champ
+/// `ecrit` n'a été ajouté que pour cela ; le lire d'un seul côté serait le
+/// laisser inutile.
+///
+/// **UNE SECONDE TENTATIVE, ET PAS UNE DE PLUS**, sur le modèle d'`asl enroll`
+/// et par le même `ailleurs_que` : l'adresse déjà jointe est retirée, et la
+/// tournée prend ce qui reste. Si rien ne reste, si la seconde ne répond pas,
+/// ou si elle nomme le même pair que la première — l'alias rend quatre
+/// adresses, deux par banc —, on rend ce qu'on a et l'on dit ce qui manque
+/// pour conclure. **On ne conclut jamais avec une moitié** : ce serait
+/// l'erreur du 21/09 sous une autre forme.
 ///
 /// C'est un verbe de CLI, sans ABI (C12 n'est pas touchée) : comme
 /// `asl machines`, il vit sur la voie machine, une connexion prouvée, une
@@ -558,18 +573,77 @@ pub async fn replication(invocation: &Invocation, identite: &Identite) -> Sortie
         .authentifier(identite)
         .await
         .map_err(refus_de_l_annuaire)?;
-    let corps = connexion
+    let premier = connexion
         .etat_de_la_replication()
         .await
         .map_err(refus_de_l_annuaire)?;
-    let dit = rendu::replication(&corps).map_err(Issue::Injoignable)?;
+    let deja = connexion.distante().ok();
     match connexion.distante() {
         Ok(ou) => println!("annuaire       {ou}"),
         Err(quoi) => println!("annuaire       inconnu — {quoi}"),
     }
-    print!("{dit}");
+    print!(
+        "{}",
+        rendu::replication(&premier).map_err(Issue::Injoignable)?
+    );
     let _ = connexion.fermer().await;
+
+    // La seconde racine, pour conclure. Son échec n'est pas l'échec du verbe :
+    // ce qu'on a lu de la première reste vrai, et vaut d'être montré.
+    let second = match ailleurs_que(invocation, &reglages, deja)? {
+        None => None,
+        Some(ailleurs) => match joindre_et_lire(&ailleurs, identite).await {
+            Ok(corps) => Some(corps),
+            Err(quoi) => {
+                println!();
+                println!("la seconde racine n'a pas répondu — {quoi}");
+                None
+            }
+        },
+    };
+
+    println!();
+    match second {
+        Some(second) => {
+            print!(
+                "{}",
+                rendu::conclusion(&premier, &second).map_err(Issue::Injoignable)?
+            );
+        }
+        None => println!(
+            "sans conclusion   une seule racine a répondu, et l'état de la voie se\n             juge des deux côtés."
+        ),
+    }
     Ok(())
+}
+
+/// Joint une racine, prouve, lit son état, et referme — le second tour de
+/// [`replication`].
+///
+/// Elle rend la faute en toutes lettres plutôt qu'une [`Issue`] : ici, une
+/// racine qui ne répond pas n'est pas une panne du verbe, c'est une ligne de
+/// plus à afficher.
+async fn joindre_et_lire(reglages: &Reglages, identite: &Identite) -> Result<Vec<u8>, String> {
+    let mut connexion = ouvrir(reglages).await.map_err(|quoi| quoi.dire())?;
+    let issue = async {
+        connexion
+            .authentifier(identite)
+            .await
+            .map_err(|quoi| quoi.to_string())?;
+        let corps = connexion
+            .etat_de_la_replication()
+            .await
+            .map_err(|quoi| quoi.to_string())?;
+        match connexion.distante() {
+            Ok(ou) => println!("annuaire       {ou}"),
+            Err(quoi) => println!("annuaire       inconnu — {quoi}"),
+        }
+        print!("{}", rendu::replication(&corps)?);
+        Ok(corps)
+    }
+    .await;
+    let _ = connexion.fermer().await;
+    issue
 }
 
 // ── `asl identity` ──────────────────────────────────────────────────────────
