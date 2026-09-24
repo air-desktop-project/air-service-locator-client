@@ -52,8 +52,16 @@ if ! command -v cargo-llvm-cov >/dev/null 2>&1; then
     exit 1
 fi
 
-rapport=$(cargo llvm-cov --workspace --locked --json --summary-only 2>/dev/null) || {
-    echo "ÉCHEC : la mesure de couverture n'a pas abouti."
+# **LA SORTIE D'ERREUR EST GARDÉE, ET MONTRÉE SI LA MESURE ÉCHOUE.** Elle était
+# jetée : un échec disait « n'a pas abouti » sans dire pourquoi, et un flake de
+# la CI devenait indiagnosticable. Elle ne se mêle pas à `stdout`, qui doit
+# rester du JSON pur ; elle attend dans un fichier, et ne sort que si elle a
+# quelque chose à expliquer — la fin, là où cargo dit ce qui a cassé.
+erreurs=$(mktemp)
+trap 'rm -f "$erreurs"' EXIT
+rapport=$(cargo llvm-cov --workspace --locked --json --summary-only 2>"$erreurs") || {
+    echo "ÉCHEC : la mesure de couverture n'a pas abouti. Ce que cargo llvm-cov a dit :"
+    tail -n 40 "$erreurs" | sed 's/^/    /'
     exit 1
 }
 
