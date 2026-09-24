@@ -438,6 +438,40 @@ gagnerait un champ « dernière estampille écrite ici ». Les règles client de
 §6 (`asl enroll` essaie l'autre racine sur code refusé ; `401` non définitif
 dans la reprise du daemon) restent à faire, à part.
 
+**« Ouvrir un compte sur invitation » — spécifié le 2026-09-24 (carbon), à
+coder.** PR serveur #30 (`posture-invitation`, 0.13.1, docs seules, mergée
+`61e9edd`) : `protocole.md` §2.1 (l'émission, la vérification, la fenêtre),
+`modele.md` §2.3, `replication.md` décision 26, `contraintes.md` C19. Ce qui
+est tranché :
+
+- **L'émission : `POST /v1/invitations`** sur l'annuaire EN MARCHE, corps
+  `genre o ‖ signature` (65 octets), sans exigence préalable — c'est le corps
+  qui prouve, comme `POST /v1/attestation`. La caution est une nouvelle
+  `--operator-key`, calquée sur `--peer-key`. Écartés : l'outil hors ligne
+  (l'entrepôt n'admet qu'un écrivain, donc il faudrait arrêter l'annuaire à
+  chaque arrivant — le geste est ordinaire sous cette posture, contrairement
+  à `--forget`), le code auto-porteur (dix octets ne portent pas une
+  signature de soixante-quatre, et l'usage unique impose un état), et le
+  compte d'exploitation (il aurait mis dans le modèle un `u-…` qui vaut plus
+  que les autres).
+- **`POST /v1/comptes` sous plate-forme `3`** porte le code dans la case
+  d'attestation (dix octets) ; l'appareil entre avec la valeur `invitation`.
+- **L'usage unique entre deux racines n'est PAS départagé** (décision 26) :
+  les invitations se répliquent, donc la course existe, mais deux comptes ne
+  se disputent rien — les deux vivent, le journal dit que le même code a
+  servi deux fois avec les deux `u-…`, l'exploitant tranche hors ligne. La
+  spec l'assume en une phrase : « une invitation garantit qu'on entre parce
+  que l'exploitant l'a voulu, pas qu'on entre une fois et une seule ».
+- Fenêtre : **24 h par défaut, plafond une semaine** ; **cinq échecs par
+  minute et par adresse** (limite de débit nouvelle dans le produit, exigée
+  par cette posture seulement).
+
+Ce que chaque dépôt devra faire est dans le corps de la PR #30. Deux points
+laissés ouverts : l'outil qui appellera `POST /v1/invitations` (ce n'est pas
+`asl` — geste d'exploitant, pas de machine), et le fait que les apps ne
+savent pas qu'une racine tourne en `invitation` (`GET /v1/version` pourrait
+le dire).
+
 **« Attester un appareil qui rejoint » — spécifié le 2026-09-21 (carbon), à
 coder.** PR serveur #27 (`attestation-rejoindre`, 0.11.1, docs seules, mergée
 `6aa9f93`) : `protocole.md` §2.2 « Attester un appareil qui rejoint — la preuve
