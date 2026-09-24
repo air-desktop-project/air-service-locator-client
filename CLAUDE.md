@@ -438,8 +438,18 @@ gagnerait un champ « dernière estampille écrite ici ». Les règles client de
 §6 (`asl enroll` essaie l'autre racine sur code refusé ; `401` non définitif
 dans la reprise du daemon) restent à faire, à part.
 
-**« Ouvrir un compte sur invitation » — spécifié le 2026-09-24 (carbon), à
-coder.** PR serveur #30 (`posture-invitation`, 0.13.1, docs seules, mergée
+**« Ouvrir un compte sur invitation » — spécifié ET SERVI le 2026-09-24
+(carbon).** Le serveur est fait : PR #31 (0.14.0, `7a51752`), **déployée sur
+les deux racines**, sans reprise de format. Un écart à la spec, meilleur
+qu'elle : consommer une invitation la **marque expirée** au lieu de retirer
+la ligne — un retrait sur une empreinte absente ne laissait rien, et
+l'émission arrivée en retard ressuscitait le code. **Reste côté apps** : le
+champ « code d'invitation » à l'ouverture de compte, présenté sous la
+plate-forme `3`, à ne montrer que si la racine tourne en `invitation` — ce
+que les apps ne savent pas encore (`GET /v1/version` pourrait le dire). Côté
+client : vérifier que dix octets d'attestation passent tels quels, sans quoi
+rien à faire côté ABI. L'outil qui appelle `POST /v1/invitations` reste à
+écrire, et ce n'est pas `asl`. PR serveur #30 (`posture-invitation`, 0.13.1, docs seules, mergée
 `61e9edd`) : `protocole.md` §2.1 (l'émission, la vérification, la fenêtre),
 `modele.md` §2.3, `replication.md` décision 26, `contraintes.md` C19. Ce qui
 est tranché :
