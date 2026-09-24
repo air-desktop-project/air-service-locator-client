@@ -38,5 +38,21 @@ tokio = { workspace = true, features = ["rt-multi-thread"] }
 # rôle du matériel d'un téléphone. Elle est déjà dans le graphe par `asl-cle`.
 p256 = { version = "0.14", default-features = false, features = ["ecdsa"] }
 
+# **LE BANC D'`asl-client-tokio`, PARTAGÉ ET NON RECOPIÉ.** Un essai de cette
+# frontière-ci a besoin d'une VRAIE connexion : ce qui est éprouvé dans
+# `tests/rejoindre.rs` est un état que l'ABI garde d'un appel à l'autre — le
+# défi de la connexion en cours —, et un tel état ne se voit pas sans qu'une
+# connexion existe. Le banc est donc inclus par chemin depuis le dépôt voisin,
+# comme les deux essais de ce dépôt qui s'en servent déjà ; un banc recopié est
+# un banc qui diverge, et celui-ci dit pourquoi dans son propre en-tête.
+ams-h3.workspace = true
+ams-proto-http.workspace = true
+ams-proto-quic.workspace = true
+ams-quic.workspace = true
+ams-quic-client.workspace = true
+ams-quic-tls.workspace = true
+ams-tls.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+
 [lints]
 workspace = true

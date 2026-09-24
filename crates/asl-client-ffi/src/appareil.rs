@@ -99,6 +99,49 @@ fn bloquer<T: Send + 'static>(
         .map_err(|_| ASL_INTERNE)
 }
 
+/// Dit si le défi a QUITTÉ LA MAISON — pas s'il a convaincu.
+///
+/// # POURQUOI UN TÉMOIN, ET NON LE CODE D'ERREUR
+///
+/// Un défi ne vaut qu'une fois : l'annuaire le consomme à la première preuve
+/// qui lui arrive, qu'elle tienne ou non. Mais tout ce qui PRÉCÈDE l'envoi —
+/// composer le message, le faire signer par le porteur, composer le corps —
+/// peut échouer sans que l'annuaire ait rien vu, et le sien reste alors bon.
+/// Ces deux mondes se distinguent à l'endroit de l'envoi, et là seulement :
+/// au retour, `ASL_INTERNE` naît des deux côtés, et les codes de `traduire`
+/// ressemblent à ceux d'une composition ratée. Les trier après coup serait
+/// une devinette, et une devinette qui se trompe jette un défi encore vivant
+/// — ou en garde un déjà mort.
+///
+/// **[`Envoi::part`] se pose juste avant la requête qui porte le défi, et
+/// nulle part ailleurs.** Le témoin est lu après `join`, qui ordonne l'écriture
+/// avant la lecture : `Relaxed` suffit, et dire plus serait se donner une
+/// garantie qu'on n'utilise pas.
+#[derive(Clone)]
+struct Envoi(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Envoi {
+    /// Un témoin neuf : rien n'est encore parti.
+    fn neuf() -> Self {
+        Self(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+            false,
+        )))
+    }
+
+    /// Les octets partent maintenant — le défi est dépensé, quoi qu'il advienne
+    /// ensuite. Une requête partie est une requête consommée : que la réponse
+    /// revienne, tarde ou ne vienne jamais ne change rien à ce que l'annuaire
+    /// a déjà vu.
+    fn part(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Le défi a-t-il servi ? Sinon, il est encore bon là-bas.
+    fn a_eu_lieu(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 /// La cadence de maintien qu'on pose sur une connexion d'appareil, en secondes.
 ///
 /// **DIX SECONDES, MESURÉES** (`modele.md` §4.1) : sur un lien résidentiel, le
@@ -432,23 +475,38 @@ pub unsafe extern "C" fn asl_appareil_connecter(appareil: *mut AslAppareil) -> i
                 Ok(signataire) => *signataire,
                 Err(quoi) => return quoi,
             };
-            // **LE DÉFI EST DÉPENSÉ, QUE LA PREUVE TIENNE OU NON** : l'annuaire
-            // le consomme à la première preuve, et un second essai avec lui
-            // rendrait `401` sans rien dire de plus.
+            // **LE DÉFI EST DÉPENSÉ DÈS QU'IL PART, ET PAS AVANT** : l'annuaire
+            // le consomme à la première preuve qui lui arrive, et un second
+            // essai avec lui rendrait `401` sans rien dire de plus. Mais le
+            // porteur peut refuser de signer — annuler l'invite, la laisser
+            // expirer —, et alors RIEN N'EST PARTI : le défi d'en face est
+            // toujours bon, sur cette connexion qui n'a pas bougé. Le jeter
+            // là coûtait un tour complet ; sur le chemin d'un appareil qui
+            // rejoint, cela condamnait une clé déjà née avec son attestation
+            // (constaté le 2026-09-23 sur un Fairphone 5).
+            let envoi = Envoi::neuf();
             appareil.defi = None;
-            let issue = bloquer(&appareil.moteur, async move {
-                let message = regles::message_d_authentification(identite, &defi, &tenue.liaison())
-                    .map_err(|_| ASL_INTERNE)?;
-                let signature = signataire.signer(&message)?;
-                let corps = regles::preuve_d_authentification(identite, &signature)
-                    .map_err(|_| ASL_INTERNE)?;
-                let reponse = tenue
-                    .requete("POST", "/v1/defi", &corps)
-                    .await
-                    .map_err(traduire)?;
-                reponse.exige(204).map_err(traduire)
+            let issue = bloquer(&appareil.moteur, {
+                let envoi = envoi.clone();
+                async move {
+                    let message =
+                        regles::message_d_authentification(identite, &defi, &tenue.liaison())
+                            .map_err(|_| ASL_INTERNE)?;
+                    let signature = signataire.signer(&message)?;
+                    let corps = regles::preuve_d_authentification(identite, &signature)
+                        .map_err(|_| ASL_INTERNE)?;
+                    envoi.part();
+                    let reponse = tenue
+                        .requete("POST", "/v1/defi", &corps)
+                        .await
+                        .map_err(traduire)?;
+                    reponse.exige(204).map_err(traduire)
+                }
             })
             .and_then(|issue| issue);
+            if !envoi.a_eu_lieu() {
+                appareil.defi = Some(defi);
+            }
             return match issue {
                 Ok(()) => ASL_OK,
                 Err(quoi) => quoi,
@@ -457,6 +515,11 @@ pub unsafe extern "C" fn asl_appareil_connecter(appareil: *mut AslAppareil) -> i
         if let Some(ancienne) = appareil.tenue.take() {
             appareil.moteur.block_on(ancienne.fermer());
         }
+        // **CELUI-CI SE JETTE POUR DE BON, ET IL LE FAUT** : un défi appartient
+        // à la connexion qui l'a tiré, et celle-là vient d'être fermée. Le
+        // garder pour la suivante donnerait une preuve composée sur le défi
+        // d'un canal mort — refusée là-bas, incompréhensible ici. La connexion
+        // qu'on ouvre juste après tire le sien.
         appareil.defi = None;
 
         let identite = appareil.identite;
@@ -504,6 +567,8 @@ pub unsafe extern "C" fn asl_appareil_deconnecter(appareil: *mut AslAppareil) ->
         if let Some(tenue) = appareil.tenue.take() {
             appareil.moteur.block_on(tenue.fermer());
         }
+        // La connexion s'en va, et le défi avec elle : il ne valait que sur
+        // elle.
         appareil.defi = None;
         ASL_OK
     })
@@ -546,9 +611,21 @@ pub unsafe extern "C" fn asl_appareil_liaison(appareil: *mut AslAppareil, liaiso
 /// Tire un défi sur la connexion en cours, et le rend — trente-deux octets.
 ///
 /// **Il ne sert qu'une fois, et c'est le prochain appel qui le dépense** :
-/// [`asl_appareil_creer_compte`]. Le tirer soi-même n'est utile que pour
-/// composer une attestation par-dessus, avant de créer le compte ; sans
-/// attestation, `asl_appareil_creer_compte` le tire lui-même.
+/// [`asl_appareil_creer_compte`], [`asl_appareil_rejoindre_atteste`], ou
+/// [`asl_appareil_connecter`] sous une identité fraîchement posée. Le tirer
+/// soi-même n'est utile que pour composer une attestation par-dessus, ou pour
+/// rejoindre ; sans attestation, `asl_appareil_creer_compte` le tire lui-même.
+///
+/// # UN GESTE REFUSÉ NE LE DÉPENSE PAS
+///
+/// Dépenser, c'est partir : l'annuaire consomme un défi à la première preuve
+/// qui lui arrive. Si le porteur refuse de signer — invite annulée, expirée,
+/// clé absente —, aucun octet n'a quitté la maison et le défi de cette
+/// connexion est toujours le bon. Il est donc REMIS, et l'application peut
+/// redemander le geste en rappelant le même verbe : **sans tirer de défi neuf,
+/// et sans régénérer la clé** — ce qui compte pour une attestation de clé
+/// Android, qui n'est liée qu'à ce défi-là. Un défi ne meurt qu'avec sa
+/// connexion.
 ///
 /// # Safety
 ///
@@ -743,53 +820,68 @@ pub unsafe extern "C" fn asl_appareil_creer_compte(
             // SAFETY : contrat de la fonction.
             unsafe { core::slice::from_raw_parts(attestation, taille) }.to_vec()
         };
+        // **REPRIS SI RIEN N'EST PARTI** : le défi rangé ici est celui sur
+        // lequel l'application a peut-être DÉJÀ composé son attestation
+        // (`asl_appareil_message_pour_attestation`). Un porteur qui refuse de
+        // signer ne fait rien voir à l'annuaire ; jeter le défi obligerait à
+        // en tirer un neuf au prochain essai, et l'attestation composée sur
+        // l'ancien ne vaudrait plus rien.
         let defi_tire = appareil.defi.take();
         let (tenue, signataire) = match (appareil.tenue(), appareil.signataire()) {
             (Ok(tenue), Ok(signataire)) => (tenue.clone(), *signataire),
             (Err(quoi), _) | (_, Err(quoi)) => return quoi,
         };
 
-        let issue = bloquer(&appareil.moteur, async move {
-            let defi = match defi_tire {
-                Some(defi) => defi,
-                None => {
-                    let reponse = tenue
-                        .requete("GET", "/v1/defi", &[])
-                        .await
-                        .map_err(traduire)?;
-                    reponse.exige(200).map_err(traduire)?;
-                    let mut octets = [0_u8; ASL_DEFI_OCTETS];
-                    if reponse.corps.len() != octets.len() {
-                        return Err(ASL_INTERNE);
+        let envoi = Envoi::neuf();
+        let issue = bloquer(&appareil.moteur, {
+            let envoi = envoi.clone();
+            async move {
+                let defi = match defi_tire {
+                    Some(defi) => defi,
+                    None => {
+                        let reponse = tenue
+                            .requete("GET", "/v1/defi", &[])
+                            .await
+                            .map_err(traduire)?;
+                        reponse.exige(200).map_err(traduire)?;
+                        let mut octets = [0_u8; ASL_DEFI_OCTETS];
+                        if reponse.corps.len() != octets.len() {
+                            return Err(ASL_INTERNE);
+                        }
+                        octets.copy_from_slice(&reponse.corps);
+                        asl_cle::Defi::depuis_octets(octets)
                     }
-                    octets.copy_from_slice(&reponse.corps);
-                    asl_cle::Defi::depuis_octets(octets)
-                }
-            };
-            let message = regles::message_de_possession(&signataire.cle, &defi, &tenue.liaison())
-                .map_err(|_| ASL_INTERNE)?;
-            let preuve = signataire.signer(&message)?;
-            let mut corps = vec![0_u8; asl_api::corps::COMPTE_CORPS_MAX];
-            let combien = regles::corps_de_compte(
-                plateforme,
-                &signataire.cle,
-                &preuve,
-                &attestation,
-                &mut corps,
-            )
-            .map_err(|_| ASL_ARGUMENT)?;
-            corps.truncate(combien);
-            let reponse = tenue
-                .requete("POST", "/v1/comptes", &corps)
-                .await
-                .map_err(traduire)?;
-            reponse.exige(201).map_err(traduire)?;
-            Ok(asl_client_tokio::CompteCree {
-                compte: reponse.identifiant("compte").map_err(|_| ASL_INTERNE)?,
-                appareil: reponse.identifiant("appareil").map_err(|_| ASL_INTERNE)?,
-            })
+                };
+                let message =
+                    regles::message_de_possession(&signataire.cle, &defi, &tenue.liaison())
+                        .map_err(|_| ASL_INTERNE)?;
+                let preuve = signataire.signer(&message)?;
+                let mut corps = vec![0_u8; asl_api::corps::COMPTE_CORPS_MAX];
+                let combien = regles::corps_de_compte(
+                    plateforme,
+                    &signataire.cle,
+                    &preuve,
+                    &attestation,
+                    &mut corps,
+                )
+                .map_err(|_| ASL_ARGUMENT)?;
+                corps.truncate(combien);
+                envoi.part();
+                let reponse = tenue
+                    .requete("POST", "/v1/comptes", &corps)
+                    .await
+                    .map_err(traduire)?;
+                reponse.exige(201).map_err(traduire)?;
+                Ok(asl_client_tokio::CompteCree {
+                    compte: reponse.identifiant("compte").map_err(|_| ASL_INTERNE)?,
+                    appareil: reponse.identifiant("appareil").map_err(|_| ASL_INTERNE)?,
+                })
+            }
         })
         .and_then(|issue| issue);
+        if !envoi.a_eu_lieu() {
+            appareil.defi = defi_tire;
+        }
         match issue {
             Ok(cree) => {
                 appareil.identite = Some(cree.appareil);
@@ -881,51 +973,65 @@ pub unsafe extern "C" fn asl_appareil_rejoindre_atteste(
             (Ok(tenue), Ok(signataire)) => (tenue.clone(), *signataire),
             (Err(quoi), _) | (_, Err(quoi)) => return quoi,
         };
-        // **DÉPENSÉ AVANT DE PARTIR**, comme dans `asl_appareil_connecter` : un
-        // défi ne sert qu'une fois, que la preuve tienne ou non.
+        // **DÉPENSÉ EN PARTANT**, comme dans `asl_appareil_connecter` : un défi
+        // ne sert qu'une fois, mais il ne sert qu'à partir du moment où il
+        // part. C'EST ICI QUE CELA COMPTE LE PLUS : le défi de ce chemin a vu
+        // naître la clé (`asl_appareil_message_pour_attestation_de_cle`), et
+        // la chaîne du Keystore ne vaut que sur lui. Le perdre parce que le
+        // porteur a laissé l'invite expirer condamnait la clé et son
+        // attestation — une clé neuve, un nouveau code à montrer, et le `a-…`
+        // déjà apporté à révoquer à la main.
         let defi_tire = appareil.defi.take();
 
-        let issue = bloquer(&appareil.moteur, async move {
-            let defi = match defi_tire {
-                Some(defi) => defi,
-                None => {
-                    let reponse = tenue
-                        .requete("GET", "/v1/defi", &[])
-                        .await
-                        .map_err(traduire)?;
-                    reponse.exige(200).map_err(traduire)?;
-                    let mut octets = [0_u8; ASL_DEFI_OCTETS];
-                    if reponse.corps.len() != octets.len() {
-                        return Err(ASL_INTERNE);
+        let envoi = Envoi::neuf();
+        let issue = bloquer(&appareil.moteur, {
+            let envoi = envoi.clone();
+            async move {
+                let defi = match defi_tire {
+                    Some(defi) => defi,
+                    None => {
+                        let reponse = tenue
+                            .requete("GET", "/v1/defi", &[])
+                            .await
+                            .map_err(traduire)?;
+                        reponse.exige(200).map_err(traduire)?;
+                        let mut octets = [0_u8; ASL_DEFI_OCTETS];
+                        if reponse.corps.len() != octets.len() {
+                            return Err(ASL_INTERNE);
+                        }
+                        octets.copy_from_slice(&reponse.corps);
+                        asl_cle::Defi::depuis_octets(octets)
                     }
-                    octets.copy_from_slice(&reponse.corps);
-                    asl_cle::Defi::depuis_octets(octets)
+                };
+                let message = regles::message_d_authentification(identite, &defi, &tenue.liaison())
+                    .map_err(|_| ASL_INTERNE)?;
+                let signature = signataire.signer(&message)?;
+                let mut corps = vec![0_u8; regles::ATTESTATION_CORPS_MAX];
+                let combien = regles::corps_d_attestation(
+                    identite,
+                    &signature,
+                    plateforme,
+                    &attestation,
+                    &mut corps,
+                )
+                .map_err(|_| ASL_ARGUMENT)?;
+                corps.truncate(combien);
+                envoi.part();
+                let reponse = tenue
+                    .requete("POST", "/v1/attestation", &corps)
+                    .await
+                    .map_err(traduire)?;
+                match reponse.statut {
+                    204 => Ok(()),
+                    403 => Err(ASL_CHAINE_REFUSEE),
+                    _ => Err(ASL_REFUSE),
                 }
-            };
-            let message = regles::message_d_authentification(identite, &defi, &tenue.liaison())
-                .map_err(|_| ASL_INTERNE)?;
-            let signature = signataire.signer(&message)?;
-            let mut corps = vec![0_u8; regles::ATTESTATION_CORPS_MAX];
-            let combien = regles::corps_d_attestation(
-                identite,
-                &signature,
-                plateforme,
-                &attestation,
-                &mut corps,
-            )
-            .map_err(|_| ASL_ARGUMENT)?;
-            corps.truncate(combien);
-            let reponse = tenue
-                .requete("POST", "/v1/attestation", &corps)
-                .await
-                .map_err(traduire)?;
-            match reponse.statut {
-                204 => Ok(()),
-                403 => Err(ASL_CHAINE_REFUSEE),
-                _ => Err(ASL_REFUSE),
             }
         })
         .and_then(|issue| issue);
+        if !envoi.a_eu_lieu() {
+            appareil.defi = defi_tire;
+        }
         match issue {
             Ok(()) => {
                 appareil.identite = Some(identite);

@@ -365,7 +365,13 @@ int32_t asl_appareil_liaison(asl_appareil *appareil, uint8_t liaison[ASL_DEFI_OC
 /* Tire un défi (32 octets) sur la connexion en cours. Il ne sert qu'une fois,
  * et c'est le prochain asl_appareil_creer_compte, asl_appareil_rejoindre_atteste
  * ou asl_appareil_connecter qui le dépense — utile seulement pour composer une
- * attestation par-dessus, ou pour rejoindre. */
+ * attestation par-dessus, ou pour rejoindre.
+ *
+ * UN GESTE REFUSÉ NE LE DÉPENSE PAS : si le signataire rend autre chose que
+ * zéro (ASL_SIGNATURE_REFUSEE), rien n'est parti et le défi reste celui de
+ * cette connexion. Rappelez le même verbe pour redemander le geste — sans
+ * retirer de défi, et SANS RÉGÉNÉRER LA CLÉ : une attestation composée sur ce
+ * défi-là vaut toujours. Un défi ne meurt qu'avec sa connexion. */
 int32_t asl_appareil_defi(asl_appareil *appareil, uint8_t defi[ASL_DEFI_OCTETS]);
 
 /* Ce dont une attestation couvre le condensat : domaine ‖ clé ‖ défi ‖ liaison,
