@@ -22,6 +22,12 @@ use crate::{Issue, Sortie};
 /// des NAT réels, et il ne l'est pas encore.
 const PLAFOND_MS: u64 = 15_000;
 
+/// Ce que l'annuaire répond à un code d'enrôlement qu'il ne veut pas.
+///
+/// `403` — et le même pour un code faux, périmé ou déjà servi : il les supprime
+/// au lieu de les marquer, et ne les distingue donc pas (`protocole.md` §2.0).
+const CODE_REFUSE: u16 = 403;
+
 /// Combien de temps `asl` attend une connexion avant de rendre la main.
 ///
 /// # POURQUOI L'UTILITAIRE SE DONNE UNE BORNE QUE LA BIBLIOTHÈQUE REFUSE
@@ -210,7 +216,64 @@ async fn ouvrir(reglages: &Reglages) -> Result<Connexion, Issue> {
 
 // ── `asl enroll` ────────────────────────────────────────────────────────────
 
+/// Les réglages privés de l'adresse qu'on vient d'essayer.
+///
+/// Rend `None` quand il n'y en avait qu'une : il n'y a alors pas de seconde
+/// tentative à faire, et c'est le cas d'un banc unique.
+///
+/// # CE QUE LE CLIENT SAIT, ET CE QU'IL NE SAIT PAS
+///
+/// Il connaît des ADRESSES, pas des racines. L'alias en rend quatre — l'A et
+/// l'AAAA de chacun des deux bancs —, et rien dans une réponse ne dit de
+/// laquelle elle vient (`replication.md` §6, dernier paragraphe). Retirer
+/// celle qu'on vient d'essayer est donc ce qu'on peut faire de mieux ; avec la
+/// liste de l'alias, la tournée qui suit prend l'autre adresse de la même
+/// famille, c'est-à-dire l'autre banc.
+fn restants_sans(reglages: &Reglages, deja: Option<std::net::SocketAddr>) -> Option<Vec<Annuaire>> {
+    let restants: Vec<Annuaire> = reglages
+        .annuaires()
+        .iter()
+        .filter(|annuaire| Some(annuaire.adresse) != deja)
+        .cloned()
+        .collect();
+    (!restants.is_empty()).then_some(restants)
+}
+
+fn ailleurs_que(
+    invocation: &Invocation,
+    reglages: &Reglages,
+    deja: Option<std::net::SocketAddr>,
+) -> Result<Option<Reglages>, Issue> {
+    let Some(restants) = restants_sans(reglages, deja) else {
+        return Ok(None);
+    };
+    let racines = racines(invocation)?;
+    Reglages::nouveaux(restants, racines, PLAFOND_MS)
+        .map(Some)
+        .map_err(|quoi| Issue::Configuration(quoi.to_string()))
+}
+
 /// Lie une clé neuve à cette machine.
+///
+/// # UN CODE REFUSÉ S'ESSAIE UNE FOIS SUR L'AUTRE RACINE
+///
+/// `replication.md` §6. Un code émis chez une racine met une fraction de
+/// seconde à arriver chez l'autre — la coupure entière si la voie est coupée —,
+/// et **le refus est le même pour un code inconnu et pour un code pas encore
+/// arrivé** : l'annuaire supprime les codes au lieu de les marquer
+/// (`protocole.md` §2.0), et ne peut donc pas les distinguer. Seul le client
+/// sait qu'il y a une autre racine ; c'est donc à lui d'essayer.
+///
+/// **DEUX TENTATIVES, ET PAS UNE DE PLUS.** La borne n'est pas une prudence
+/// vague : elle est ce qui rend cette règle gratuite. Un secret de cinquante
+/// bits que l'on présente deux fois au lieu d'une reste un secret de cinquante
+/// bits ; une boucle sur toutes les adresses de l'alias en ferait un oracle
+/// qu'on interroge quatre fois par code deviné, et le jour où l'alias en
+/// rendrait vingt, vingt fois.
+///
+/// La clé, elle, ne change pas entre les deux : elle n'a été liée nulle part,
+/// puisque le code a été refusé. En générer une seconde laisserait la première
+/// derrière soi.
 pub async fn enrole(invocation: &Invocation, dossier: &Path, code: &str) -> Sortie {
     let reglages = reglages(invocation)?;
     let mut connexion = ouvrir(&reglages).await?;
@@ -221,10 +284,26 @@ pub async fn enrole(invocation: &Invocation, dossier: &Path, code: &str) -> Sort
     let (enrolement, graine) =
         etat::preparer_un_enrolement().map_err(|quoi| Issue::Configuration(quoi.to_string()))?;
 
-    let enrolee = connexion
-        .enroler(&enrolement, code)
-        .await
-        .map_err(refus_de_l_annuaire)?;
+    let enrolee = match connexion.enroler(&enrolement, code).await {
+        Ok(enrolee) => enrolee,
+        Err(FauteReseau::Statut(CODE_REFUSE)) => {
+            let deja = connexion.distante().ok();
+            let _ = connexion.fermer().await;
+            let Some(ailleurs) = ailleurs_que(invocation, &reglages, deja)? else {
+                return Err(Issue::CodeInconnu);
+            };
+            connexion = ouvrir(&ailleurs).await?;
+            connexion
+                .enroler(&enrolement, code)
+                .await
+                .map_err(|quoi| match quoi {
+                    // La seconde a dit non elle aussi : le refus est acquis.
+                    FauteReseau::Statut(CODE_REFUSE) => Issue::CodeInconnu,
+                    autre => refus_de_l_annuaire(autre),
+                })?
+        }
+        Err(autre) => return Err(refus_de_l_annuaire(autre)),
+    };
 
     etat::ecrire(dossier, enrolee.machine, enrolee.proprietaire, &graine)
         .map_err(|quoi| Issue::Configuration(quoi.to_string()))?;
@@ -696,5 +775,44 @@ mod tests {
         }
         assert_eq!(super::tourner(vec![quatre]), vec![quatre]);
         assert!(super::tourner(vec![]).is_empty());
+    }
+
+    /// La seconde tentative de `asl enroll` vise AILLEURS, et n'existe pas
+    /// quand il n'y a qu'une adresse.
+    ///
+    /// **C'est la borne de `replication.md` §6 qu'on éprouve ici** : deux
+    /// tentatives, pas une de plus. Retirer l'adresse déjà essayée est ce qui
+    /// la garantit — une liste qui la garderait permettrait à la tournée d'y
+    /// revenir, et le « une fois » deviendrait « jusqu'à ce que ça marche ».
+    #[test]
+    fn la_seconde_tentative_exclut_l_adresse_deja_essayee() {
+        use asl_client_tokio::{Annuaire, Reglages};
+        use std::net::SocketAddr;
+
+        let une: SocketAddr = "192.0.2.1:6630".parse().unwrap();
+        let autre: SocketAddr = "192.0.2.2:6630".parse().unwrap();
+        let nomme = |adresse| Annuaire {
+            adresse,
+            nom: "annuaire.example".to_owned(),
+        };
+        let racines = super::RACINE_EPINGLEE.to_vec();
+        let deux = Reglages::nouveaux(
+            vec![nomme(une), nomme(autre)],
+            racines.clone(),
+            super::PLAFOND_MS,
+        )
+        .expect("deux adresses, une configuration valable");
+
+        let restants = super::restants_sans(&deux, Some(une)).expect("il en reste une");
+        let adresses: Vec<SocketAddr> = restants.iter().map(|a| a.adresse).collect();
+        assert_eq!(adresses, vec![autre], "l'adresse essayée doit disparaître");
+
+        // Une seule adresse : il n'y a pas d'ailleurs, et c'est le cas d'un banc.
+        let seule = Reglages::nouveaux(vec![nomme(une)], racines, super::PLAFOND_MS)
+            .expect("une adresse suffit à une configuration");
+        assert!(
+            super::restants_sans(&seule, Some(une)).is_none(),
+            "sans autre adresse, il n'y a pas de seconde tentative"
+        );
     }
 }

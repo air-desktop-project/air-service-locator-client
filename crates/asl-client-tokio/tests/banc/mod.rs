@@ -155,6 +155,34 @@ impl ams_h3::Service for FauxAnnuaire {
     }
 }
 
+/// Un annuaire qui ne connaît pas cette machine : `401` à la preuve.
+///
+/// # CE QU'IL SERT À ÉPROUVER
+///
+/// `replication.md` §6 : une machine tout juste enrôlée chez une racine n'est
+/// pas encore connue de l'autre, et celle-ci refuse sa preuve. **Ce refus n'est
+/// pas définitif** — il faut essayer l'autre, puis reculer. Sans un banc qui
+/// sache dire non, cette nuance ne se prouverait qu'en débranchant un vrai
+/// annuaire au bon moment.
+///
+/// Il répond comme [`FauxAnnuaire`] à tout le reste : ce qu'on veut isoler est
+/// le refus d'authentification, pas une panne.
+pub struct SansCetteMachine;
+
+impl ams_h3::Service for SansCetteMachine {
+    fn serve<'o>(
+        &mut self,
+        tete: &ams_proto_http::RequestHead<'_>,
+        corps: &[u8],
+        sortie: &'o mut [u8],
+    ) -> ams_h3::Reponse<'o> {
+        if matches!(tete.method(), Method::Post) && tete.path() == b"/v1/defi" {
+            return ams_h3::Reponse::new(StatusCode::UNAUTHORIZED, &[]);
+        }
+        FauxAnnuaire.serve(tete, corps, sortie)
+    }
+}
+
 /// La machine que le faux annuaire croit être celle de toute connexion.
 pub fn machine() -> asl_id::Identifiant {
     asl_id::Identifiant::depuis_entropie(asl_id::Genre::Machine, [0x4D; 16])

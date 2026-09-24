@@ -55,6 +55,12 @@ pub enum Issue {
     Configuration(String),
     /// L'annuaire a compris, et il a dit non.
     Refuse(u16),
+    /// Le code d'enrôlement a été refusé par les DEUX racines.
+    ///
+    /// **Il a sa variante à lui**, et non un `Refuse(403)`, parce que c'est la
+    /// seule issue que `replication.md` §6 nomme : après la seconde tentative,
+    /// le refus n'est plus « peut-être pas encore arrivé », il est définitif.
+    CodeInconnu,
     /// Personne n'a répondu.
     Injoignable(String),
 }
@@ -68,7 +74,7 @@ impl Issue {
         match self {
             Self::Usage(_) => 1,
             Self::Configuration(_) => 2,
-            Self::Refuse(_) => 3,
+            Self::Refuse(_) | Self::CodeInconnu => 3,
             Self::Injoignable(_) => 4,
         }
     }
@@ -83,6 +89,14 @@ impl Issue {
                  Elle n'est pas liée, ou elle a été révoquée : asl enroll <code>"
                 .to_owned(),
             Self::Refuse(403) => "403 — cette machine n'a pas le droit de faire cela.".to_owned(),
+            // **LES DEUX RACINES ONT DIT NON**, et l'annuaire ne distingue pas
+            // un code inconnu d'un code périmé (`protocole.md` §2.0) : un code
+            // consommé est SUPPRIMÉ, pas marqué. On ne peut donc pas en dire
+            // plus que les trois causes possibles.
+            Self::CodeInconnu => "code inconnu — les deux racines l'ont refusé.\n\
+                 Il est faux, il a expiré, ou il a déjà servi : l'annuaire ne les\n\
+                 distingue pas. Demandez-en un autre à l'application."
+                .to_owned(),
             // **`404` VEUT DIRE DEUX CHOSES, ET L'ANNUAIRE REFUSE DE LES
             // DISTINGUER** (C10) : « ce service n'existe pas » et « il existe et
             // vous n'y avez pas droit » rendent le même code, exprès — un `403`

@@ -413,6 +413,16 @@ async fn tenir_toujours(
 
         // **LE RECUL NE REPART DE ZÉRO QU'ICI** : une connexion ouverte ne
         // prouve rien, une annonce acceptée prouve tout.
+        //
+        // **ET C'EST AUSSI CE QUI REND UN `401` NON DÉFINITIF**
+        // (`replication.md` §6). Une machine tout juste enrôlée chez une racine
+        // n'est pas encore connue de l'autre, qui refuse alors sa preuve. Comme
+        // `tenir` a rendu `false`, on ne rappelle pas `Tournee::reussite` : le
+        // rang n'est pas remis à zéro, et le pas suivant essaie l'annuaire
+        // SUIVANT, sans attendre — le recul n'arrive qu'une fois le tour bouclé.
+        // Appeler `reussite` sur une connexion seulement ouverte réessaierait
+        // le refusant à l'infini, et la panne serait muette puisque la socket,
+        // elle, s'ouvre. Éprouvé par `un_401_sur_une_racine_n_est_pas_definitif`.
         if attachee {
             tournee.reussite();
             partage.attachee.store(false, Ordering::Release);
