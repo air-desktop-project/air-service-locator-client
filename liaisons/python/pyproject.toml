@@ -25,7 +25,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "asl-client"
-version = "0.9.1"
+version = "0.10.0"
 description = "Annoncer un service et retrouver un port, par l'annuaire air-service-locator."
 readme = "README.md"
 requires-python = ">=3.11"
