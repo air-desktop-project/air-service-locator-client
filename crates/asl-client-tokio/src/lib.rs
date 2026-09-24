@@ -859,6 +859,32 @@ impl Connexion {
         reponse.exige(200)?;
         Ok(reponse.corps)
     }
+
+    /// Ce que l'annuaire dit de lui-même : sa version, et sa posture
+    /// d'attestation (`protocole.md`, `GET /v1/version`).
+    ///
+    /// # ELLE N'EXIGE RIEN, ET C'EST TOUT SON INTÉRÊT
+    ///
+    /// C'est la ressource que peut lire **qui n'a pas encore de clé** : une
+    /// machine qu'on installe, une application qui va créer un compte, un
+    /// exploitant qui vérifie qu'un banc sert bien ce qu'il croit. La demander
+    /// avant de s'authentifier est donc normal, et un diagnostic sur une
+    /// machine non enrôlée la lit comme une autre.
+    ///
+    /// Le corps est rendu tel quel. La `posture` — `required`, `optional` ou
+    /// `invitation` — n'est là que depuis la 0.16.0 de l'annuaire ; un annuaire
+    /// plus ancien rend la version seule, et c'est à l'appelant de ne pas
+    /// inventer ce qui manque.
+    ///
+    /// # Errors
+    ///
+    /// [`Faute::Http3`], [`Faute::Socket`], [`Faute::Quic`], [`Faute::Delai`],
+    /// et [`Faute::Statut`] si l'annuaire ne sert pas cette route.
+    pub async fn version(&mut self) -> Result<Vec<u8>, Faute> {
+        let reponse = self.requete(b"GET", b"/v1/version", &[], b"").await?;
+        reponse.exige(200)?;
+        Ok(reponse.corps)
+    }
 }
 
 /// Ce qu'un enrôlement rend : la machine, et son propriétaire si l'annuaire

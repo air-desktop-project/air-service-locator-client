@@ -875,9 +875,158 @@ fn replication_vue(octets: &[u8]) -> Result<ReplicationVue, String> {
     })
 }
 
+/// Ce que `GET /v1/version` rend : la version de l'annuaire, et sa posture
+/// d'attestation quand il la dit.
+///
+/// # POURQUOI LA POSTURE A SA PLACE DANS UN DIAGNOSTIC
+///
+/// Elle répond à « qu'exige cet annuaire de qui ouvre un compte ? », et la
+/// réponse change ce qu'une application doit montrer. Elle est observable de
+/// toute façon — une racine en `invitation` refuse toute création sans code —,
+/// c'est pourquoi l'annuaire la dit depuis sa 0.16.0 plutôt que de la faire
+/// deviner.
+///
+/// # CE QU'ON NE DIT PAS À LA PLACE DE L'ANNUAIRE
+///
+/// Un annuaire plus ancien ne rend que sa version : la posture est alors
+/// **dite absente**, jamais remplacée par une valeur par défaut qui aurait
+/// l'air d'une réponse. Un mot qu'on ne connaît pas — une quatrième posture,
+/// un jour — est rendu **tel quel, sans glose** : un diagnostic qui tomberait
+/// sur ce qu'il ne comprend pas serait inutile le jour où il sert.
+///
+/// # DEUX FAITS, DONC DEUX LIGNES
+///
+/// Rend la version et la posture séparément, parce que `asl diagnose` donne
+/// un fait par ligne — et parce que **`annuaire` y désigne déjà autre chose**
+/// dans `asl replication` : l'adresse de la racine jointe. Deux sens sous un
+/// même libellé dans deux verbes voisins se paient en lecture de travers.
+///
+/// # Erreurs
+///
+/// Rend `Err` avec ce qui n'a pas pu être lu.
+pub fn version(corps: &[u8]) -> Result<(String, String), String> {
+    let vue = version_vue(corps)?;
+    let Some(posture) = vue.posture else {
+        return Ok((vue.version, "non dite — annuaire d'avant 0.16.0".to_owned()));
+    };
+    // La glose est en français, le mot reste celui du protocole : c'est lui
+    // qu'on retrouve dans `--attestation` et dans les journaux du banc.
+    let glose = match posture.as_str() {
+        "required" => " — une attestation de plate-forme est exigée pour ouvrir un compte",
+        "optional" => " — n'importe qui peut ouvrir un compte",
+        "invitation" => " — il faut un code d'invitation émis par l'exploitant",
+        _ => "",
+    };
+    Ok((vue.version, format!("{posture}{glose}")))
+}
+
+/// Ce que porte `GET /v1/version`.
+struct VersionVue {
+    /// La version que l'annuaire dit servir.
+    version: String,
+    /// Sa posture d'attestation, quand elle est dite (annuaire ≥ 0.16.0).
+    posture: Option<String>,
+}
+
+/// Lit `{"version":"0.17.0","posture":"optional"}` — ou, plus ancien,
+/// `{"version":"0.15.0"}`.
+///
+/// **LE MÊME LECTEUR QUE [`replication_vue`]**, et la même tolérance : un
+/// champ de demain se saute, qu'il porte un mot ou un nombre. Seule `version`
+/// est exigée — c'est ce que ce verbe promet depuis toujours ; `posture` est
+/// rendue telle qu'elle vient, sans être comparée à une liste close.
+fn version_vue(octets: &[u8]) -> Result<VersionVue, String> {
+    let mut lecteur = asl_proto::cadrage::Lecteur::nouveau(octets);
+    let faute = |quoi: asl_proto::Erreur| format!("la version ne se lit pas : {quoi:?}");
+    lecteur.attendre(b'{', "un objet").map_err(faute)?;
+    let mut version = None;
+    let mut posture = None;
+    loop {
+        lecteur.sauter_blancs();
+        let champ = lecteur.chaine().map_err(faute)?;
+        lecteur.attendre(b':', "deux-points").map_err(faute)?;
+        match champ {
+            "version" => version = Some(lecteur.texte_libre().map_err(faute)?.to_owned()),
+            "posture" => posture = Some(lecteur.texte_libre().map_err(faute)?.to_owned()),
+            _ => {
+                lecteur.sauter_blancs();
+                if lecteur.regarder() == Some(b'"') {
+                    lecteur.texte_libre().map_err(faute)?;
+                } else {
+                    lecteur.entier().map_err(faute)?;
+                }
+            }
+        }
+        lecteur.sauter_blancs();
+        match lecteur.regarder() {
+            Some(b',') => lecteur.avancer(),
+            _ => break,
+        }
+    }
+    lecteur.attendre(b'}', "la fin de l'objet").map_err(faute)?;
+    lecteur.fin().map_err(faute)?;
+    Ok(VersionVue {
+        version: version.ok_or_else(|| "il manque `version`".to_owned())?,
+        posture,
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{appareils, conclusion, machines, replication, reponses, vu};
+    use super::{appareils, conclusion, machines, replication, reponses, version, vu};
+
+    /// Les trois postures que l'annuaire sert aujourd'hui se disent, et
+    /// chacune porte de quoi la comprendre sans connaître le produit.
+    #[test]
+    fn les_trois_postures_se_disent_avec_ce_quelles_exigent() {
+        for (mot, attendu) in [
+            ("required", "attestation"),
+            ("optional", "n'importe qui"),
+            ("invitation", "code d'invitation"),
+        ] {
+            let corps = format!(r#"{{"version":"0.17.0","posture":"{mot}"}}"#);
+            let (version, posture) = version(corps.as_bytes()).expect("lisible");
+            assert_eq!(version, "0.17.0", "{mot}");
+            assert!(posture.starts_with(mot), "{posture}");
+            assert!(posture.contains(attendu), "{posture}");
+        }
+    }
+
+    /// **UN ANNUAIRE D'AVANT 0.16.0 NE DIT PAS SA POSTURE**, et l'on ne
+    /// l'invente pas : ni `optional` par défaut — qui aurait l'air d'une
+    /// réponse et ferait croire qu'on peut ouvrir un compte —, ni un échec.
+    #[test]
+    fn une_posture_absente_est_dite_absente_et_non_devinee() {
+        let (version, posture) = version(br#"{"version":"0.15.0"}"#).expect("lisible");
+        assert_eq!(version, "0.15.0");
+        assert!(posture.contains("non dite"), "{posture}");
+        assert!(!posture.contains("optional"), "{posture}");
+        assert!(!posture.contains("required"), "{posture}");
+    }
+
+    /// **UNE QUATRIÈME POSTURE SE LIT QUAND MÊME.** Un diagnostic qui
+    /// tomberait sur ce qu'il ne comprend pas serait inutile le jour où il
+    /// sert : le mot est rendu tel quel, sans glose inventée.
+    #[test]
+    fn une_posture_inconnue_est_rendue_telle_quelle() {
+        let corps = br#"{"version":"1.0.0","posture":"quelque-chose-de-neuf"}"#;
+        let (version, posture) = version(corps).expect("lisible");
+        assert_eq!(version, "1.0.0");
+        assert_eq!(posture, "quelque-chose-de-neuf");
+    }
+
+    /// Un champ de demain se saute, qu'il porte un mot ou un nombre ; il
+    /// manque `version`, ou le corps n'est pas un objet, et l'on refuse.
+    #[test]
+    fn la_version_tolere_les_champs_de_demain_et_refuse_ce_qui_manque() {
+        let corps = br#"{"version":"0.18.0","posture":"optional","pairs":2,"nom":"nitrogen"}"#;
+        let (dite, posture) = version(corps).expect("lisible");
+        assert_eq!(dite, "0.18.0");
+        assert!(posture.starts_with("optional"), "{posture}");
+        assert!(version(br#"{"posture":"optional"}"#).is_err());
+        assert!(version(b"ce n'est pas un objet").is_err());
+        assert!(version(br#"{"version":"0.17.0""#).is_err());
+    }
 
     #[test]
     fn la_replication_se_rend_sur_une_ligne_sans_inventer_un_retard() {
