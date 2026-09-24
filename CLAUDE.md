@@ -487,10 +487,15 @@ Ce que chaque dépôt devra faire :
    `corps_d_attestation`, `Connexion::attester`, ABI
    `asl_appareil_rejoindre_atteste` + `ASL_CHAINE_REFUSEE = -12`, JNI
    `Natif_rejoindreAtteste`, `connecter` garde la connexion nue qui tient un
-   défi, `asl enrolled` dit « en attente d'attestation ». **À reprendre** :
-   sur un refus biométrique, le défi est consommé (`defi.take()` avant
-   `signer`) — l'app doit recommencer avec une clé neuve alors qu'un nouvel
-   essai du geste suffirait ; remettre le défi si le signataire refuse.
+   défi, `asl enrolled` dit « en attente d'attestation ». ~~À reprendre : le défi consommé sur un refus
+   biométrique~~ — **fait** : PR #14 (0.9.1, `03e3724`). Un témoin `Envoi`
+   posé juste avant la requête qui porte le défi tranche « avant envoi » de
+   « après envoi » : ce qui échoue avant — le porteur qui refuse, une
+   composition ratée — remet le défi, ce qui part sur le fil le dépense. Trois
+   sites (`connecter` branche rejoindre, `creer_compte`, `rejoindre_atteste`) ;
+   le chemin normal de `connecter` et `deconnecter` sont laissés tels quels,
+   leur connexion étant morte. Essai sur vraie socket, validé en
+   réintroduisant le défaut.
    Pour mémoire : `asl-client::appareil` — le message d'attestation
    de clé avant la clé sur une connexion **tenue sans identité**, puis la
    preuve avec chaîne ; `asl-client-tokio` — ne plus fermer la connexion nue à
