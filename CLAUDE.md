@@ -517,8 +517,17 @@ Ce que chaque dépôt devra faire :
    `POST /v1/attestation` à la preuve ; `Appareil.Attestation.ATTENDUE`
    (« en attente d'attestation ») ; le cas de la coupure (recommencer,
    nouvelle clé).
-4. **iOS / macOS (oxygen)** : les mêmes ; App Attest quand un iPhone sera là.
-   Le Mac (sans enclave attestable) rejoint en `aucune`.
+4. ~~**iOS / macOS (oxygen)**~~ — **fait** : PR #16 (0.8.0, build 14,
+   `9e3d019`). **La voie Apple n'appelle PAS `POST /v1/attestation`** et c'est
+   délibéré : sans chaîne à présenter, une attestation vide sous
+   `ASL_PLATEFORME_AUCUNE` vaut `POST /v1/defi` (l'ABI le dit), et l'ordre
+   « défi avant clé » n'est une contrainte que du Keystore — App Attest
+   atteste une clé à lui sur un défi qui nomme la nôtre. Ce qu'il faudra
+   câbler le jour où un iPhone sera là est écrit au-dessus de `rejoindre`.
+   `Attestation.attendue` est rendue et dite « en attente d'attestation »
+   (étiquette factorisée dans le `Coeur`). **Le défaut de verrou existait ici
+   aussi**, sous une autre forme : un `GET /v1/utilisateurs` non-200 jetait un
+   compte DÉJÀ rejoint — carnet écrit sous la preuve désormais.
 
 **« Effacer mon compte » — spécifié le 2026-09-18 (carbon), ~~à coder~~
 fait :** serveur PR #26 (0.11.0, `5c89c08`, déployé sur les deux racines le
