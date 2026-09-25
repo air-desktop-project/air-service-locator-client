@@ -43,7 +43,8 @@ use asl_id::{Genre, Identifiant};
 use crate::{
     ASL_ARGUMENT, ASL_CHAINE_REFUSEE, ASL_CONFIGURATION, ASL_IDENTIFIANT_OCTETS, ASL_INJOIGNABLE,
     ASL_INTERNE, ASL_NON_CONNECTE, ASL_OK, ASL_PAS_D_IDENTITE, ASL_REFUSE, ASL_SIGNATURE_REFUSEE,
-    ASL_TAMPON_TROP_PETIT, PLAFOND_MS, chaine, ecrire_chaine, ouvrir, protege, traduire,
+    ASL_TAMPON_TROP_PETIT, ASL_TROP_D_ESSAIS, PLAFOND_MS, chaine, ecrire_chaine, ouvrir, protege,
+    traduire,
 };
 
 /// Combien d'octets fait une clé publique d'appareil : P-256, SEC1 compressé.
@@ -899,6 +900,20 @@ pub unsafe extern "C" fn asl_appareil_creer_compte(
     })
 }
 
+/// Ce que le statut de `POST /v1/attestation` devient dans l'ABI.
+///
+/// `403` a son code, parce que la preuve tenait et que seule la chaîne est
+/// refusée ; `429` a le sien, parce que la même demande, plus tard, peut
+/// aboutir. Tout le reste est un refus sans nuance.
+pub(crate) fn verdict_d_attestation(statut: u16) -> Result<(), i32> {
+    match statut {
+        204 => Ok(()),
+        403 => Err(ASL_CHAINE_REFUSEE),
+        429 => Err(ASL_TROP_D_ESSAIS),
+        _ => Err(ASL_REFUSE),
+    }
+}
+
 /// Prouve la clé de cet appareil — qui vient de REJOINDRE un compte — et
 /// présente sa chaîne d'attestation, en un verbe (`POST /v1/attestation`,
 /// `protocole.md` §2.2), sur la connexion tenue.
@@ -1021,11 +1036,7 @@ pub unsafe extern "C" fn asl_appareil_rejoindre_atteste(
                     .requete("POST", "/v1/attestation", &corps)
                     .await
                     .map_err(traduire)?;
-                match reponse.statut {
-                    204 => Ok(()),
-                    403 => Err(ASL_CHAINE_REFUSEE),
-                    _ => Err(ASL_REFUSE),
-                }
+                verdict_d_attestation(reponse.statut)
             }
         })
         .and_then(|issue| issue);
