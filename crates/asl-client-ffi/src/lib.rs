@@ -85,7 +85,8 @@ pub const ASL_TAMPON_TROP_PETIT: i32 = -5;
 pub const ASL_INTERNE: i32 = -6;
 /// Cette machine n'a pas d'identité : appelez `asl_client_identite`.
 pub const ASL_PAS_D_IDENTITE: i32 = -7;
-/// Ce client annonce déjà.
+/// Déjà fait : ce client annonce déjà, ou un flux de nouvelles est déjà ouvert
+/// sur cette connexion d'appareil (`409`).
 pub const ASL_DEJA: i32 = -8;
 /// L'annuaire n'a encore rien poussé.
 ///
@@ -330,7 +331,7 @@ pub extern "C" fn asl_faute_texte(code: i32) -> *const c_char {
         ASL_TAMPON_TROP_PETIT => c"tampon trop petit",
         ASL_INTERNE => c"faute interne",
         ASL_PAS_D_IDENTITE => c"aucune identite: appelez asl_client_identite",
-        ASL_DEJA => c"ce client annonce deja",
+        ASL_DEJA => c"deja fait: annonce en cours, ou flux deja ouvert",
         ASL_PAS_DE_POUSSEE => c"rien n'a ete pousse",
         ASL_NON_CONNECTE => c"pas connecte: appelez asl_appareil_connecter",
         ASL_SIGNATURE_REFUSEE => c"le porteur n'a pas signe",

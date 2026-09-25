@@ -28,12 +28,14 @@ use core::ffi::{c_char, c_void};
 use std::ffi::CString;
 
 use asl_client_ffi::appareil::{
-    ASL_CLE_APPAREIL_OCTETS, ASL_DEFI_OCTETS, ASL_MESSAGE_MAX, ASL_SIGNATURE_OCTETS, AslAppareil,
-    asl_appareil_annuaire, asl_appareil_cle, asl_appareil_connecter, asl_appareil_creer_compte,
-    asl_appareil_deconnecter, asl_appareil_defi, asl_appareil_identifiant, asl_appareil_identite,
-    asl_appareil_liaison, asl_appareil_libere, asl_appareil_message_pour_attestation,
-    asl_appareil_message_pour_attestation_de_cle, asl_appareil_neuf, asl_appareil_racines,
-    asl_appareil_rejoindre_atteste, asl_appareil_requete,
+    ASL_CLE_APPAREIL_OCTETS, ASL_DEFI_OCTETS, ASL_MESSAGE_MAX, ASL_NOUVELLE_MAX,
+    ASL_SIGNATURE_OCTETS, AslAppareil, asl_appareil_annuaire, asl_appareil_cle,
+    asl_appareil_connecter, asl_appareil_creer_compte, asl_appareil_deconnecter, asl_appareil_defi,
+    asl_appareil_identifiant, asl_appareil_identite, asl_appareil_liaison, asl_appareil_libere,
+    asl_appareil_message_pour_attestation, asl_appareil_message_pour_attestation_de_cle,
+    asl_appareil_neuf, asl_appareil_nouvelle, asl_appareil_nouvelles_ouvrir,
+    asl_appareil_nouvelles_recues, asl_appareil_racines, asl_appareil_rejoindre_atteste,
+    asl_appareil_requete,
 };
 use asl_client_ffi::{ASL_ARGUMENT, ASL_IDENTIFIANT_OCTETS, ASL_INTERNE, ASL_OK, asl_faute_texte};
 use jni::JNIEnv;
@@ -84,6 +86,27 @@ fn handle<'a>(brut: jlong) -> Option<&'a mut Handle> {
     // SAFETY : le seul `Long` non nul que Kotlin détient est celui que `neuf`
     // a rendu, et il n'est plus employé après `libere`.
     unsafe { pointeur(brut).as_mut() }
+}
+
+/// L'appareil que ce `Long` porte, SANS emprunter le handle.
+///
+/// # POURQUOI PAS [`handle`] ICI
+///
+/// Les verbes des nouvelles tournent PENDANT `requete`, sur un autre fil —
+/// c'est ce que l'ABI permet (`asl.h`, « sauf ces quatre »). `requete` emprunte
+/// le handle en écriture pour y poser `dernier` ; un second emprunt, même en
+/// lecture, se chevaucherait avec lui. On ne lit donc ici que le champ
+/// `appareil`, par le pointeur, et l'on n'écrit rien : `dernier` n'est pas
+/// touché, et ces verbes rendent leur code eux-mêmes.
+fn appareil_partage(brut: jlong) -> *const AslAppareil {
+    let handle = pointeur(brut);
+    if handle.is_null() {
+        return core::ptr::null();
+    }
+    // SAFETY : un `Long` non nul est un handle vivant (voir `handle`), et
+    // `appareil` n'est écrit que par `libere`, qui ne tourne jamais pendant
+    // un autre verbe. Aucune référence au handle n'est formée.
+    unsafe { core::ptr::addr_of!((*handle).appareil).read() }
 }
 
 fn lire_chaine(env: &mut JNIEnv, texte: &JString) -> Option<CString> {
@@ -679,6 +702,81 @@ pub extern "system" fn Java_org_airdesktop_servicelocator_reseau_Natif_requete(
     let mut rendu = Vec::with_capacity(ecrit.saturating_add(2));
     rendu.extend_from_slice(&statut.to_be_bytes());
     rendu.extend_from_slice(sortie.get(..ecrit).unwrap_or_default());
+    rendre_octets(&env, &rendu)
+}
+
+// ── LES NOUVELLES — `GET /v1/nouvelles` ─────────────────────────────────────
+//
+// **CES TROIS-LÀ PEUVENT TOURNER PENDANT `requete`**, sur un autre fil : une
+// attente dure ce que Kotlin a choisi, et l'écran continue de requêter. Ils ne
+// passent donc ni par `handle` ni par `dernierCode` — voir `appareil_partage`.
+
+/// `external fun nouvellesOuvrir(h: Long): Int` — `ASL_OK`, `ASL_DEJA` (un
+/// flux vit déjà sur cette connexion), `ASL_REFUSE` (révoqué),
+/// `ASL_NON_CONNECTE`, `ASL_INJOIGNABLE`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_airdesktop_servicelocator_reseau_Natif_nouvellesOuvrir(
+    _env: JNIEnv,
+    _classe: JClass,
+    brut: jlong,
+) -> jint {
+    // SAFETY : un handle vivant, ou nul — et l'ABI le refuse alors.
+    unsafe { asl_appareil_nouvelles_ouvrir(appareil_partage(brut)) }
+}
+
+/// `external fun nouvellesRecues(h: Long): Long` — combien de nouvelles sont
+/// arrivées sur cette connexion ; **un nombre négatif est un code** `ASL_…`.
+/// Un compteur ne dépasse pas 2⁶³ : les deux ne se confondent pas.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_airdesktop_servicelocator_reseau_Natif_nouvellesRecues(
+    _env: JNIEnv,
+    _classe: JClass,
+    brut: jlong,
+) -> jlong {
+    let mut combien = 0_u64;
+    // SAFETY : un handle vivant, ou nul ; `combien` est à nous.
+    let code = unsafe { asl_appareil_nouvelles_recues(appareil_partage(brut), &raw mut combien) };
+    if code != ASL_OK {
+        return code.into();
+    }
+    jlong::try_from(combien).unwrap_or(jlong::MAX)
+}
+
+/// `external fun nouvelle(h: Long, attenteMs: Int): ByteArray?`
+///
+/// Rend `code (4 octets, gros-boutien) ‖ ligne` : `ASL_OK` suivi de la ligne
+/// JSON, ou `ASL_PAS_DE_POUSSEE` seul à l'échéance (le cas ordinaire), ou
+/// `ASL_NON_CONNECTE` seul quand le flux est tombé avec la connexion.
+///
+/// **LE CODE EST DANS LE TABLEAU, ET NON DANS `dernierCode`** : ce verbe tourne
+/// pendant les autres, et `dernierCode` est à eux. `null` ne veut dire qu'une
+/// chose — la machine virtuelle n'a pas su allouer. Une attente négative vaut
+/// zéro : regarder seulement.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_airdesktop_servicelocator_reseau_Natif_nouvelle(
+    env: JNIEnv,
+    _classe: JClass,
+    brut: jlong,
+    attente_ms: jint,
+) -> jbyteArray {
+    let mut ligne = [0_u8; ASL_NOUVELLE_MAX];
+    let mut ecrit = 0_usize;
+    // SAFETY : un handle vivant, ou nul ; `ASL_NOUVELLE_MAX` octets
+    // inscriptibles, et `ecrit` est à nous.
+    let code = unsafe {
+        asl_appareil_nouvelle(
+            appareil_partage(brut),
+            u32::try_from(attente_ms).unwrap_or(0),
+            ligne.as_mut_ptr(),
+            ligne.len(),
+            &raw mut ecrit,
+        )
+    };
+    let mut rendu = Vec::with_capacity(ecrit.saturating_add(4));
+    rendu.extend_from_slice(&code.to_be_bytes());
+    if code == ASL_OK {
+        rendu.extend_from_slice(ligne.get(..ecrit).unwrap_or_default());
+    }
     rendre_octets(&env, &rendu)
 }
 

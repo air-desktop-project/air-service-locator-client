@@ -42,7 +42,7 @@ mod attache;
 mod pont;
 mod reponse;
 
-pub use appareil::{CompteCree, Tenue};
+pub use appareil::{CompteCree, NOUVELLE_MAX, Nouvelle, Tenue};
 pub use attache::{Annuaire, Attache, Etat, Reglages, cadence_du_bail, joindre};
 pub use pont::Pont;
 pub use reponse::Reponse;
@@ -179,6 +179,12 @@ pub struct Connexion {
     /// `asl_proto::cadrage::objets` dit combien d'octets sont complets. Le reste
     /// attend ici la suite.
     reste: Vec<u8>,
+    /// Le flux des nouvelles d'un appareil (`GET /v1/nouvelles`), s'il est
+    /// ouvert — même raison que [`Self::poussees`] : sa réponse ne se termine
+    /// jamais. Voir `appareil.rs`.
+    nouvelles: Option<StreamId>,
+    /// Ce qui est arrivé sur ce flux-là et qui n'a pas encore sa fin de ligne.
+    lignes: appareil::Lignes,
 }
 
 impl Connexion {
@@ -239,6 +245,8 @@ impl Connexion {
             autorite: nom.to_owned(),
             poussees: None,
             reste: Vec::new(),
+            nouvelles: None,
+            lignes: appareil::Lignes::default(),
         };
         connexion.poignee_de_main().await?;
         Ok(connexion)
@@ -467,9 +475,11 @@ impl Connexion {
         let mut vivants: Vec<StreamId> = self.quic.streams_alive().collect();
         // **LE FLUX DES POUSSÉES PEUT N'ÊTRE DANS AUCUNE LISTE** : rien n'y est
         // arrivé depuis longtemps, et il n'a plus d'octets prêts. Le relire
-        // explicitement est ce qui fait entrer un verdict.
-        if let Some(flux) = self.poussees.filter(|flux| !vivants.contains(flux)) {
-            vivants.push(flux);
+        // explicitement est ce qui fait entrer un verdict — et une nouvelle.
+        for flux in [self.poussees, self.nouvelles].into_iter().flatten() {
+            if !vivants.contains(&flux) {
+                vivants.push(flux);
+            }
         }
         {
             let mut pont = Pont(&mut self.quic);

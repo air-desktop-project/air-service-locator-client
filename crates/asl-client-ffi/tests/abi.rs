@@ -420,7 +420,7 @@ fn les_constantes_de_l_en_tete_sont_celles_de_rust() {
         declarees.insert(format!("ASL_{nom}"), valeur);
     }
 
-    let attendues: [(&str, i64); 36] = [
+    let attendues: [(&str, i64); 37] = [
         ("ASL_OK", ASL_OK.into()),
         ("ASL_ARGUMENT", ASL_ARGUMENT.into()),
         ("ASL_CONFIGURATION", ASL_CONFIGURATION.into()),
@@ -474,6 +474,10 @@ fn les_constantes_de_l_en_tete_sont_celles_de_rust() {
         (
             "ASL_ATTESTATION_MAX",
             i64::try_from(appareil::ASL_ATTESTATION_MAX).expect("il tient"),
+        ),
+        (
+            "ASL_NOUVELLE_MAX",
+            i64::try_from(appareil::ASL_NOUVELLE_MAX).expect("il tient"),
         ),
         (
             "ASL_PLATEFORME_AUCUNE",

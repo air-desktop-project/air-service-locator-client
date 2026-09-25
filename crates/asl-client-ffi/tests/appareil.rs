@@ -15,7 +15,9 @@ use asl_client_ffi::appareil::{
     asl_appareil_creer_compte, asl_appareil_deconnecter, asl_appareil_defi,
     asl_appareil_identifiant, asl_appareil_identite, asl_appareil_liaison, asl_appareil_libere,
     asl_appareil_message_pour_attestation, asl_appareil_message_pour_attestation_de_cle,
-    asl_appareil_neuf, asl_appareil_racines, asl_appareil_rejoindre_atteste, asl_appareil_requete,
+    asl_appareil_neuf, asl_appareil_nouvelle, asl_appareil_nouvelles_ouvrir,
+    asl_appareil_nouvelles_recues, asl_appareil_racines, asl_appareil_rejoindre_atteste,
+    asl_appareil_requete,
 };
 use asl_client_ffi::{
     ASL_ARGUMENT, ASL_CONFIGURATION, ASL_IDENTIFIANT_OCTETS, ASL_NON_CONNECTE, ASL_OK,
@@ -100,6 +102,27 @@ fn les_pointeurs_nuls_rendent_argument_et_ne_tuent_personne() {
             asl_appareil_identifiant(ptr::null(), ptr::null_mut()),
             ASL_ARGUMENT
         );
+        let mut ecrit = 0_usize;
+        let mut recues = 0_u64;
+        assert_eq!(asl_appareil_nouvelles_ouvrir(ptr::null()), ASL_ARGUMENT);
+        assert_eq!(
+            asl_appareil_nouvelles_recues(ptr::null(), &raw mut recues),
+            ASL_ARGUMENT
+        );
+        assert_eq!(
+            asl_appareil_nouvelle(ptr::null(), 0, ptr::null_mut(), 0, &raw mut ecrit),
+            ASL_ARGUMENT
+        );
+        let brut = appareil();
+        assert_eq!(
+            asl_appareil_nouvelles_recues(brut, ptr::null_mut()),
+            ASL_ARGUMENT
+        );
+        assert_eq!(
+            asl_appareil_nouvelle(brut, 0, ptr::null_mut(), 0, ptr::null_mut()),
+            ASL_ARGUMENT
+        );
+        asl_appareil_libere(brut);
         asl_appareil_libere(ptr::null_mut());
     }
 }
@@ -219,6 +242,16 @@ fn sans_connexion_tout_verbe_le_dit() {
             asl_appareil_rejoindre_atteste(brut, a.as_ptr(), ASL_PLATEFORME_AUCUNE, ptr::null(), 0),
             ASL_NON_CONNECTE
         );
+        // Les nouvelles aussi : ni flux à ouvrir, ni attente à faire — et le
+        // compteur dit zéro, comme `asl_poussees_recues` sans attache.
+        assert_eq!(asl_appareil_nouvelles_ouvrir(brut), ASL_NON_CONNECTE);
+        assert_eq!(
+            asl_appareil_nouvelle(brut, 0, octets.as_mut_ptr(), octets.len(), &raw mut ecrit),
+            ASL_NON_CONNECTE
+        );
+        let mut recues = u64::MAX;
+        assert_eq!(asl_appareil_nouvelles_recues(brut, &raw mut recues), ASL_OK);
+        assert_eq!(recues, 0);
         // Se déconnecter sans connexion n'est pas une faute.
         assert_eq!(asl_appareil_deconnecter(brut), ASL_OK);
         asl_appareil_libere(brut);

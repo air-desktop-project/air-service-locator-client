@@ -45,11 +45,14 @@ extern "C" {
 #define ASL_TAMPON_TROP_PETIT -5
 #define ASL_INTERNE           -6
 #define ASL_PAS_D_IDENTITE    -7
+/* Déjà fait : ce client annonce déjà, ou un flux de nouvelles est déjà ouvert
+ * sur cette connexion d'appareil (409). */
 #define ASL_DEJA              -8
 /* Pas une panne : l'annuaire ne pousse que ce qui a CHANGÉ, et un service dont
  * les sondes confirment ce qu'il disait déjà n'en produit aucune. Le distinguer
  * d'une liste vide évite de faire croire que les points sont devenus
- * injoignables. */
+ * injoignables. Voie mobile : aucune nouvelle avant l'échéance
+ * (asl_appareil_nouvelle) — le cas ordinaire, là aussi. */
 #define ASL_PAS_DE_POUSSEE    -9
 /* Voie mobile : cet appareil n'est pas connecté — asl_appareil_connecter. */
 #define ASL_NON_CONNECTE      -10
@@ -296,7 +299,15 @@ int32_t asl_derniere_poussee(const asl_client *client,
  * RECONNECTE PAS SEULE : reprouver la clé, c'est redemander un geste, et c'est
  * l'application qui choisit quand.
  *
- * UN SEUL FIL À LA FOIS : les appels sur un même handle ne se chevauchent pas.
+ * UN SEUL FIL À LA FOIS : les appels sur un même handle ne se chevauchent pas,
+ * SAUF CES QUATRE, qui ne font que lire le handle et peuvent tourner ensemble,
+ * sur des fils différents : asl_appareil_nouvelle (l'attente, qui dure ce que
+ * l'application a choisi), asl_appareil_nouvelles_recues,
+ * asl_appareil_nouvelles_ouvrir et asl_appareil_requete — l'écran continue de
+ * requêter pendant qu'un fil attend. Tous les autres écrivent le handle
+ * (connexion remplacée, défi dépensé, identité posée) et s'exécutent SEULS :
+ * arrêter l'attente d'abord — son échéance la borne — avant
+ * asl_appareil_connecter, asl_appareil_deconnecter ou asl_appareil_libere.
  */
 
 /* Une clé publique d'appareil : P-256, SEC1 compressé. */
@@ -309,6 +320,9 @@ int32_t asl_derniere_poussee(const asl_client *client,
 #define ASL_MESSAGE_MAX 138
 /* L'attestation la plus longue que l'annuaire admette. */
 #define ASL_ATTESTATION_MAX 8192
+/* La plus longue ligne qu'asl_appareil_nouvelle rende : un tampon de cette
+ * taille ne reçoit jamais ASL_TAMPON_TROP_PETIT. */
+#define ASL_NOUVELLE_MAX 1024
 
 /* ANDROID est l'attestation de clé du Keystore ; la case disait GOOGLE (Play
  * Integrity, abandonné, C19) jusqu'en 0.5, même octet. INVITATION porte un code
@@ -434,6 +448,40 @@ int32_t asl_appareil_rejoindre_atteste(asl_appareil *appareil, const char *ident
 int32_t asl_appareil_requete(asl_appareil *appareil, const char *methode, const char *chemin,
                              const uint8_t *corps, size_t taille,
                              uint8_t *sortie, size_t combien, size_t *ecrit, uint16_t *statut);
+
+/* ── LES NOUVELLES — GET /v1/nouvelles sur la connexion tenue ──────────────
+ *
+ * LE MODÈLE DES VERDICTS POUSSÉS (asl_poussees_recues, asl_derniere_poussee) :
+ * la tâche de fond tient la connexion et recueille les lignes que l'annuaire
+ * écrit ; ces verbes LISENT ce qu'elle a recueilli, et « rien » se dit
+ * ASL_PAS_DE_POUSSEE. Une ligne dit qu'il y a du neuf et de quel genre —
+ * `{"quoi":"autorisation"}` —, rien d'autre : l'application RELIT
+ * GET /v1/autorisations et montre la différence (protocole.md §2). Elle saute
+ * les genres qu'elle ne connaît pas.
+ *
+ * LA SÉQUENCE : asl_appareil_connecter (le geste), asl_appareil_nouvelles_ouvrir,
+ * puis, sur un fil à elle, asl_appareil_nouvelle en boucle. ASL_NON_CONNECTE dit
+ * que la connexion est tombée : arrêter la boucle, reconnecter (un geste de
+ * plus), rouvrir, relire. Le flux vit ce que vit la connexion. */
+
+/* Ouvre le flux, et attend son statut. ASL_DEJA : un flux est déjà ouvert sur
+ * cette connexion (409) — il vit. ASL_REFUSE : appareil révoqué depuis sa preuve
+ * (401). ASL_NON_CONNECTE : pas de connexion. ASL_INJOIGNABLE : elle est tombée. */
+int32_t asl_appareil_nouvelles_ouvrir(const asl_appareil *appareil);
+
+/* Combien de nouvelles sont arrivées sur cette connexion, prises ou non — le
+ * pendant d'asl_poussees_recues. Zéro sans connexion. */
+int32_t asl_appareil_nouvelles_recues(const asl_appareil *appareil, uint64_t *sortie);
+
+/* La plus ancienne nouvelle pas encore prise, en attendant au plus `attente_ms`
+ * (zéro : regarder seulement). ASL_OK : `ecrit` octets de JSON dans `sortie`,
+ * sans fin de ligne ni NUL, et la ligne est prise. ASL_PAS_DE_POUSSEE : rien
+ * avant l'échéance — rappeler. ASL_NON_CONNECTE : flux non ouvert, ou tombé avec
+ * la connexion. ASL_TAMPON_TROP_PETIT : `ecrit` reçoit la taille, et la ligne
+ * RESTE en tête ; un tampon d'ASL_NOUVELLE_MAX octets ne le voit jamais. UNE
+ * SEULE ATTENTE À LA FOIS : deux se partageraient les lignes. */
+int32_t asl_appareil_nouvelle(const asl_appareil *appareil, uint32_t attente_ms,
+                              uint8_t *sortie, size_t combien, size_t *ecrit);
 
 /* L'identifiant `a-…` de cet appareil, s'il est enrôlé. ASL_PAS_D_IDENTITE sinon. */
 int32_t asl_appareil_identifiant(const asl_appareil *appareil, char sortie[ASL_IDENTIFIANT_OCTETS]);
