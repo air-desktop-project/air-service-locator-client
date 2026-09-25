@@ -60,6 +60,10 @@ extern "C" {
  * sous une posture qui l'exige (403). Cette clé ne s'attestera plus : nouvelle
  * connexion, nouveau défi, nouvelle clé, et l'appareil apporté reste à révoquer. */
 #define ASL_CHAINE_REFUSEE    -12
+/* L'annuaire refuse POUR L'INSTANT : trop d'essais (429) — aujourd'hui, les
+ * codes d'invitation, cinq échecs par minute et par adresse. La même demande,
+ * un peu plus tard, peut aboutir : ce n'est pas un refus (ASL_REFUSE). */
+#define ASL_TROP_D_ESSAIS     -13
 
 /* Tailles de tampons que l'appelant doit fournir. */
 #define ASL_IDENTIFIANT_OCTETS 29
@@ -391,7 +395,9 @@ int32_t asl_appareil_message_pour_attestation_de_cle(asl_appareil *appareil, uin
  * d'asl_appareil_defi s'il en reste un, un neuf sinon. `attestation` est vide
  * pour ASL_PLATEFORME_AUCUNE, exigée pour les autres. Rend `u-…` et `a-…` en
  * texte, NUL compris ; l'identité est INSTALLÉE au passage, et la connexion est
- * désormais celle de cet appareil. */
+ * désormais celle de cet appareil. Sous ASL_PLATEFORME_INVITATION, un code
+ * refusé rend ASL_REFUSE, et ASL_TROP_D_ESSAIS après cinq échecs dans la
+ * minute depuis cette adresse : dire « attendez », pas « code refusé ». */
 int32_t asl_appareil_creer_compte(asl_appareil *appareil, uint8_t plateforme,
                                   const uint8_t *attestation, size_t taille,
                                   char compte_sortie[ASL_IDENTIFIANT_OCTETS],

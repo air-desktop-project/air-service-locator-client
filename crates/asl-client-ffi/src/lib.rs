@@ -110,6 +110,15 @@ pub const ASL_SIGNATURE_REFUSEE: i32 = -11;
 /// reste dans le compte, à révoquer depuis l'écran Appareils. Distinct
 /// d'`ASL_REFUSE`, qui ne dit pas si la preuve tenait.
 pub const ASL_CHAINE_REFUSEE: i32 = -12;
+/// L'annuaire refuse POUR L'INSTANT : trop d'essais (`429`). Aujourd'hui, la
+/// seule borne de ce genre est celle des codes d'invitation — cinq échecs par
+/// minute et par adresse (`protocole.md` §2.1).
+///
+/// **CE N'EST PAS UN REFUS DE LA DEMANDE** : la même, un peu plus tard, peut
+/// aboutir. Distinct d'`ASL_REFUSE`, qui dit que la demande elle-même est
+/// refusée — et qu'une application dirait « code refusé » là où il fallait
+/// dire « attendez ».
+pub const ASL_TROP_D_ESSAIS: i32 = -13;
 
 pub mod appareil;
 
@@ -326,6 +335,7 @@ pub extern "C" fn asl_faute_texte(code: i32) -> *const c_char {
         ASL_NON_CONNECTE => c"pas connecte: appelez asl_appareil_connecter",
         ASL_SIGNATURE_REFUSEE => c"le porteur n'a pas signe",
         ASL_CHAINE_REFUSEE => c"l'annuaire a refuse la chaine d'attestation",
+        ASL_TROP_D_ESSAIS => c"trop d'essais: reessayez dans une minute",
         _ => c"code inconnu",
     };
     texte.as_ptr()
@@ -931,6 +941,7 @@ pub(crate) async fn ouvrir(reglages: &Reglages) -> Result<asl_client_tokio::Conn
 /// un droit manquant et un câble débranché se corrigent à des endroits opposés.
 pub(crate) fn traduire(quoi: asl_client_tokio::Faute) -> i32 {
     match quoi {
+        asl_client_tokio::Faute::Statut(429) => ASL_TROP_D_ESSAIS,
         asl_client_tokio::Faute::Statut(_) => ASL_REFUSE,
         asl_client_tokio::Faute::Tls(_) => ASL_CONFIGURATION,
         _ => ASL_INJOIGNABLE,
@@ -1080,6 +1091,32 @@ fn ordonner_les_candidats(
 #[cfg(test)]
 mod essais {
     use super::*;
+
+    /// **`429` N'EST PAS UN REFUS** : trop d'essais se dit à part, pour
+    /// qu'une application dise « attendez » et non « code refusé ». Les
+    /// autres statuts restent un refus sans nuance.
+    #[test]
+    fn trop_d_essais_se_distingue_d_un_refus() {
+        assert_eq!(
+            traduire(asl_client_tokio::Faute::Statut(429)),
+            ASL_TROP_D_ESSAIS
+        );
+        assert_eq!(traduire(asl_client_tokio::Faute::Statut(403)), ASL_REFUSE);
+        assert_eq!(traduire(asl_client_tokio::Faute::Statut(401)), ASL_REFUSE);
+    }
+
+    /// Le même partage, sur le verbe qui lit son statut lui-même.
+    #[test]
+    fn l_attestation_distingue_la_chaine_refusee_et_le_trop_d_essais() {
+        assert_eq!(appareil::verdict_d_attestation(204), Ok(()));
+        assert_eq!(
+            appareil::verdict_d_attestation(403),
+            Err(ASL_CHAINE_REFUSEE)
+        );
+        assert_eq!(appareil::verdict_d_attestation(429), Err(ASL_TROP_D_ESSAIS));
+        assert_eq!(appareil::verdict_d_attestation(401), Err(ASL_REFUSE));
+        assert_eq!(appareil::verdict_d_attestation(400), Err(ASL_REFUSE));
+    }
     use asl_proto::{Bail, Horodatage, Joignabilite, Verdict, VerdictNat, VuDepuis};
     use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 

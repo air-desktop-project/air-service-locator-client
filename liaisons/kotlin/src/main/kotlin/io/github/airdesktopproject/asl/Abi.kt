@@ -61,6 +61,7 @@ internal object Abi {
     const val NON_CONNECTE: Int = -10
     const val SIGNATURE_REFUSEE: Int = -11
     const val CHAINE_REFUSEE: Int = -12
+    const val TROP_D_ESSAIS: Int = -13
 
     const val IDENTIFIANT_OCTETS: Int = 29
     const val GRAINE_OCTETS: Int = 32

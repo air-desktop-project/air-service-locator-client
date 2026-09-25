@@ -569,8 +569,8 @@ pub extern "system" fn Java_org_airdesktop_servicelocator_reseau_Natif_creerComp
 ///
 /// La preuve d'un appareil qui rejoint, et sa chaîne, sur la connexion tenue
 /// depuis le défi — `asl_appareil_rejoindre_atteste`, et son code tel quel :
-/// `OK` (identité installée), `CHAINE_REFUSEE` (403), `REFUSE` (401, 400),
-/// `SIGNATURE_REFUSEE`, `NON_CONNECTE`, `INJOIGNABLE`.
+/// `OK` (identité installée), `CHAINE_REFUSEE` (403), `TROP_D_ESSAIS` (429),
+/// `REFUSE` (401, 400), `SIGNATURE_REFUSEE`, `NON_CONNECTE`, `INJOIGNABLE`.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_airdesktop_servicelocator_reseau_Natif_rejoindreAtteste(
     mut env: JNIEnv,
