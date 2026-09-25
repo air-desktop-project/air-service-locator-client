@@ -41,10 +41,10 @@ use asl_client_tokio::{Annuaire, Reglages, Tenue};
 use asl_id::{Genre, Identifiant};
 
 use crate::{
-    ASL_ARGUMENT, ASL_CHAINE_REFUSEE, ASL_CONFIGURATION, ASL_IDENTIFIANT_OCTETS, ASL_INJOIGNABLE,
-    ASL_INTERNE, ASL_NON_CONNECTE, ASL_OK, ASL_PAS_D_IDENTITE, ASL_REFUSE, ASL_SIGNATURE_REFUSEE,
-    ASL_TAMPON_TROP_PETIT, ASL_TROP_D_ESSAIS, PLAFOND_MS, chaine, ecrire_chaine, ouvrir, protege,
-    traduire,
+    ASL_ARGUMENT, ASL_CHAINE_REFUSEE, ASL_CONFIGURATION, ASL_DEJA, ASL_IDENTIFIANT_OCTETS,
+    ASL_INJOIGNABLE, ASL_INTERNE, ASL_NON_CONNECTE, ASL_OK, ASL_PAS_D_IDENTITE, ASL_PAS_DE_POUSSEE,
+    ASL_REFUSE, ASL_SIGNATURE_REFUSEE, ASL_TAMPON_TROP_PETIT, ASL_TROP_D_ESSAIS, PLAFOND_MS,
+    chaine, ecrire_chaine, ouvrir, protege, traduire,
 };
 
 /// Combien d'octets fait une clé publique d'appareil : P-256, SEC1 compressé.
@@ -57,6 +57,9 @@ pub const ASL_DEFI_OCTETS: usize = asl_cle::DEFI_OCTETS;
 pub const ASL_MESSAGE_MAX: usize = asl_cle::MESSAGE_POSSESSION_APPAREIL_OCTETS;
 /// L'attestation la plus longue que l'annuaire admette.
 pub const ASL_ATTESTATION_MAX: usize = asl_api::corps::ATTESTATION_MAX;
+/// La plus longue ligne de `GET /v1/nouvelles` qu'[`asl_appareil_nouvelle`]
+/// rende : un tampon de cette taille ne reçoit jamais `ASL_TAMPON_TROP_PETIT`.
+pub const ASL_NOUVELLE_MAX: usize = asl_client_tokio::NOUVELLE_MAX;
 
 /// Aucune attestation.
 pub const ASL_PLATEFORME_AUCUNE: u8 = 0;
@@ -204,10 +207,27 @@ impl Signataire {
 
 /// Un appareil, vu de C : un pointeur opaque et rien d'autre.
 ///
-/// **UN SEUL FIL À LA FOIS.** Les appels ne se chevauchent pas : le rappel de
-/// signature est fait sur le fil de l'appel, et une requête attend la réponse
-/// de la précédente. L'application sérialise — une file, un acteur, un fil
-/// dédié —, et c'est elle qui sait comment.
+/// **UN SEUL FIL À LA FOIS, SAUF POUR ATTENDRE DES NOUVELLES.** Les appels ne
+/// se chevauchent pas : le rappel de signature est fait sur le fil de l'appel,
+/// et une requête attend la réponse de la précédente. L'application sérialise
+/// — une file, un acteur, un fil dédié —, et c'est elle qui sait comment.
+///
+/// # CE QUI PEUT TOURNER EN PARALLÈLE, ET POURQUOI CELA SEULEMENT
+///
+/// Une attente de [`asl_appareil_nouvelle`] dure ce que l'application a
+/// choisi — trente secondes, typiquement —, et retenir tout le reste pendant
+/// ce temps rendrait l'écran muet. Ces quatre verbes ne font donc que LIRE le
+/// handle (`&`, jamais `&mut`) et peuvent se chevaucher entre eux, sur des fils
+/// différents : [`asl_appareil_nouvelle`], [`asl_appareil_nouvelles_recues`],
+/// [`asl_appareil_nouvelles_ouvrir`] et [`asl_appareil_requete`]. Ce qu'ils
+/// partagent est la tenue, qui est faite pour cela : un canal vers la tâche,
+/// et la boîte où elle dépose.
+///
+/// **Tous les autres ÉCRIVENT le handle** — la connexion qu'on remplace, le
+/// défi qu'on dépense, l'identité qu'on pose — et s'exécutent seuls :
+/// l'application arrête d'abord son attente (son échéance la borne) avant
+/// `asl_appareil_connecter`, `asl_appareil_deconnecter` ou
+/// `asl_appareil_libere`.
 pub struct AslAppareil {
     moteur: tokio::runtime::Runtime,
     annuaires: Vec<Annuaire>,
@@ -1087,8 +1107,10 @@ pub unsafe extern "C" fn asl_appareil_requete(
     statut: *mut u16,
 ) -> i32 {
     protege(|| {
+        // **UNE LECTURE SEULE DU HANDLE** : ce verbe peut tourner pendant une
+        // attente de nouvelles (voir `AslAppareil`).
         // SAFETY : contrat de la fonction.
-        let Some(appareil) = (unsafe { appareil.as_mut() }) else {
+        let Some(appareil) = (unsafe { appareil.as_ref() }) else {
             return ASL_ARGUMENT;
         };
         // SAFETY : contrat de la fonction.
@@ -1145,6 +1167,163 @@ pub unsafe extern "C" fn asl_appareil_requete(
         // vient de vérifier qu'il y en a assez.
         unsafe {
             core::ptr::copy_nonoverlapping(reponse.corps.as_ptr(), sortie, reponse.corps.len());
+        }
+        ASL_OK
+    })
+}
+
+// ── LES NOUVELLES ───────────────────────────────────────────────────────────
+//
+// **LE MODÈLE DES VERDICTS POUSSÉS** (`asl_poussees_recues`,
+// `asl_derniere_poussee`) : la tâche de fond tient la connexion et recueille ce
+// que l'annuaire écrit ; le handle LIT ce qu'elle a recueilli, et « rien » se
+// dit `ASL_PAS_DE_POUSSEE`, qui n'est pas une panne. La seule différence est
+// l'attente : un daemon relit à chaque tour de sa boucle, une application n'a
+// pas de boucle — elle dort sur un fil jusqu'à ce qu'une ligne arrive, ou que
+// l'échéance qu'elle a fixée tombe.
+
+/// Ouvre `GET /v1/nouvelles` sur la connexion tenue (`protocole.md` §2), et
+/// attend son statut.
+///
+/// `ASL_OK` : le flux est ouvert, et les lignes se prennent par
+/// [`asl_appareil_nouvelle`]. `ASL_DEJA` : un flux est déjà ouvert sur cette
+/// connexion (`409`) — il vit, rien n'est à refaire. `ASL_REFUSE` : l'appareil
+/// a été révoqué depuis sa preuve (`401`). `ASL_NON_CONNECTE` : pas de
+/// connexion — [`asl_appareil_connecter`] d'abord. `ASL_INJOIGNABLE` : la
+/// connexion est tombée pendant l'appel.
+///
+/// **LE FLUX VIT CE QUE VIT LA CONNEXION** : une reconnexion en tient une
+/// neuve, sans flux, et c'est à rouvrir.
+///
+/// # Safety
+///
+/// `appareil` vient de [`asl_appareil_neuf`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn asl_appareil_nouvelles_ouvrir(appareil: *const AslAppareil) -> i32 {
+    protege(|| {
+        // SAFETY : contrat de la fonction.
+        let Some(appareil) = (unsafe { appareil.as_ref() }) else {
+            return ASL_ARGUMENT;
+        };
+        let tenue = match appareil.tenue() {
+            Ok(tenue) => tenue.clone(),
+            Err(quoi) => return quoi,
+        };
+        let issue = bloquer(&appareil.moteur, async move {
+            tenue.ecouter_les_nouvelles().await
+        });
+        match issue {
+            Ok(Ok(())) => ASL_OK,
+            Ok(Err(quoi)) => verdict_des_nouvelles(quoi),
+            Err(quoi) => quoi,
+        }
+    })
+}
+
+/// Ce que l'ouverture du flux rend, en code.
+pub(crate) fn verdict_des_nouvelles(quoi: asl_client_tokio::Faute) -> i32 {
+    match quoi {
+        asl_client_tokio::Faute::Statut(409) => ASL_DEJA,
+        // Une tenue qui ne répond plus est une connexion tombée.
+        asl_client_tokio::Faute::Delai => ASL_INJOIGNABLE,
+        autre => traduire(autre),
+    }
+}
+
+/// Combien de nouvelles sont arrivées depuis la connexion — le pendant
+/// d'`asl_poussees_recues`. Zéro sans connexion.
+///
+/// # Safety
+///
+/// `appareil` vient de [`asl_appareil_neuf`] ; `sortie` vise un `uint64_t`
+/// inscriptible.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn asl_appareil_nouvelles_recues(
+    appareil: *const AslAppareil,
+    sortie: *mut u64,
+) -> i32 {
+    protege(|| {
+        // SAFETY : contrat de la fonction.
+        let Some(appareil) = (unsafe { appareil.as_ref() }) else {
+            return ASL_ARGUMENT;
+        };
+        if sortie.is_null() {
+            return ASL_ARGUMENT;
+        }
+        let combien = appareil
+            .tenue
+            .as_ref()
+            .map_or(0, asl_client_tokio::Tenue::nouvelles_recues);
+        // SAFETY : non nul, et l'appelant garantit qu'il est inscriptible.
+        unsafe { sortie.write(combien) };
+        ASL_OK
+    })
+}
+
+/// La plus ancienne nouvelle pas encore prise — une ligne, un objet JSON
+/// (`{"quoi":"autorisation"}`) —, en attendant au plus `attente_ms` qu'il en
+/// arrive une.
+///
+/// `ASL_OK` : `ecrit` octets de ligne dans `sortie`, sans fin de ligne ni NUL,
+/// et la ligne est PRISE. `ASL_PAS_DE_POUSSEE` : rien avant l'échéance — **le
+/// cas ordinaire** ; rappeler. `ASL_NON_CONNECTE` : le flux n'est pas ouvert,
+/// ou il est tombé avec la connexion — rouvrir (après
+/// [`asl_appareil_connecter`] si c'est la connexion). `ASL_TAMPON_TROP_PETIT` :
+/// `ecrit` reçoit la taille, et la ligne RESTE en tête — un tampon
+/// d'`ASL_NOUVELLE_MAX` octets ne le voit jamais.
+///
+/// **Une attente nulle ne fait que regarder.** Ce verbe peut tourner pendant
+/// [`asl_appareil_requete`], sur un autre fil (voir [`AslAppareil`]) ; **une
+/// seule attente à la fois** a un sens — deux se partageraient les lignes.
+///
+/// # Safety
+///
+/// `appareil` vient de [`asl_appareil_neuf`] ; `sortie`, s'il n'est pas nul,
+/// vise `combien` octets inscriptibles ; `ecrit` vise un `size_t` inscriptible.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn asl_appareil_nouvelle(
+    appareil: *const AslAppareil,
+    attente_ms: u32,
+    sortie: *mut u8,
+    combien: usize,
+    ecrit: *mut usize,
+) -> i32 {
+    protege(|| {
+        // SAFETY : contrat de la fonction.
+        let Some(appareil) = (unsafe { appareil.as_ref() }) else {
+            return ASL_ARGUMENT;
+        };
+        if ecrit.is_null() {
+            return ASL_ARGUMENT;
+        }
+        let tenue = match appareil.tenue() {
+            Ok(tenue) => tenue.clone(),
+            Err(quoi) => return quoi,
+        };
+        // Un tampon nul n'a pas de place, quoi que dise `combien`.
+        let place = if sortie.is_null() { 0 } else { combien };
+        let attente = tokio::time::Duration::from_millis(u64::from(attente_ms));
+        let prise = bloquer(&appareil.moteur, async move {
+            tenue.nouvelle_dans(attente, place).await
+        });
+        let ligne = match prise {
+            Ok(asl_client_tokio::Nouvelle::Ligne(ligne)) => ligne,
+            Ok(asl_client_tokio::Nouvelle::Rien) => return ASL_PAS_DE_POUSSEE,
+            Ok(asl_client_tokio::Nouvelle::Ferme) => return ASL_NON_CONNECTE,
+            Ok(asl_client_tokio::Nouvelle::TropLongue(taille)) => {
+                // SAFETY : non nul, et l'appelant garantit qu'il est
+                // inscriptible.
+                unsafe { ecrit.write(taille) };
+                return ASL_TAMPON_TROP_PETIT;
+            }
+            Err(quoi) => return quoi,
+        };
+        // SAFETY : `sortie` est non nul — sans place, la ligne n'aurait pas été
+        // prise, et une ligne n'est jamais vide ; `combien` octets
+        // inscriptibles, et elle y tient — `nouvelle_dans` l'a vérifié.
+        unsafe {
+            core::ptr::copy_nonoverlapping(ligne.as_ptr(), sortie, ligne.len());
+            ecrit.write(ligne.len());
         }
         ASL_OK
     })

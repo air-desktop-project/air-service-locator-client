@@ -55,3 +55,11 @@ asl_appareil_creer_compte
 asl_appareil_rejoindre_atteste
 asl_appareil_requete
 asl_appareil_identifiant
+
+# ── LES NOUVELLES DE LA VOIE MOBILE — `GET /v1/nouvelles` ───────────────────
+#
+# Le modèle des verdicts poussés : la tâche de fond recueille, le handle lit,
+# et « rien » se dit `ASL_PAS_DE_POUSSEE`.
+asl_appareil_nouvelles_ouvrir
+asl_appareil_nouvelles_recues
+asl_appareil_nouvelle
