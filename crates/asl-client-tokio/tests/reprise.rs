@@ -89,29 +89,66 @@ async fn un_annuaire_mort_ne_retarde_pas_le_suivant() {
     // ne se voit que d'ici : reculer entre deux annuaires rendrait la bascule
     // vers le second annuaire racine plus lente que la panne du premier.
     let (_atelier, autorite, cert, cle) = materiel("bascule");
-    let (vivant, tache) = lever(cert, cle, FauxAnnuaire).await;
-    let mort = adresse_morte().await;
 
-    let reglages = Reglages::nouveaux(vec![annuaire(mort), annuaire(vivant)], autorite, PLAFOND_MS)
-        .expect("la configuration est bonne");
+    // # ON MESURE UN ÉCART, PAS UNE DURÉE
+    //
+    // Le premier jet comparait la bascule entière à une seconde. Sous charge
+    // (1,37 s mesurée le 2026-09-25, machine à 17 de charge), la poignée de
+    // main TLS avec l'annuaire vivant suffisait à dépasser le seuil : l'essai
+    // mesurait la machine, pas le recul. Ce qui distingue un recul payé d'un
+    // recul épargné n'est pas la durée totale, c'est ce que le mort AJOUTE à
+    // une connexion directe au vivant — au moins 800 ms s'il y a eu recul (le
+    // bruit ne descend pas sous 80 %), presque rien sinon.
+    //
+    // D'où trois paires entrelacées, direct puis bascule, et la comparaison
+    // de leurs MINIMA : une pointe de charge ralentit un tirage, rarement les
+    // trois d'un même côté, et le minimum est l'estimation la moins bruitée
+    // de ce que coûte un chemin. Un recul payé, lui, est dans les trois
+    // bascules : aucun minimum ne l'efface.
+    //
+    // **UN ANNUAIRE DE BANC NEUF PAR MESURE** : le banc ne sert qu'une
+    // connexion de toute sa vie. Les six partent du même état — lever un
+    // annuaire est hors du chronomètre.
+    let mut plus_court_direct = Duration::MAX;
+    let mut plus_courte_bascule = Duration::MAX;
+    for _ in 0..3 {
+        for par_le_mort in [false, true] {
+            let (vivant, tache) = lever(cert.clone(), cle.clone(), FauxAnnuaire).await;
+            let mut annuaires = vec![annuaire(vivant)];
+            if par_le_mort {
+                annuaires.insert(0, annuaire(adresse_morte().await));
+            }
+            let reglages = Reglages::nouveaux(annuaires, autorite.clone(), PLAFOND_MS)
+                .expect("la configuration est bonne");
 
-    let depart = Instant::now();
-    let connexion =
-        tokio::time::timeout(Duration::from_secs(10), joindre(&reglages, &|| [0x5A; 16]))
-            .await
-            .expect("la tournée ne doit pas tourner en rond")
-            .expect("le second annuaire répond");
-    let ecoule = depart.elapsed();
+            let depart = Instant::now();
+            let connexion =
+                tokio::time::timeout(Duration::from_secs(10), joindre(&reglages, &|| [0x5A; 16]))
+                    .await
+                    .expect("la tournée ne doit pas tourner en rond")
+                    .expect("l'annuaire vivant répond");
+            let ecoule = depart.elapsed();
+            assert!(connexion.vivante());
+            tache.abort();
 
-    assert!(connexion.vivante());
-    // Le recul initial est d'une seconde. Le tour n'étant pas bouclé, il n'a pas
-    // dû être payé.
-    assert!(
-        ecoule < Duration::from_millis(asl_client::RECUL_INITIAL_MS),
-        "la bascule a attendu {ecoule:?} — le recul a été payé entre deux annuaires"
+            let plus_court = if par_le_mort {
+                &mut plus_courte_bascule
+            } else {
+                &mut plus_court_direct
+            };
+            *plus_court = (*plus_court).min(ecoule);
+        }
+    }
+
+    let recul_minimal = Duration::from_millis(
+        asl_client::RECUL_INITIAL_MS * (100 - asl_client::BRUIT_CENTIEMES) / 100,
     );
-
-    tache.abort();
+    let ajoute = plus_courte_bascule.saturating_sub(plus_court_direct);
+    assert!(
+        ajoute < recul_minimal,
+        "le mort a ajouté {ajoute:?} (bascule {plus_courte_bascule:?}, direct \
+         {plus_court_direct:?}) — le recul a été payé entre deux annuaires"
+    );
 }
 
 #[tokio::test]
