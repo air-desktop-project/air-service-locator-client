@@ -8,10 +8,12 @@
 //! répond ; ici, quelqu'un répond, et dit non. Ce sont deux régimes différents.
 //!
 //! Ensuite le coût : cet essai lève DEUX annuaires et fait deux poignées de
-//! main, et `reprise.rs` contient un essai qui mesure un temps au seuil d'une
-//! seconde (`un_annuaire_mort_ne_retarde_pas_le_suivant`). Les faire tourner
-//! côte à côte rendait ce voisin faux-négatif sous charge — il mesurait la
-//! machine, pas le recul. Un essai ne doit pas rendre son voisin instable.
+//! main, et `reprise.rs` contient un essai qui mesure des temps
+//! (`un_annuaire_mort_ne_retarde_pas_le_suivant`). Les faire tourner côte à
+//! côte rendait ce voisin faux-négatif sous charge — il mesurait la machine,
+//! pas le recul. Il compare désormais un écart et non une durée, ce qui le
+//! rend bien moins sensible ; la séparation reste, parce qu'un essai ne doit
+//! pas rendre son voisin instable.
 
 mod banc;
 
