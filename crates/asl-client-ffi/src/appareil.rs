@@ -60,6 +60,14 @@ pub const ASL_ATTESTATION_MAX: usize = asl_api::corps::ATTESTATION_MAX;
 /// La plus longue ligne de `GET /v1/nouvelles` qu'[`asl_appareil_nouvelle`]
 /// rende : un tampon de cette taille ne reçoit jamais `ASL_TAMPON_TROP_PETIT`.
 pub const ASL_NOUVELLE_MAX: usize = asl_client_tokio::NOUVELLE_MAX;
+/// La place d'une adresse d'annuaire, NUL compris : ce qu'[`asl_appareil_distante`]
+/// écrit y tient toujours.
+///
+/// La plus longue qu'une `SocketAddr` s'écrive fait 58 octets — IPv6 en huit
+/// groupes pleins (39), les crochets, une portée `%4294967295`, le port
+/// `:65535` —, 59 avec le NUL ; 64 laisse de la marge sans rien promettre de
+/// plus. Un essai écrit ce pire cas.
+pub const ASL_ADRESSE_OCTETS: usize = 64;
 
 /// Aucune attestation.
 pub const ASL_PLATEFORME_AUCUNE: u8 = 0;
@@ -216,12 +224,13 @@ impl Signataire {
 ///
 /// Une attente de [`asl_appareil_nouvelle`] dure ce que l'application a
 /// choisi — trente secondes, typiquement —, et retenir tout le reste pendant
-/// ce temps rendrait l'écran muet. Ces quatre verbes ne font donc que LIRE le
+/// ce temps rendrait l'écran muet. Ces cinq verbes ne font donc que LIRE le
 /// handle (`&`, jamais `&mut`) et peuvent se chevaucher entre eux, sur des fils
 /// différents : [`asl_appareil_nouvelle`], [`asl_appareil_nouvelles_recues`],
-/// [`asl_appareil_nouvelles_ouvrir`] et [`asl_appareil_requete`]. Ce qu'ils
-/// partagent est la tenue, qui est faite pour cela : un canal vers la tâche,
-/// et la boîte où elle dépose.
+/// [`asl_appareil_nouvelles_ouvrir`], [`asl_appareil_requete`] et
+/// [`asl_appareil_distante`]. Ce qu'ils partagent est la tenue, qui est faite
+/// pour cela : un canal vers la tâche, la boîte où elle dépose, et l'adresse
+/// relevée à sa naissance.
 ///
 /// **Tous les autres ÉCRIVENT le handle** — la connexion qu'on remplace, le
 /// défi qu'on dépense, l'identité qu'on pose — et s'exécutent seuls :
@@ -1353,6 +1362,57 @@ pub unsafe extern "C" fn asl_appareil_identifiant(
         };
         // SAFETY : l'appelant garantit `ASL_IDENTIFIANT_OCTETS` octets.
         unsafe { ecrire_chaine(identite.texte().as_str(), sortie) };
+        ASL_OK
+    })
+}
+
+/// L'adresse de l'annuaire que la connexion tenue a joint —
+/// `[2001:db8::1]:6630` ou `192.0.2.1:6630`, NUL compris.
+///
+/// # POURQUOI CE VERBE
+///
+/// Un annuaire posé par un nom qui rend plusieurs racines — l'alias des deux —
+/// est joint par une tournée qui garde la première adresse qui répond, et ne
+/// dit pas laquelle. L'application le demande ici, pour le journaliser ou
+/// l'afficher : c'est l'adresse, pas le nom — le nom, c'est elle qui l'a posé.
+///
+/// `ASL_NON_CONNECTE` sans connexion vivante. **Ne fait que LIRE le handle** :
+/// il peut tourner pendant une attente de [`asl_appareil_nouvelle`] (voir
+/// [`AslAppareil`]).
+///
+/// # Safety
+///
+/// `appareil` vient de [`asl_appareil_neuf`] ; `sortie` vise
+/// `ASL_ADRESSE_OCTETS` octets inscriptibles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn asl_appareil_distante(
+    appareil: *const AslAppareil,
+    sortie: *mut c_char,
+) -> i32 {
+    protege(|| {
+        // SAFETY : contrat de la fonction.
+        let Some(appareil) = (unsafe { appareil.as_ref() }) else {
+            return ASL_ARGUMENT;
+        };
+        if sortie.is_null() {
+            return ASL_ARGUMENT;
+        }
+        let distante = match appareil.tenue() {
+            Ok(tenue) => tenue.distante(),
+            Err(quoi) => return quoi,
+        };
+        // Une tenue sans adresse est une socket qui n'a pas su dire son pair :
+        // pour l'application, c'est une connexion dont on ne sait rien.
+        let Some(distante) = distante else {
+            return ASL_NON_CONNECTE;
+        };
+        let texte = distante.to_string();
+        if texte.len() >= ASL_ADRESSE_OCTETS {
+            return ASL_INTERNE;
+        }
+        // SAFETY : l'appelant garantit `ASL_ADRESSE_OCTETS` octets, et le texte
+        // y tient avec son NUL — vérifié juste au-dessus.
+        unsafe { ecrire_chaine(&texte, sortie) };
         ASL_OK
     })
 }

@@ -79,6 +79,7 @@ internal object Abi {
     const val MESSAGE_MAX: Int = 138
     const val ATTESTATION_MAX: Int = 8192
     const val NOUVELLE_MAX: Int = 1024
+    const val ADRESSE_OCTETS: Int = 64
 
     const val PLATEFORME_AUCUNE: Int = 0
     const val PLATEFORME_APPLE: Int = 1
@@ -212,6 +213,7 @@ internal object Abi {
         "asl_appareil_nouvelle" to FunctionDescriptor.of(
             ENTIER, ADRESSE, ENTIER, ADRESSE, TAILLE, ADRESSE,
         ),
+        "asl_appareil_distante" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE),
     )
 
     /** Comment l'objet natif s'appelle, selon le système. */

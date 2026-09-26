@@ -300,11 +300,11 @@ int32_t asl_derniere_poussee(const asl_client *client,
  * l'application qui choisit quand.
  *
  * UN SEUL FIL À LA FOIS : les appels sur un même handle ne se chevauchent pas,
- * SAUF CES QUATRE, qui ne font que lire le handle et peuvent tourner ensemble,
+ * SAUF CES CINQ, qui ne font que lire le handle et peuvent tourner ensemble,
  * sur des fils différents : asl_appareil_nouvelle (l'attente, qui dure ce que
  * l'application a choisi), asl_appareil_nouvelles_recues,
- * asl_appareil_nouvelles_ouvrir et asl_appareil_requete — l'écran continue de
- * requêter pendant qu'un fil attend. Tous les autres écrivent le handle
+ * asl_appareil_nouvelles_ouvrir, asl_appareil_requete et asl_appareil_distante
+ * — l'écran continue de requêter pendant qu'un fil attend. Tous les autres écrivent le handle
  * (connexion remplacée, défi dépensé, identité posée) et s'exécutent SEULS :
  * arrêter l'attente d'abord — son échéance la borne — avant
  * asl_appareil_connecter, asl_appareil_deconnecter ou asl_appareil_libere.
@@ -323,6 +323,9 @@ int32_t asl_derniere_poussee(const asl_client *client,
 /* La plus longue ligne qu'asl_appareil_nouvelle rende : un tampon de cette
  * taille ne reçoit jamais ASL_TAMPON_TROP_PETIT. */
 #define ASL_NOUVELLE_MAX 1024
+/* La place d'une adresse d'annuaire, NUL compris : ce qu'asl_appareil_distante
+ * écrit y tient toujours (la plus longue fait 58 octets). */
+#define ASL_ADRESSE_OCTETS 64
 
 /* ANDROID est l'attestation de clé du Keystore ; la case disait GOOGLE (Play
  * Integrity, abandonné, C19) jusqu'en 0.5, même octet. INVITATION porte un code
@@ -485,6 +488,13 @@ int32_t asl_appareil_nouvelle(const asl_appareil *appareil, uint32_t attente_ms,
 
 /* L'identifiant `a-…` de cet appareil, s'il est enrôlé. ASL_PAS_D_IDENTITE sinon. */
 int32_t asl_appareil_identifiant(const asl_appareil *appareil, char sortie[ASL_IDENTIFIANT_OCTETS]);
+
+/* L'adresse de l'annuaire que la connexion tenue a joint — `[2001:db8::1]:6630`
+ * ou `192.0.2.1:6630`, NUL compris. Sous un nom qui rend plusieurs racines,
+ * c'est ce qui dit laquelle a répondu : la tournée garde la première qui
+ * répond, sans le dire. ASL_NON_CONNECTE sans connexion vivante. Ne fait que
+ * lire le handle : peut tourner pendant asl_appareil_nouvelle. */
+int32_t asl_appareil_distante(const asl_appareil *appareil, char sortie[ASL_ADRESSE_OCTETS]);
 
 #ifdef __cplusplus
 } /* extern "C" */

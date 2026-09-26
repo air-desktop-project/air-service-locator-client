@@ -63,3 +63,8 @@ asl_appareil_identifiant
 asl_appareil_nouvelles_ouvrir
 asl_appareil_nouvelles_recues
 asl_appareil_nouvelle
+
+# ── LA RACINE JOINTE ─────────────────────────────────────────────────────────
+#
+# L'adresse que la tournée a retenue, quand un nom en rend plusieurs.
+asl_appareil_distante

@@ -66,6 +66,7 @@ module Asl
     MESSAGE_MAX = 138
     ATTESTATION_MAX = 8192
     NOUVELLE_MAX = 1024
+    ADRESSE_OCTETS = 64
 
     PLATEFORME_AUCUNE = 0
     PLATEFORME_APPLE = 1
@@ -241,7 +242,8 @@ module Asl
       asl_appareil_nouvelles_recues: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP], Fiddle::TYPE_INT32_T],
       asl_appareil_nouvelle: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_UINT32_T, Fiddle::TYPE_VOIDP,
                                Fiddle::TYPE_SIZE_T, Fiddle::TYPE_VOIDP],
-                              Fiddle::TYPE_INT32_T]
+                              Fiddle::TYPE_INT32_T],
+      asl_appareil_distante: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP], Fiddle::TYPE_INT32_T]
     }.freeze
 
     # Charge la bibliothèque native et rend ses fonctions, par nom.

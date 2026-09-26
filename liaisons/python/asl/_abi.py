@@ -70,6 +70,7 @@ ASL_DEFI_OCTETS = 32
 ASL_MESSAGE_MAX = 138
 ASL_ATTESTATION_MAX = 8192
 ASL_NOUVELLE_MAX = 1024
+ASL_ADRESSE_OCTETS = 64
 
 ASL_PLATEFORME_AUCUNE = 0
 ASL_PLATEFORME_APPLE = 1
@@ -399,5 +400,8 @@ def _declarer(lib: ctypes.CDLL) -> ctypes.CDLL:
         ctypes.POINTER(ctypes.c_size_t),
     ]
     lib.asl_appareil_nouvelle.restype = i32
+
+    lib.asl_appareil_distante.argtypes = [opaque, ctypes.c_char_p]
+    lib.asl_appareil_distante.restype = i32
 
     return lib
