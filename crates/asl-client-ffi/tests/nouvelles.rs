@@ -22,10 +22,10 @@ use std::time::{Duration, Instant};
 
 use ams_proto_http::{Method, StatusCode};
 use asl_client_ffi::appareil::{
-    ASL_NOUVELLE_MAX, AslAppareil, asl_appareil_annuaire, asl_appareil_connecter,
-    asl_appareil_deconnecter, asl_appareil_libere, asl_appareil_neuf, asl_appareil_nouvelle,
-    asl_appareil_nouvelles_ouvrir, asl_appareil_nouvelles_recues, asl_appareil_racines,
-    asl_appareil_requete,
+    ASL_ADRESSE_OCTETS, ASL_NOUVELLE_MAX, AslAppareil, asl_appareil_annuaire,
+    asl_appareil_connecter, asl_appareil_deconnecter, asl_appareil_distante, asl_appareil_libere,
+    asl_appareil_neuf, asl_appareil_nouvelle, asl_appareil_nouvelles_ouvrir,
+    asl_appareil_nouvelles_recues, asl_appareil_racines, asl_appareil_requete,
 };
 use asl_client_ffi::{
     ASL_DEJA, ASL_NON_CONNECTE, ASL_OK, ASL_PAS_DE_POUSSEE, ASL_REFUSE, ASL_TAMPON_TROP_PETIT,
@@ -248,5 +248,51 @@ fn un_appareil_revoque_se_voit_refuser_le_flux() {
         assert_eq!(attendre(brut, 10_000, &mut ligne).0, ASL_NON_CONNECTE);
         asl_appareil_libere(brut);
     }
+    tache.abort();
+}
+
+/// L'adresse jointe, telle que l'ABI la rend.
+fn distante(brut: *const AslAppareil) -> (i32, String) {
+    let mut sortie = [0 as core::ffi::c_char; ASL_ADRESSE_OCTETS];
+    let code = unsafe { asl_appareil_distante(brut, sortie.as_mut_ptr()) };
+    let texte = unsafe { core::ffi::CStr::from_ptr(sortie.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
+    (code, texte)
+}
+
+#[test]
+fn l_adresse_jointe_se_lit_meme_pendant_qu_un_fil_attend() {
+    // **C'EST CE QUI DIT QUELLE RACINE A RÉPONDU** sous un nom qui en rend
+    // plusieurs : le banc n'a qu'une adresse, et c'est elle qui doit revenir,
+    // écrite comme `SocketAddr` l'écrit. Et comme l'en-tête le range parmi les
+    // verbes qui ne font que lire, il doit passer pendant une attente.
+    let (_atelier, autorite, cert, cle) = materiel("abi-distante");
+    let moteur = moteur();
+    let (adresse, tache, _voie) =
+        moteur.block_on(async { lever_qui_pousse(cert, cle, AnnuaireQuiNotifie::default()).await });
+    let brut = connecte(adresse, &autorite);
+    assert_eq!(distante(brut), (ASL_OK, adresse.to_string()));
+
+    assert_eq!(unsafe { asl_appareil_nouvelles_ouvrir(brut) }, ASL_OK);
+    let partage = Partage(brut as usize);
+    let attente = std::thread::spawn(move || {
+        let mut ligne = [0_u8; ASL_NOUVELLE_MAX];
+        attendre(partage.pointeur(), 2_000, &mut ligne).0
+    });
+    let avant = Instant::now();
+    assert_eq!(distante(brut), (ASL_OK, adresse.to_string()));
+    assert!(
+        avant.elapsed() < Duration::from_secs(1),
+        "la lecture a attendu l'attente"
+    );
+    assert!(!attente.is_finished(), "l'attente court toujours");
+    assert_eq!(attente.join().expect("le fil rend"), ASL_PAS_DE_POUSSEE);
+
+    unsafe {
+        assert_eq!(asl_appareil_deconnecter(brut), ASL_OK);
+    }
+    assert_eq!(distante(brut).0, ASL_NON_CONNECTE);
+    unsafe { asl_appareil_libere(brut) };
     tache.abort();
 }

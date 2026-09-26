@@ -18,6 +18,7 @@
 //! redemander quoi que ce soit au porteur tant qu'elle vit.
 
 use std::collections::VecDeque;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use asl_id::Identifiant;
@@ -431,6 +432,8 @@ pub struct Tenue {
     ordres: mpsc::Sender<Ordre>,
     liaison: asl_cle::LiaisonDeCanal,
     boite: Arc<Boite>,
+    /// L'annuaire que cette connexion a joint, relevé à la prise en charge.
+    distante: Option<SocketAddr>,
 }
 
 impl Tenue {
@@ -441,6 +444,9 @@ impl Tenue {
     #[must_use]
     pub fn tenir(connexion: Connexion) -> Self {
         let liaison = connexion.liaison();
+        // **RELEVÉE ICI, UNE FOIS** : la connexion part dans la tâche, et la
+        // socket ne change pas d'adresse en chemin — une tenue ne migre pas.
+        let distante = connexion.distante().ok();
         let (ordres, boite_aux_ordres) = mpsc::channel::<Ordre>(16);
         let boite = Arc::new(Boite::default());
         let partagee = Arc::clone(&boite);
@@ -455,6 +461,7 @@ impl Tenue {
             ordres,
             liaison,
             boite,
+            distante,
         }
     }
 
@@ -564,6 +571,21 @@ impl Tenue {
     #[must_use]
     pub fn nouvelles_recues(&self) -> u64 {
         self.boite.recu().recues
+    }
+
+    /// L'adresse de l'annuaire que cette connexion a joint.
+    ///
+    /// # POURQUOI C'EST UTILE
+    ///
+    /// Sous un nom qui rend plusieurs racines — l'alias des deux, par exemple
+    /// —, la tournée essaie leurs adresses dans l'ordre et garde la première
+    /// qui répond, sans le dire. C'est ce qui dit laquelle.
+    ///
+    /// `None` seulement si la socket n'a pas su dire son pair au moment où la
+    /// tenue l'a prise : une socket connectée le sait toujours.
+    #[must_use]
+    pub const fn distante(&self) -> Option<SocketAddr> {
+        self.distante
     }
 
     /// La tâche tient-elle encore une connexion ?

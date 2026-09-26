@@ -28,14 +28,14 @@ use core::ffi::{c_char, c_void};
 use std::ffi::CString;
 
 use asl_client_ffi::appareil::{
-    ASL_CLE_APPAREIL_OCTETS, ASL_DEFI_OCTETS, ASL_MESSAGE_MAX, ASL_NOUVELLE_MAX,
-    ASL_SIGNATURE_OCTETS, AslAppareil, asl_appareil_annuaire, asl_appareil_cle,
+    ASL_ADRESSE_OCTETS, ASL_CLE_APPAREIL_OCTETS, ASL_DEFI_OCTETS, ASL_MESSAGE_MAX,
+    ASL_NOUVELLE_MAX, ASL_SIGNATURE_OCTETS, AslAppareil, asl_appareil_annuaire, asl_appareil_cle,
     asl_appareil_connecter, asl_appareil_creer_compte, asl_appareil_deconnecter, asl_appareil_defi,
-    asl_appareil_identifiant, asl_appareil_identite, asl_appareil_liaison, asl_appareil_libere,
-    asl_appareil_message_pour_attestation, asl_appareil_message_pour_attestation_de_cle,
-    asl_appareil_neuf, asl_appareil_nouvelle, asl_appareil_nouvelles_ouvrir,
-    asl_appareil_nouvelles_recues, asl_appareil_racines, asl_appareil_rejoindre_atteste,
-    asl_appareil_requete,
+    asl_appareil_distante, asl_appareil_identifiant, asl_appareil_identite, asl_appareil_liaison,
+    asl_appareil_libere, asl_appareil_message_pour_attestation,
+    asl_appareil_message_pour_attestation_de_cle, asl_appareil_neuf, asl_appareil_nouvelle,
+    asl_appareil_nouvelles_ouvrir, asl_appareil_nouvelles_recues, asl_appareil_racines,
+    asl_appareil_rejoindre_atteste, asl_appareil_requete,
 };
 use asl_client_ffi::{ASL_ARGUMENT, ASL_IDENTIFIANT_OCTETS, ASL_INTERNE, ASL_OK, asl_faute_texte};
 use jni::JNIEnv;
@@ -93,7 +93,7 @@ fn handle<'a>(brut: jlong) -> Option<&'a mut Handle> {
 /// # POURQUOI PAS [`handle`] ICI
 ///
 /// Les verbes des nouvelles tournent PENDANT `requete`, sur un autre fil —
-/// c'est ce que l'ABI permet (`asl.h`, « sauf ces quatre »). `requete` emprunte
+/// c'est ce que l'ABI permet (`asl.h`, « sauf ces cinq »). `requete` emprunte
 /// le handle en écriture pour y poser `dernier` ; un second emprunt, même en
 /// lecture, se chevaucherait avec lui. On ne lit donc ici que le champ
 /// `appareil`, par le pointeur, et l'on n'écrit rien : `dernier` n'est pas
@@ -778,6 +778,32 @@ pub extern "system" fn Java_org_airdesktop_servicelocator_reseau_Natif_nouvelle(
         rendu.extend_from_slice(ligne.get(..ecrit).unwrap_or_default());
     }
     rendre_octets(&env, &rendu)
+}
+
+/// `external fun distante(h: Long): String?` — l'adresse de l'annuaire que la
+/// connexion tenue a joint (`[2001:db8::1]:6630`), ou `null` sans connexion
+/// vivante.
+///
+/// **LE HANDLE N'EST PAS EMPRUNTÉ, ET `dernierCode` N'EST PAS TOUCHÉ** : comme
+/// les verbes des nouvelles, celui-ci peut tourner pendant `requete` ou pendant
+/// une attente (`asl.h`, « sauf ces cinq ») ; `null` dit tout ce qu'il y a à
+/// dire.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_airdesktop_servicelocator_reseau_Natif_distante(
+    env: JNIEnv,
+    _classe: JClass,
+    brut: jlong,
+) -> jstring {
+    let mut sortie = [0 as c_char; ASL_ADRESSE_OCTETS];
+    // SAFETY : un handle vivant, ou nul ; `ASL_ADRESSE_OCTETS` octets
+    // inscriptibles.
+    let code = unsafe { asl_appareil_distante(appareil_partage(brut), sortie.as_mut_ptr()) };
+    if code != ASL_OK {
+        return core::ptr::null_mut();
+    }
+    // SAFETY : un NUL a été posé.
+    let texte = unsafe { core::ffi::CStr::from_ptr(sortie.as_ptr()) }.to_string_lossy();
+    rendre_chaine(&env, &texte)
 }
 
 /// `external fun identifiant(h: Long): String?`

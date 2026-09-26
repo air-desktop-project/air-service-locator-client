@@ -9,15 +9,15 @@ use core::ffi::{c_char, c_void};
 use std::ptr;
 
 use asl_client_ffi::appareil::{
-    ASL_ATTESTATION_MAX, ASL_CLE_APPAREIL_OCTETS, ASL_DEFI_OCTETS, ASL_MESSAGE_MAX,
-    ASL_PLATEFORME_ANDROID, ASL_PLATEFORME_APPLE, ASL_PLATEFORME_AUCUNE, ASL_SIGNATURE_OCTETS,
-    AslAppareil, asl_appareil_annuaire, asl_appareil_cle, asl_appareil_connecter,
-    asl_appareil_creer_compte, asl_appareil_deconnecter, asl_appareil_defi,
-    asl_appareil_identifiant, asl_appareil_identite, asl_appareil_liaison, asl_appareil_libere,
-    asl_appareil_message_pour_attestation, asl_appareil_message_pour_attestation_de_cle,
-    asl_appareil_neuf, asl_appareil_nouvelle, asl_appareil_nouvelles_ouvrir,
-    asl_appareil_nouvelles_recues, asl_appareil_racines, asl_appareil_rejoindre_atteste,
-    asl_appareil_requete,
+    ASL_ADRESSE_OCTETS, ASL_ATTESTATION_MAX, ASL_CLE_APPAREIL_OCTETS, ASL_DEFI_OCTETS,
+    ASL_MESSAGE_MAX, ASL_PLATEFORME_ANDROID, ASL_PLATEFORME_APPLE, ASL_PLATEFORME_AUCUNE,
+    ASL_SIGNATURE_OCTETS, AslAppareil, asl_appareil_annuaire, asl_appareil_cle,
+    asl_appareil_connecter, asl_appareil_creer_compte, asl_appareil_deconnecter, asl_appareil_defi,
+    asl_appareil_distante, asl_appareil_identifiant, asl_appareil_identite, asl_appareil_liaison,
+    asl_appareil_libere, asl_appareil_message_pour_attestation,
+    asl_appareil_message_pour_attestation_de_cle, asl_appareil_neuf, asl_appareil_nouvelle,
+    asl_appareil_nouvelles_ouvrir, asl_appareil_nouvelles_recues, asl_appareil_racines,
+    asl_appareil_rejoindre_atteste, asl_appareil_requete,
 };
 use asl_client_ffi::{
     ASL_ARGUMENT, ASL_CONFIGURATION, ASL_IDENTIFIANT_OCTETS, ASL_NON_CONNECTE, ASL_OK,
@@ -113,7 +113,13 @@ fn les_pointeurs_nuls_rendent_argument_et_ne_tuent_personne() {
             asl_appareil_nouvelle(ptr::null(), 0, ptr::null_mut(), 0, &raw mut ecrit),
             ASL_ARGUMENT
         );
+        let mut adresse = [0 as c_char; ASL_ADRESSE_OCTETS];
+        assert_eq!(
+            asl_appareil_distante(ptr::null(), adresse.as_mut_ptr()),
+            ASL_ARGUMENT
+        );
         let brut = appareil();
+        assert_eq!(asl_appareil_distante(brut, ptr::null_mut()), ASL_ARGUMENT);
         assert_eq!(
             asl_appareil_nouvelles_recues(brut, ptr::null_mut()),
             ASL_ARGUMENT
@@ -207,6 +213,11 @@ fn sans_connexion_tout_verbe_le_dit() {
         );
         assert_eq!(
             asl_appareil_liaison(brut, octets.as_mut_ptr()),
+            ASL_NON_CONNECTE
+        );
+        let mut adresse = [0 as c_char; ASL_ADRESSE_OCTETS];
+        assert_eq!(
+            asl_appareil_distante(brut, adresse.as_mut_ptr()),
             ASL_NON_CONNECTE
         );
         assert_eq!(
@@ -439,4 +450,23 @@ fn se_connecter_sans_annuaire_est_une_configuration_et_sans_reponse_une_injoigna
         assert_eq!(asl_appareil_connecter(brut), ASL_CONFIGURATION);
         asl_appareil_libere(brut);
     }
+}
+
+#[test]
+fn la_plus_longue_adresse_tient_dans_sa_place() {
+    // **LE PIRE CAS, ÉCRIT** : huit groupes pleins, la plus grande portée, le
+    // plus grand port. `ASL_ADRESSE_OCTETS` le promet à l'en-tête et aux cinq
+    // liaisons ; si la forme d'écriture de Rust changeait, c'est ici qu'on le
+    // saurait, et non dans un `ASL_INTERNE` chez un téléphone.
+    let pire = std::net::SocketAddr::V6(std::net::SocketAddrV6::new(
+        std::net::Ipv6Addr::new(
+            0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xfffe,
+        ),
+        u16::MAX,
+        0,
+        u32::MAX,
+    ))
+    .to_string();
+    assert_eq!(pire.len(), 58, "{pire}");
+    assert!(pire.len() < ASL_ADRESSE_OCTETS, "le NUL doit tenir aussi");
 }
