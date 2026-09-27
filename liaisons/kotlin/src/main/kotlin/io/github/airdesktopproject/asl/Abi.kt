@@ -184,6 +184,7 @@ internal object Abi {
         // ── La voie mobile, déclarée sans être enveloppée (voir les constantes).
         "asl_appareil_neuf" to FunctionDescriptor.of(ENTIER, ADRESSE),
         "asl_appareil_annuaire" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE, ADRESSE),
+        "asl_appareil_annuaire_identifie" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE, ADRESSE),
         "asl_appareil_racines" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE, TAILLE),
         "asl_appareil_cle" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE, ADRESSE, ADRESSE),
         "asl_appareil_identite" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE),

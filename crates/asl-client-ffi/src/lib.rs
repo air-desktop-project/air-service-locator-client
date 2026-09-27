@@ -422,6 +422,7 @@ pub unsafe extern "C" fn asl_client_annuaire(
         client.annuaires.push(Annuaire {
             adresse,
             nom: nom.to_owned(),
+            identite: None,
         });
         ASL_OK
     })

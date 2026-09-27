@@ -11,10 +11,10 @@ use std::ptr;
 use asl_client_ffi::appareil::{
     ASL_ADRESSE_OCTETS, ASL_ATTESTATION_MAX, ASL_CLE_APPAREIL_OCTETS, ASL_DEFI_OCTETS,
     ASL_MESSAGE_MAX, ASL_PLATEFORME_ANDROID, ASL_PLATEFORME_APPLE, ASL_PLATEFORME_AUCUNE,
-    ASL_SIGNATURE_OCTETS, AslAppareil, asl_appareil_annuaire, asl_appareil_cle,
-    asl_appareil_connecter, asl_appareil_creer_compte, asl_appareil_deconnecter, asl_appareil_defi,
-    asl_appareil_distante, asl_appareil_identifiant, asl_appareil_identite, asl_appareil_liaison,
-    asl_appareil_libere, asl_appareil_message_pour_attestation,
+    ASL_SIGNATURE_OCTETS, AslAppareil, asl_appareil_annuaire, asl_appareil_annuaire_identifie,
+    asl_appareil_cle, asl_appareil_connecter, asl_appareil_creer_compte, asl_appareil_deconnecter,
+    asl_appareil_defi, asl_appareil_distante, asl_appareil_identifiant, asl_appareil_identite,
+    asl_appareil_liaison, asl_appareil_libere, asl_appareil_message_pour_attestation,
     asl_appareil_message_pour_attestation_de_cle, asl_appareil_neuf, asl_appareil_nouvelle,
     asl_appareil_nouvelles_ouvrir, asl_appareil_nouvelles_recues, asl_appareil_racines,
     asl_appareil_rejoindre_atteste, asl_appareil_requete,
@@ -81,6 +81,14 @@ fn les_pointeurs_nuls_rendent_argument_et_ne_tuent_personne() {
         assert_eq!(asl_appareil_neuf(ptr::null_mut()), ASL_ARGUMENT);
         assert_eq!(
             asl_appareil_annuaire(ptr::null_mut(), c"[::1]:6630".as_ptr(), c"x".as_ptr()),
+            ASL_ARGUMENT
+        );
+        assert_eq!(
+            asl_appareil_annuaire_identifie(
+                ptr::null_mut(),
+                c"[::1]:6630".as_ptr(),
+                c"n-0PWT8HZD80QMSPPDZ5CQXXYHQC".as_ptr()
+            ),
             ASL_ARGUMENT
         );
         assert_eq!(
@@ -423,6 +431,46 @@ fn une_requete_mal_formee_est_refusee_avant_de_chercher_une_connexion() {
                 trop.len()
             ),
             ASL_ARGUMENT
+        );
+        asl_appareil_libere(brut);
+    }
+}
+
+#[test]
+fn un_annuaire_par_son_identite_se_pose_sans_nom_ni_autorite() {
+    let brut = appareil();
+    unsafe {
+        // Un nom n'est pas un locateur ici (C20) ; un `u-…` n'est pas un `n-…`.
+        assert_eq!(
+            asl_appareil_annuaire_identifie(
+                brut,
+                c"annuaire.example:6630".as_ptr(),
+                c"n-0PWT8HZD80QMSPPDZ5CQXXYHQC".as_ptr()
+            ),
+            ASL_ARGUMENT
+        );
+        assert_eq!(
+            asl_appareil_annuaire_identifie(
+                brut,
+                c"[::1]:6630".as_ptr(),
+                c"u-0PWT8HZD80QMSPPDZ5CQXXYHQC".as_ptr()
+            ),
+            ASL_ARGUMENT
+        );
+        assert_eq!(
+            asl_appareil_annuaire_identifie(brut, ptr::null(), c"n-x".as_ptr()),
+            ASL_ARGUMENT
+        );
+        // Posé par son identité, SANS racine PEM : c'est la clé qu'on croira.
+        // (La connexion elle-même est éprouvée sur un vrai banc,
+        // `asl-client-tokio/tests/identite.rs`.)
+        assert_eq!(
+            asl_appareil_annuaire_identifie(
+                brut,
+                c"127.0.0.1:9".as_ptr(),
+                c"n-0PWT8HZD80QMSPPDZ5CQXXYHQC".as_ptr()
+            ),
+            ASL_OK
         );
         asl_appareil_libere(brut);
     }

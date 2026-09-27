@@ -41,6 +41,7 @@ asl_derniere_poussee
 # celles d'un écran, servies sur une connexion tenue.
 asl_appareil_neuf
 asl_appareil_annuaire
+asl_appareil_annuaire_identifie
 asl_appareil_racines
 asl_appareil_cle
 asl_appareil_identite

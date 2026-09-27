@@ -160,14 +160,18 @@ fn une_configuration_qui_manque_rend_deux_et_dit_quoi_poser() {
     let bac = Bac::neuf("config");
     let etat = bac.chemin().to_string_lossy().into_owned();
 
-    // **Aucun annuaire donné : ce sont les racines qu'on joint**, sous leur
-    // alias — et ce n'est donc plus une faute de configuration. Ce que
-    // l'essai peut tenir sans réseau, c'est que l'alias est bien celui que
-    // la commande vise : il apparaît dans ce qu'elle dit, résolu ou non.
+    // **Aucun annuaire donné : ce sont les racines EMBARQUÉES qu'on joint**,
+    // par leurs adresses et leurs identités — et ce n'est donc pas une faute
+    // de configuration. Ce que l'essai tient sans réseau : les deux identités
+    // sont celles que la commande vise, et AUCUN NOM n'est résolu (C20) — le
+    // vieil alias n'apparaît plus.
     let sortie = asl(&["--state", &etat, "diagnose"]);
     assert_ne!(code(&sortie), Some(1), "{}", texte(&sortie.stderr));
     let dit = texte(&sortie.stdout) + &texte(&sortie.stderr);
-    assert!(dit.contains("asl-root.air-desktop.org"), "{dit}");
+    assert!(dit.contains("n-0PWT8HZD80QMSPPDZ5CQXXYHQC"), "{dit}");
+    assert!(dit.contains("n-3K3P6H252W8K9370QG1YYTWBWB"), "{dit}");
+    assert!(dit.contains("2001:41d0:20a:900::1dd4"), "{dit}");
+    assert!(!dit.contains("asl-root.air-desktop.org"), "{dit}");
 
     // Un annuaire, mais aucune racine donnée : **celle d'air-desktop-project
     // est épinglée**, et c'est elle qui vaut — pas le magasin du système. Un

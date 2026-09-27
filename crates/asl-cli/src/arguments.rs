@@ -62,6 +62,9 @@ pub enum Commande {
     },
     /// L'état de la voie entre les deux racines, vu de celle qu'on a jointe.
     Replication,
+    /// La liste des racines, demandée à une racine et VÉRIFIÉE : chaque clé
+    /// se déduit en son identifiant (décision 56).
+    Racines,
     /// Dire qui est cette machine et pour qui elle agit, **hors ligne**.
     Identite,
     /// Dire ce qu'on sait de l'annuaire, et ce qu'on ne sait pas.
@@ -79,6 +82,10 @@ pub struct Cible {
     pub hote: String,
     /// Le port.
     pub port: u16,
+    /// L'identité `n-…` qu'on doit trouver au bout (`--directory
+    /// <locateur>=<n-…>`, décision 58) — `None` : la forme d'hier, une chaîne
+    /// signée par l'autorité de `--roots`, au nom de l'hôte.
+    pub identite: Option<Identifiant>,
 }
 
 /// L'invocation entière.
@@ -159,12 +166,21 @@ impl core::fmt::Display for Faute {
 /// IPv6 littéral inatteignable.
 fn cible(texte: &str) -> Result<Cible, Faute> {
     let illisible = || Faute::AnnuaireIllisible(texte.to_owned());
-    let (hote, port) = match texte.strip_prefix('[') {
+    // **`=n-…` DIT QUI L'ON DOIT TROUVER AU BOUT**, comme `--federation` côté
+    // serveur. Aucune adresse ne contient de `=`.
+    let (locateur, identite) = match texte.split_once('=') {
+        Some((locateur, n)) => (
+            locateur,
+            Some(Identifiant::analyser_genre(Genre::Annuaire, n).map_err(|_| illisible())?),
+        ),
+        None => (texte, None),
+    };
+    let (hote, port) = match locateur.strip_prefix('[') {
         Some(reste) => {
             let (adresse, apres) = reste.split_once(']').ok_or_else(illisible)?;
             (adresse, apres.strip_prefix(':').ok_or_else(illisible)?)
         }
-        None => texte.rsplit_once(':').ok_or_else(illisible)?,
+        None => locateur.rsplit_once(':').ok_or_else(illisible)?,
     };
     if hote.is_empty() {
         return Err(illisible());
@@ -176,6 +192,7 @@ fn cible(texte: &str) -> Result<Cible, Faute> {
     Ok(Cible {
         hote: hote.to_owned(),
         port,
+        identite,
     })
 }
 
@@ -323,6 +340,7 @@ where
         // Sans argument : l'annuaire joint dit lui-même de quelle voie il
         // parle, et le client n'a pas à nommer un pair qu'il ne connaît pas.
         "replication" => Commande::Replication,
+        "roots" => Commande::Racines,
         "identity" => Commande::Identite,
         _ => return Err(Faute::CommandeInconnue(commande)),
     };
@@ -390,7 +408,8 @@ mod essais {
             lu.annuaires,
             vec![Cible {
                 hote: "2001:db8::1".to_owned(),
-                port: 6630
+                port: 6630,
+                identite: None
             }]
         );
     }
@@ -499,6 +518,37 @@ mod essais {
                 "n-0PWT8HZDQ7V4XK2M9RJ3TB6ANE".to_owned()
             ))
         );
+    }
+
+    #[test]
+    fn roots_ne_prend_rien_et_une_identite_se_dit_par_egal() {
+        assert_eq!(lire(&["roots"]).unwrap().commande, Commande::Racines);
+        assert_eq!(
+            lire(&["roots", "x"]),
+            Err(Faute::ArgumentEnTrop("x".to_owned()))
+        );
+        let lu = lire(&[
+            "--directory",
+            "[2001:db8::1]:6630=n-0PWT8HZD80QMSPPDZ5CQXXYHQC",
+            "roots",
+        ])
+        .unwrap();
+        assert_eq!(lu.annuaires[0].hote, "2001:db8::1");
+        assert_eq!(
+            lu.annuaires[0]
+                .identite
+                .map(|id| id.texte().as_str().to_owned()),
+            Some("n-0PWT8HZD80QMSPPDZ5CQXXYHQC".to_owned())
+        );
+        // Une identité qui n'est pas celle d'un annuaire est refusée.
+        assert!(matches!(
+            lire(&[
+                "--directory",
+                "[::1]:6630=u-0PWT8HZD80QMSPPDZ5CQXXYHQC",
+                "roots"
+            ]),
+            Err(Faute::AnnuaireIllisible(_))
+        ));
     }
 
     #[test]

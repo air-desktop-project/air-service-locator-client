@@ -26,7 +26,9 @@ use std::sync::{Arc, Mutex};
 use asl_client::renvoi::{Aiguillage, Cote, Renvoi, separer_l_adresse};
 use asl_client::{Identite, Reprise, Tournee};
 
-use crate::{Connexion, Faute};
+use asl_id::Identifiant;
+
+use crate::{Confiance, Connexion, Faute};
 
 /// Combien de temps la boucle d'entretien dort entre deux réveils.
 ///
@@ -50,7 +52,15 @@ pub struct Annuaire {
     /// lui qui est vérifié. Le déduire d'une adresse reviendrait à faire
     /// confiance à qui répond à cette adresse, ce qui est exactement ce que le
     /// certificat existe pour éviter.
+    ///
+    /// **Sous la forme nouvelle, il ne va que dans `:authority`** : on ne
+    /// vise que l'adresse, et c'est l'[identité](Self::identite) qu'on juge.
     pub nom: String,
+    /// L'identité `n-…` qu'on doit trouver au bout (`protocole.md` §0) :
+    /// sa clé est ce que le certificat présenté doit porter. `None` : la
+    /// forme d'hier seule — une chaîne signée par l'autorité des
+    /// [racines](Reglages::racines), au [nom](Self::nom) exigé.
+    pub identite: Option<Identifiant>,
 }
 
 /// Ce qu'il faut savoir pour joindre le service, quelle que soit la machine.
@@ -103,11 +113,12 @@ impl Reglages {
         &self.annuaires
     }
 
-    /// Les autorités épinglées (`--roots`), en PEM.
+    /// L'autorité d'hier (`--roots`), en PEM — vide si l'on ne croit que
+    /// des identités.
     ///
-    /// **CE SONT AUSSI CELLES DE L'ANNUAIRE LOCAL** (décision 50) : le
-    /// propriétaire ajoute la sienne à celle des racines, et un renvoi ne
-    /// change rien à qui l'on croit.
+    /// **LE TEMPS DE LA BASCULE SEULEMENT** (décision 58) : un annuaire qui
+    /// ne sert encore que sa chaîne est cru par elle ; un annuaire qui sert
+    /// son identité est cru par sa clé, avec ou sans elle.
     #[must_use]
     pub fn racines(&self) -> &[u8] {
         &self.racines
@@ -223,7 +234,8 @@ async fn essayer(
     let Some(cible) = cible else {
         return Pas::Ratee;
     };
-    match Connexion::ouvrir(cible.adresse, &cible.nom, racines, alea).await {
+    let confiance = confiance_de(cible, racines);
+    match Connexion::ouvrir_confiance(cible.adresse, &cible.nom, &confiance, alea).await {
         Ok(connexion) => Pas::Ouverte(Box::new(connexion)),
         // **UNE RACINE ILLISIBLE NE DEVIENT PAS LISIBLE EN RÉESSAYANT.** Une
         // faute de configuration réessayée à l'infini est une panne muette : le
@@ -233,13 +245,28 @@ async fn essayer(
     }
 }
 
+/// Ce qu'on croit au bout de cet annuaire : son identité s'il en a une, et
+/// l'autorité d'hier tant qu'elle est configurée (décision 58).
+#[must_use]
+pub fn confiance_de(annuaire: &Annuaire, racines: &[u8]) -> Confiance {
+    let identites: Vec<Identifiant> = annuaire.identite.into_iter().collect();
+    Confiance::par_identites(&identites).avec_autorite(racines)
+}
+
 /// Les annuaires qu'un renvoi désigne, résolus.
 ///
-/// **LE NOM EXIGÉ EST L'HÔTE DE L'ADRESSE DÉCLARÉE** (décision 50) : le
-/// propriétaire frappe, sous son autorité propre, un certificat au nom qu'il
-/// a déclaré pour ses membres — le même pour les deux —, et c'est ce nom
-/// qu'on vérifie. Une adresse littérale est gardée telle quelle ; un nom est
-/// résolu, et **toutes** ses adresses sont gardées, comme pour les racines.
+/// **L'IDENTITÉ ATTENDUE EST CELLE QUE LE RENVOI NOMME** (`protocole.md`
+/// §0, décision 53) : le `421` dit l'annuaire local `n-…`, et c'est sa clé
+/// qu'on doit trouver au bout — l'autorité du propriétaire de la décision 50
+/// n'a plus à être dans `--roots`. L'hôte de chaque locateur ne va que dans
+/// `:authority` (et dans le SNI d'un annuaire local d'hier qui ne servirait
+/// qu'une chaîne, le temps de la bascule). Un locateur littéral est gardé tel
+/// quel ; un nom — une commodité, jamais une preuve (C20) — est résolu, et
+/// **toutes** ses adresses sont gardées.
+///
+/// **LA LIMITE, DITE** : le `421` ne nomme que le TITULAIRE d'une paire. Le
+/// second membre, qui a sa propre clé, n'est donc pas cru sous la forme
+/// nouvelle tant que le `421` ne porte pas l'identité de chaque membre.
 ///
 /// Une adresse qui ne se résout pas est sautée : c'est un membre qu'on ne
 /// peut pas joindre, pas une raison de ne pas essayer l'autre.
@@ -257,6 +284,7 @@ pub async fn membres_du_renvoi(renvoi: &Renvoi<'_>) -> Vec<Annuaire> {
             trouves.push(Annuaire {
                 adresse: SocketAddr::new(ip, port),
                 nom: hote.to_owned(),
+                identite: Some(renvoi.annuaire()),
             });
             continue;
         }
@@ -265,6 +293,7 @@ pub async fn membres_du_renvoi(renvoi: &Renvoi<'_>) -> Vec<Annuaire> {
                 trouves.push(Annuaire {
                     adresse,
                     nom: hote.to_owned(),
+                    identite: Some(renvoi.annuaire()),
                 });
             }
         }
