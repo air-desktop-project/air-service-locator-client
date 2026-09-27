@@ -85,6 +85,7 @@ cd "$racine/fuzz"
 # <cible> <répertoire de graines>
 CIBLES=$(cat <<'TABLE'
 fuzz_asl_client_reprise reprise
+fuzz_asl_client_renvoi renvoi
 TABLE
 )
 
