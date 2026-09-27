@@ -361,9 +361,25 @@ pub async fn annonce(
     })?;
     let reglages = reglages(invocation)?;
     let arret = ecouter_ctrl_c();
+    // **L'ANNUAIRE LOCAL VERS LEQUEL UNE RACINE NOUS A RENVOYÉS** (`421`,
+    // décision 59), s'il y en a un : on y retourne tant qu'il répond, et l'on
+    // revient aux racines quand il se tait — pour réapprendre si le domaine a
+    // changé d'hébergeur. **UN SEUL SAUT** : un `421` reçu de l'annuaire
+    // local n'est pas suivi, il est une faute (la même règle que l'attache).
+    let mut local: Option<Reglages> = None;
 
     loop {
-        let mut connexion = ouvrir(&reglages).await?;
+        let mut connexion = match &local {
+            Some(chez_lui) => match ouvrir(chez_lui).await {
+                Ok(connexion) => connexion,
+                Err(quoi) => {
+                    println!("l'annuaire local ne répond pas ({quoi:?}) — retour aux racines.");
+                    local = None;
+                    continue;
+                }
+            },
+            None => ouvrir(&reglages).await?,
+        };
 
         // **L'ADRESSE LOCALE EST CELLE QUI A SERVI À JOINDRE L'ANNUAIRE.** C'est
         // la seule qui ait un sens à comparer : sans elle, le verdict de NAT
@@ -380,10 +396,15 @@ pub async fn annonce(
             .authentifier(identite)
             .await
             .map_err(refus_de_l_annuaire)?;
-        let corps = connexion
-            .annoncer(&annonce)
-            .await
-            .map_err(refus_de_l_annuaire)?;
+        let corps = match connexion.annoncer(&annonce).await {
+            Ok(corps) => corps,
+            Err(FauteReseau::Renvoye(corps)) if local.is_none() => {
+                let _ = connexion.fermer().await;
+                local = Some(reglages_du_renvoi(invocation, &corps).await?);
+                continue;
+            }
+            Err(quoi) => return Err(refus_de_l_annuaire(quoi)),
+        };
 
         println!("{}", rendu::reponse(&corps).map_err(Issue::Injoignable)?);
         println!();
@@ -981,6 +1002,31 @@ async fn renvoi_de_l_annonce(connexion: &mut Connexion, reglages: &Reglages) {
 /// **UN REFUS N'EST PAS UNE PANNE.** `403` veut dire « l'annuaire a compris et
 /// a dit non » ; un délai veut dire « on n'a rien obtenu ». Les confondre ferait
 /// chercher une panne de réseau là où il y a un droit manquant.
+/// Les réglages qui visent l'annuaire local qu'un `421` désigne : chacun de
+/// ses membres, sous SA propre identité (décision 59).
+async fn reglages_du_renvoi(invocation: &Invocation, corps: &[u8]) -> Result<Reglages, Issue> {
+    let renvoi = asl_client::renvoi::Renvoi::lire(corps).map_err(|quoi| {
+        Issue::Injoignable(format!(
+            "l'annuaire renvoie ailleurs, mais le renvoi ne se lit pas ({quoi:?})"
+        ))
+    })?;
+    let membres = asl_client_tokio::membres_du_renvoi(&renvoi).await;
+    if membres.is_empty() {
+        return Err(Issue::Injoignable(format!(
+            "renvoyé vers l'annuaire local {}, dont aucune adresse ne se joint : {:?}",
+            renvoi.annuaire().texte().as_str(),
+            renvoi.adresses()
+        )));
+    }
+    println!(
+        "renvoyé vers l'annuaire local {} ({} adresse(s)).",
+        renvoi.annuaire().texte().as_str(),
+        membres.len()
+    );
+    Reglages::nouveaux(membres, racines(invocation)?, PLAFOND_MS)
+        .map_err(|quoi| Issue::Configuration(quoi.to_string()))
+}
+
 fn refus_de_l_annuaire(quoi: FauteReseau) -> Issue {
     match quoi {
         FauteReseau::Statut(code) => Issue::Refuse(code),
