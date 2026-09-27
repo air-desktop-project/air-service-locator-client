@@ -87,16 +87,16 @@ asl-client-ffi = { path = "crates/asl-client-ffi", version = "0.18.0" }
 # Le SHA est celui du serveur au 2026-09-12, avancé depuis `7174ac8` pour
 # prendre `asl-api` et la clé d'appareil P-256 d'`asl-cle` ; puis `dca3cf7`
 # (0.10.0, 2026-09-18) : `GET /v1/moi/appareils`, ce qu'`asl enrolled` lit ;
-# puis `da94625` (0.31.0, 2026-09-27) : le `421` qui nomme chaque membre.
-asl-id = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "da94625" }
-asl-proto = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "da94625" }
-asl-cle = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "da94625" }
-asl-api = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "da94625" }
+# puis `5355008` (0.31.0, 2026-09-27, merge de la PR serveur #57) : le `421` qui nomme chaque membre.
+asl-id = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "5355008" }
+asl-proto = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "5355008" }
+asl-cle = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "5355008" }
+asl-api = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "5355008" }
 # `asl-racines` (serveur 0.31.0, décision 59) : la liste embarquée des racines
 # et la moitié pure de la règle « clé = identité », une fois pour les deux
 # dépôts — la 0.17.0 les avait recopiées. **SHA d'une branche non mergée**
 # (`identite-par-membre`, PR serveur #57) : à avancer au SHA de merge.
-asl-racines = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "da94625" }
+asl-racines = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "5355008" }
 
 # ── LA PILE QUIC ET HTTP/3, EMPRUNTÉE À `air-mail-server` (C15) ─────────────
 #
