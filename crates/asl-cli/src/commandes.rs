@@ -406,6 +406,15 @@ pub async fn annonce(
             Err(quoi) => return Err(refus_de_l_annuaire(quoi)),
         };
 
+        // **LE KEEPALIVE À LA CADENCE DU BAIL** (`modele.md` §4.1) — ce que
+        // l'attache du daemon fait, et que cette commande oubliait : sa
+        // connexion restait silencieuse, mourait au délai d'inactivité (30 s)
+        // et se refaisait, le service passant « parti » à chaque fois. Vu le
+        // 27/09 sur speedy : 41 « attache perdue » en vingt minutes, et les
+        // racines qui le disaient tour à tour vivant et introuvable.
+        if let Ok(bail) = asl_client_tokio::cadence_du_bail(&corps) {
+            connexion.maintenir(bail);
+        }
         println!("{}", rendu::reponse(&corps).map_err(Issue::Injoignable)?);
         println!();
         println!(
