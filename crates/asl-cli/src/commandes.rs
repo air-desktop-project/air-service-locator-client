@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use asl_client::Identite;
-use asl_client_tokio::{Annuaire, Connexion, Faute as FauteReseau, Reglages, joindre};
+use asl_client_tokio::{
+    Annuaire, Connexion, Faute as FauteReseau, Reglages, confiance_de, joindre, racines_embarquees,
+};
 use asl_proto::{NomService, PointEcoute};
 
 use crate::arguments::{Cible, Invocation};
@@ -70,24 +72,39 @@ fn patience() -> u64 {
 /// toutes dans la tournée : c'est ainsi qu'un annuaire à double pile est essayé
 /// en IPv6 d'abord sans que personne ait à l'écrire.
 fn reglages(invocation: &Invocation) -> Result<Reglages, Issue> {
+    let racines = racines(invocation)?;
     let cibles = if invocation.annuaires.is_empty() {
         depuis_l_environnement()?
     } else {
-        invocation.annuaires.clone()
+        Some(invocation.annuaires.clone())
+    };
+    // **SANS RIEN DIRE, LES RACINES EMBARQUÉES** — leurs adresses, leurs
+    // identités : aucun résolveur (C20).
+    let Some(cibles) = cibles else {
+        return Reglages::nouveaux(racines_embarquees(), racines, PLAFOND_MS)
+            .map_err(|quoi| Issue::Configuration(quoi.to_string()));
     };
 
     let mut annuaires = Vec::new();
     for cible in &cibles {
         let nom = invocation.nom.clone().unwrap_or_else(|| cible.hote.clone());
-        let adresses = (cible.hote.as_str(), cible.port)
-            .to_socket_addrs()
-            .map_err(|quoi| {
-                Issue::Configuration(format!("`{}` ne se résout pas : {quoi}", cible.hote))
-            })?;
-        for adresse in tourner(adresses.collect()) {
+        // **UNE ADRESSE LITTÉRALE NE SE RÉSOUT PAS.** Un nom, si : c'est une
+        // commodité qu'on a écrite, jamais une preuve — l'identité, quand
+        // elle est dite, reste ce qu'on juge.
+        let adresses: Vec<std::net::SocketAddr> = match cible.hote.parse::<std::net::IpAddr>() {
+            Ok(ip) => vec![std::net::SocketAddr::new(ip, cible.port)],
+            Err(_) => (cible.hote.as_str(), cible.port)
+                .to_socket_addrs()
+                .map_err(|quoi| {
+                    Issue::Configuration(format!("`{}` ne se résout pas : {quoi}", cible.hote))
+                })?
+                .collect(),
+        };
+        for adresse in tourner(adresses) {
             annuaires.push(Annuaire {
                 adresse,
                 nom: nom.clone(),
+                identite: cible.identite,
             });
         }
     }
@@ -97,7 +114,6 @@ fn reglages(invocation: &Invocation) -> Result<Reglages, Issue> {
         ));
     }
 
-    let racines = racines(invocation)?;
     Reglages::nouveaux(annuaires, racines, PLAFOND_MS)
         .map_err(|quoi| Issue::Configuration(quoi.to_string()))
 }
@@ -131,21 +147,12 @@ fn tourner(adresses: Vec<std::net::SocketAddr>) -> Vec<std::net::SocketAddr> {
     v6
 }
 
-/// L'alias des annuaires racines d'`air-desktop-project` : un nom qui rend
-/// les adresses des deux serveurs racines, et que le DNS sert en tournant.
-///
-/// **C'est ce qu'on joint quand on ne dit rien.** Un utilisateur qui tape
-/// `asl machines u-…` n'a pas à savoir où sont les racines : elles sont là où
-/// le produit les met, sous ce nom, et c'est ce nom que leur certificat
-/// porte. Le certificat de chaque racine le porte aussi, ce qui fait que le
-/// nom exigé (`--name`, l'hôte par défaut) vaut pour l'une comme pour
-/// l'autre.
-pub const ANNUAIRES_RACINES: &str = "asl-root.air-desktop.org:6630";
-
-/// Les annuaires que `ASL_DIRECTORY` désigne, séparés par des virgules — et,
-/// sans elle, les racines.
-fn depuis_l_environnement() -> Result<Vec<Cible>, Issue> {
-    let brut = std::env::var("ASL_DIRECTORY").unwrap_or_else(|_| ANNUAIRES_RACINES.to_owned());
+/// Les annuaires que `ASL_DIRECTORY` désigne, séparés par des virgules ;
+/// `None` sans elle — on joindra alors les racines embarquées.
+fn depuis_l_environnement() -> Result<Option<Vec<Cible>>, Issue> {
+    let Ok(brut) = std::env::var("ASL_DIRECTORY") else {
+        return Ok(None);
+    };
     brut.split(',')
         .map(str::trim)
         .filter(|mot| !mot.is_empty())
@@ -163,7 +170,8 @@ fn depuis_l_environnement() -> Result<Vec<Cible>, Issue> {
                     .ok_or_else(|| Issue::Configuration("`ASL_DIRECTORY` est vide".to_owned()))
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
 }
 
 /// Les certificats d'autorité, en PEM.
@@ -535,6 +543,41 @@ fn compte_etranger(demande: asl_id::Identifiant, notre: asl_id::Identifiant) -> 
     ))
 }
 
+// ── `asl roots` ─────────────────────────────────────────────────────────────
+
+/// La liste des racines, demandée à une racine et **vérifiée** (décision 56).
+///
+/// La connexion est jugée par la clé de la racine jointe — c'est elle qui
+/// signe la liste ; la liste l'est ensuite entrée par entrée : **une seule clé
+/// qui ne donne pas son `n-…` la refuse entière**. `GET /v1/racines` n'exige
+/// aucune preuve : cette commande marche sur une machine non enrôlée.
+pub async fn racines_apprises(invocation: &Invocation) -> Sortie {
+    let reglages = reglages(invocation)?;
+    let mut connexion = ouvrir(&reglages).await?;
+    let racines = asl_client_tokio::apprendre_les_racines(&mut connexion)
+        .await
+        .map_err(|quoi| Issue::Injoignable(format!("la liste des racines : {quoi}")))?;
+    match connexion.forme() {
+        Some(forme) => println!("confiance      {forme}"),
+        None => println!("confiance      inconnue"),
+    }
+    println!("racines        {} — liste vérifiée", racines.len());
+    for racine in &racines {
+        let cle: String = racine
+            .cle
+            .iter()
+            .map(|octet| format!("{octet:02x}"))
+            .collect();
+        println!("  {}", racine.identifiant.texte().as_str());
+        println!("    clé        {cle}");
+        for locateur in &racine.locateurs {
+            println!("    locateur   {locateur}");
+        }
+    }
+    let _ = connexion.fermer().await;
+    Ok(())
+}
+
 // ── `asl replication` ───────────────────────────────────────────────────────
 
 /// L'état de la voie entre les deux racines — les DEUX, puis la conclusion.
@@ -699,11 +742,15 @@ pub async fn diagnostic(invocation: &Invocation, dossier: &Path) -> Sortie {
             break;
         };
         let quoi = &reglages.annuaires()[place];
+        // **CE QU'ON CROIT AU BOUT** : l'identité, ou le nom d'hier.
+        let attendu = quoi.identite.map_or_else(
+            || format!("nom exigé : {}", quoi.nom),
+            |identite| format!("identité : {}", identite.texte().as_str()),
+        );
         println!(
-            "  {}. {:<45} nom exigé : {}   ({})",
+            "  {}. {:<45} {attendu}   ({})",
             rang.saturating_add(1),
             quoi.adresse.to_string(),
-            quoi.nom,
             if quoi.adresse.is_ipv6() {
                 "IPv6"
             } else {
@@ -715,6 +762,21 @@ pub async fn diagnostic(invocation: &Invocation, dossier: &Path) -> Sortie {
     println!();
     let mut connexion = ouvrir(&reglages).await?;
     println!("connexion      établie");
+    // **LA FORME QUI A SERVI** (décision 58) : le jour où plus aucune ligne ne
+    // dit « forme d'hier », les racines peuvent cesser de servir leur chaîne.
+    match connexion.forme() {
+        Some(forme) => println!("confiance      {forme}"),
+        None => println!("confiance      inconnue"),
+    }
+    if let Some(identite) = connexion.distante().ok().and_then(|ou| {
+        reglages
+            .annuaires()
+            .iter()
+            .find(|quoi| quoi.adresse == ou)
+            .and_then(|quoi| quoi.identite)
+    }) {
+        println!("identité jointe {}", identite.texte().as_str());
+    }
 
     // **À QUOI PARLE-T-ON, ET QU'EXIGE-T-IL ?** `GET /v1/version` n'exige
     // aucune preuve : c'est la ressource que peut lire qui n'a pas encore de
@@ -872,18 +934,21 @@ async fn renvoi_de_l_annonce(connexion: &mut Connexion, reglages: &Reglages) {
     for membre in &membres {
         let essai = tokio::time::timeout(
             patience,
-            Connexion::ouvrir(membre.adresse, &membre.nom, reglages.racines(), &|| {
-                etat::hasard::<16>().unwrap_or([0; 16])
-            }),
+            Connexion::ouvrir_confiance(
+                membre.adresse,
+                &membre.nom,
+                &confiance_de(membre, reglages.racines()),
+                &|| etat::hasard::<16>().unwrap_or([0; 16]),
+            ),
         )
         .await;
         match essai {
             Ok(Ok(mut ouverte)) => {
-                println!(
-                    "  {:<45} joignable (nom exigé : {})",
-                    membre.adresse.to_string(),
-                    membre.nom
+                let forme = ouverte.forme().map_or_else(
+                    || "confiance inconnue".to_owned(),
+                    |forme| forme.to_string(),
                 );
+                println!("  {:<45} joignable ({forme})", membre.adresse.to_string());
                 let _ = ouverte.fermer().await;
             }
             Ok(Err(quoi)) => println!("  {:<45} INJOIGNABLE — {quoi}", membre.adresse.to_string()),
@@ -894,8 +959,8 @@ async fn renvoi_de_l_annonce(connexion: &mut Connexion, reglages: &Reglages) {
         }
     }
     println!(
-        "               son certificat doit être signé par une autorité de --roots :\n\
-         \x20              celle des racines, et celle que son propriétaire a frappée."
+        "               il doit présenter la clé de {} — son identité, que le 421 nomme.",
+        renvoi.annuaire().texte().as_str()
     );
 }
 
@@ -967,6 +1032,7 @@ mod tests {
         let nomme = |adresse| Annuaire {
             adresse,
             nom: "annuaire.example".to_owned(),
+            identite: None,
         };
         let racines = super::RACINE_EPINGLEE.to_vec();
         let deux = Reglages::nouveaux(

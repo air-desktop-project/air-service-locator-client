@@ -350,6 +350,16 @@ int32_t asl_appareil_neuf(asl_appareil **sortie);
 /* Un annuaire, comme asl_client_annuaire : adresse littérale, nom du certificat. */
 int32_t asl_appareil_annuaire(asl_appareil *appareil, const char *adresse, const char *nom);
 
+/* Un annuaire par son IDENTITÉ (décision 58) : un locateur — une adresse
+ * littérale, "[2001:db8::1]:6630" ou "192.0.2.1:6630" — et l'identifiant
+ * "n-…" qu'on doit trouver au bout. L'annuaire présente un certificat
+ * auto-signé par sa clé d'identité ; on le croit si cette clé se déduit en
+ * `n`. Aucune autorité requise ; une posée par asl_appareil_racines est crue
+ * AUSSI, le temps de la bascule. Aucun nom n'est résolu : l'appelant passe
+ * des adresses. ASL_ARGUMENT pour un locateur ou un `n` de travers. */
+int32_t asl_appareil_annuaire_identifie(asl_appareil *appareil, const char *locateur,
+                                        const char *n);
+
 /* Les racines, comme asl_client_racines : PEM, et aucun repli sur le système. */
 int32_t asl_appareil_racines(asl_appareil *appareil, const uint8_t *pem, size_t taille);
 

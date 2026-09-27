@@ -29,13 +29,14 @@ use std::ffi::CString;
 
 use asl_client_ffi::appareil::{
     ASL_ADRESSE_OCTETS, ASL_CLE_APPAREIL_OCTETS, ASL_DEFI_OCTETS, ASL_MESSAGE_MAX,
-    ASL_NOUVELLE_MAX, ASL_SIGNATURE_OCTETS, AslAppareil, asl_appareil_annuaire, asl_appareil_cle,
-    asl_appareil_connecter, asl_appareil_creer_compte, asl_appareil_deconnecter, asl_appareil_defi,
-    asl_appareil_distante, asl_appareil_identifiant, asl_appareil_identite, asl_appareil_liaison,
-    asl_appareil_libere, asl_appareil_message_pour_attestation,
-    asl_appareil_message_pour_attestation_de_cle, asl_appareil_neuf, asl_appareil_nouvelle,
-    asl_appareil_nouvelles_ouvrir, asl_appareil_nouvelles_recues, asl_appareil_racines,
-    asl_appareil_rejoindre_atteste, asl_appareil_requete,
+    ASL_NOUVELLE_MAX, ASL_SIGNATURE_OCTETS, AslAppareil, asl_appareil_annuaire,
+    asl_appareil_annuaire_identifie, asl_appareil_cle, asl_appareil_connecter,
+    asl_appareil_creer_compte, asl_appareil_deconnecter, asl_appareil_defi, asl_appareil_distante,
+    asl_appareil_identifiant, asl_appareil_identite, asl_appareil_liaison, asl_appareil_libere,
+    asl_appareil_message_pour_attestation, asl_appareil_message_pour_attestation_de_cle,
+    asl_appareil_neuf, asl_appareil_nouvelle, asl_appareil_nouvelles_ouvrir,
+    asl_appareil_nouvelles_recues, asl_appareil_racines, asl_appareil_rejoindre_atteste,
+    asl_appareil_requete,
 };
 use asl_client_ffi::{ASL_ARGUMENT, ASL_IDENTIFIANT_OCTETS, ASL_INTERNE, ASL_OK, asl_faute_texte};
 use jni::JNIEnv;
@@ -291,6 +292,29 @@ pub extern "system" fn Java_org_airdesktop_servicelocator_reseau_Natif_annuaire(
     };
     // SAFETY : deux chaînes C valides, un handle vivant.
     unsafe { asl_appareil_annuaire(handle.appareil, adresse.as_ptr(), nom.as_ptr()) }
+}
+
+/// `external fun annuaireIdentifie(h: Long, locateur: String, n: String): Int`
+///
+/// Un annuaire par son identité : une adresse littérale, et le `n-…` qu'on
+/// doit trouver au bout (décision 58).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_airdesktop_servicelocator_reseau_Natif_annuaireIdentifie(
+    mut env: JNIEnv,
+    _classe: JClass,
+    brut: jlong,
+    locateur: JString,
+    n: JString,
+) -> jint {
+    let Some(handle) = handle(brut) else {
+        return ASL_ARGUMENT;
+    };
+    let (Some(locateur), Some(n)) = (lire_chaine(&mut env, &locateur), lire_chaine(&mut env, &n))
+    else {
+        return ASL_ARGUMENT;
+    };
+    // SAFETY : deux chaînes C valides, un handle vivant.
+    unsafe { asl_appareil_annuaire_identifie(handle.appareil, locateur.as_ptr(), n.as_ptr()) }
 }
 
 /// `external fun racines(h: Long, pem: ByteArray): Int`

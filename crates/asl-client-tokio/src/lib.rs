@@ -27,7 +27,6 @@
 #![forbid(unsafe_code)]
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ams_proto_quic::{ConnectionId, StreamId};
@@ -39,12 +38,18 @@ use tokio::net::UdpSocket;
 
 mod appareil;
 mod attache;
+mod confiance;
 mod pont;
+mod racines;
 mod reponse;
 
 pub use appareil::{CompteCree, NOUVELLE_MAX, Nouvelle, Tenue};
-pub use attache::{Annuaire, Attache, Etat, Reglages, cadence_du_bail, joindre, membres_du_renvoi};
+pub use attache::{
+    Annuaire, Attache, Etat, Reglages, cadence_du_bail, confiance_de, joindre, membres_du_renvoi,
+};
+pub use confiance::{Confiance, Forme};
 pub use pont::Pont;
+pub use racines::{RacineApprise, apprendre_les_racines, racines_embarquees};
 pub use reponse::Reponse;
 
 /// Ce qu'une connexion peut refuser.
@@ -193,6 +198,8 @@ pub struct Connexion {
     nouvelles: Option<StreamId>,
     /// Ce qui est arrivé sur ce flux-là et qui n'a pas encore sa fin de ligne.
     lignes: appareil::Lignes,
+    /// La forme de confiance que la poignée de main a crue.
+    forme: confiance::Retenue,
 }
 
 impl Connexion {
@@ -217,9 +224,28 @@ impl Connexion {
         racines: &[u8],
         alea: &(dyn Fn() -> [u8; 16] + Sync),
     ) -> Result<Self, Faute> {
-        let config = configuration_tls(racines)?;
-        let serveur = rustls::pki_types::ServerName::try_from(nom.to_owned())
-            .map_err(|_| Faute::Tls(format!("`{nom}` n'est pas un nom de serveur")))?;
+        Self::ouvrir_confiance(annuaire, nom, &Confiance::par_autorite(racines), alea).await
+    }
+
+    /// Ouvre une connexion à cet annuaire sous cette [`Confiance`] : les
+    /// identités qu'on attend au bout, et — le temps de la bascule —
+    /// l'autorité d'hier (`protocole.md` §0, décision 58).
+    ///
+    /// `nom` va dans `:authority` ; il n'est vérifié que par la forme d'hier.
+    /// Sans autorité, la poignée de main ne vise que l'adresse, et c'est
+    /// l'identité qu'on juge.
+    ///
+    /// # Errors
+    ///
+    /// Celles d'[`Self::ouvrir`].
+    pub async fn ouvrir_confiance(
+        annuaire: SocketAddr,
+        nom: &str,
+        confiance: &Confiance,
+        alea: &(dyn Fn() -> [u8; 16] + Sync),
+    ) -> Result<Self, Faute> {
+        let (config, retenue) = confiance::configuration(confiance)?;
+        let serveur = confiance::nom_de_serveur(confiance, nom, annuaire)?;
 
         // **UNE SOCKET DE LA MÊME FAMILLE QUE LA CIBLE.** Se lier en IPv4 pour
         // joindre une adresse IPv6 échoue au premier envoi, et le message du
@@ -255,9 +281,18 @@ impl Connexion {
             reste: Vec::new(),
             nouvelles: None,
             lignes: appareil::Lignes::default(),
+            forme: retenue,
         };
         connexion.poignee_de_main().await?;
         Ok(connexion)
+    }
+
+    /// La forme de confiance qui a servi : l'identité par la clé, ou
+    /// l'autorité d'hier (décision 58). `None` avant la poignée de main — ce
+    /// qu'une connexion ouverte n'est jamais.
+    #[must_use]
+    pub fn forme(&self) -> Option<Forme> {
+        self.forme.lock().ok().and_then(|place| *place)
     }
 
     /// La liaison de canal de cette connexion.
@@ -950,36 +985,4 @@ pub fn encoder(annonce: &asl_proto::Annonce<'_>) -> Result<Vec<u8>, Faute> {
     let combien = annonce.encoder(&mut sortie).map_err(|_| Faute::Illisible)?;
     sortie.truncate(combien);
     Ok(sortie)
-}
-
-/// Monte la configuration TLS cliente.
-///
-/// # L'ALPN EST POSÉE ICI, ET PAS AILLEURS
-///
-/// §3.1 de RFC 9114 : le protocole applicatif se choisit par ALPN, et un client
-/// qui n'en annoncerait pas verrait sa poignée de main refusée par un serveur
-/// qui, lui, l'exige. La poser dans cette fonction plutôt que chez l'appelant
-/// est ce qui rend l'oubli impossible.
-fn configuration_tls(racines: &[u8]) -> Result<Arc<rustls::ClientConfig>, Faute> {
-    use rustls::pki_types::pem::PemObject as _;
-
-    let mut magasin = rustls::RootCertStore::empty();
-    for der in rustls::pki_types::CertificateDer::pem_slice_iter(racines) {
-        let der = der.map_err(|quoi| Faute::Tls(format!("certificat illisible : {quoi}")))?;
-        magasin
-            .add(der)
-            .map_err(|quoi| Faute::Tls(format!("racine refusée : {quoi}")))?;
-    }
-    if magasin.is_empty() {
-        return Err(Faute::Tls("aucune racine à qui faire confiance".to_owned()));
-    }
-
-    let mut config =
-        rustls::ClientConfig::builder_with_provider(Arc::new(ams_tls::provider_quic()))
-            .with_protocol_versions(&[&rustls::version::TLS13])
-            .map_err(|quoi| Faute::Tls(format!("TLS 1.3 : {quoi}")))?
-            .with_root_certificates(magasin)
-            .with_no_client_auth();
-    config.alpn_protocols = ams_tls::alpn_h3();
-    Ok(Arc::new(config))
 }

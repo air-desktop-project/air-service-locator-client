@@ -338,6 +338,53 @@ pub unsafe extern "C" fn asl_appareil_annuaire(
         appareil.annuaires.push(Annuaire {
             adresse,
             nom: nom.to_owned(),
+            identite: None,
+        });
+        ASL_OK
+    })
+}
+
+/// Ajoute un annuaire **par son identité** (`protocole.md` §0, décision 58) :
+/// un locateur — une adresse littérale, `[2001:db8::1]:6630` ou
+/// `192.0.2.1:6630` — et l'identifiant `n-…` qu'on doit trouver au bout.
+///
+/// **LA CLÉ EST CE QU'ON CROIT, L'ADRESSE N'EST QUE LE CHEMIN** : l'annuaire
+/// présente un certificat auto-signé par sa clé d'identité, et on l'accepte si
+/// cette clé se déduit en `n`. Aucune autorité n'est requise ; une posée par
+/// [`asl_appareil_racines`] est crue AUSSI, le temps de la bascule.
+///
+/// **Aucun nom n'est résolu** (C20) : un nom se résout chez l'appelant, qui
+/// passe ensuite chacune de ses adresses.
+///
+/// # Safety
+///
+/// `appareil` vient de [`asl_appareil_neuf`]. `locateur` et `n` sont des
+/// chaînes C valides.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn asl_appareil_annuaire_identifie(
+    appareil: *mut AslAppareil,
+    locateur: *const c_char,
+    n: *const c_char,
+) -> i32 {
+    protege(|| {
+        // SAFETY : contrat de la fonction.
+        let Some(appareil) = (unsafe { appareil.as_mut() }) else {
+            return ASL_ARGUMENT;
+        };
+        // SAFETY : contrat de la fonction.
+        let (Some(locateur), Some(n)) = (unsafe { chaine(locateur) }, unsafe { chaine(n) }) else {
+            return ASL_ARGUMENT;
+        };
+        let Ok(adresse) = locateur.parse::<std::net::SocketAddr>() else {
+            return ASL_ARGUMENT;
+        };
+        let Ok(identite) = Identifiant::analyser_genre(Genre::Annuaire, n) else {
+            return ASL_ARGUMENT;
+        };
+        appareil.annuaires.push(Annuaire {
+            adresse,
+            nom: adresse.ip().to_string(),
+            identite: Some(identite),
         });
         ASL_OK
     })

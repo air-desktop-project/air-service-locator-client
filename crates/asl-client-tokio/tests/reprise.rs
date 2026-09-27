@@ -47,6 +47,7 @@ fn annuaire(adresse: std::net::SocketAddr) -> Annuaire {
     Annuaire {
         adresse,
         nom: "localhost".to_owned(),
+        identite: None,
     }
 }
 

@@ -89,6 +89,7 @@
 use asl_cle::{ClePublique, CleSecrete, CodeEnrolement, Defi, LiaisonDeCanal, Signature};
 
 pub mod appareil;
+pub mod racines;
 pub mod renvoi;
 
 /// L'étiquette que les deux camps donnent à leur exportateur TLS.

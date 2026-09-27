@@ -11,6 +11,7 @@ cran sur une entrée que personne n'a imaginée. C'est la contrainte C3.
 |---|---|---|
 | `fuzz_asl_client_reprise` | `reprise` | **Le mécanisme de haute disponibilité du produit.** L'état vivant n'est pas répliqué entre les annuaires racines : c'est la reconnexion du client qui reconstruit tout. Un délai nul fait tourner une boucle serrée ; un délai qui ne croît pas fait marteler l'annuaire par mille daemons à la seconde où il se relève. |
 | `fuzz_asl_client_renvoi` | `renvoi` | **Le corps d'un `421`, choisi par qui répond.** Le lire ne doit jamais paniquer, et ce qu'on en garde doit être vérifié ; l'aiguillage qui le suit ne fait qu'un saut, et son retour aux racines se paie d'un recul — sinon racine, `421` et annuaire local muet deviendraient une boucle serrée. |
+| `fuzz_asl_client_racines` | `racines` | **La liste des racines que rend `GET /v1/racines`** — c'est elle qui dira où joindre les racines la prochaine fois. La juger ne doit jamais paniquer, une liste admise n'est jamais vide et ne porte que des `n-…`, et le verdict est stable. |
 
 ## Lancer
 

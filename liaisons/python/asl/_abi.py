@@ -311,6 +311,9 @@ def _declarer(lib: ctypes.CDLL) -> ctypes.CDLL:
     lib.asl_appareil_annuaire.argtypes = [opaque, ctypes.c_char_p, ctypes.c_char_p]
     lib.asl_appareil_annuaire.restype = i32
 
+    lib.asl_appareil_annuaire_identifie.argtypes = [opaque, ctypes.c_char_p, ctypes.c_char_p]
+    lib.asl_appareil_annuaire_identifie.restype = i32
+
     lib.asl_appareil_racines.argtypes = [opaque, u8p, ctypes.c_size_t]
     lib.asl_appareil_racines.restype = i32
 
