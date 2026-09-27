@@ -241,6 +241,8 @@ def _declarer(lib: ctypes.CDLL) -> ctypes.CDLL:
 
     lib.asl_client_annuaire.argtypes = [opaque, ctypes.c_char_p, ctypes.c_char_p]
     lib.asl_client_annuaire.restype = i32
+    lib.asl_client_annuaire_identifie.argtypes = [opaque, ctypes.c_char_p, ctypes.c_char_p]
+    lib.asl_client_annuaire_identifie.restype = i32
 
     lib.asl_client_racines.argtypes = [
         opaque,

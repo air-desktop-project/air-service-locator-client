@@ -20,6 +20,7 @@ asl_faute_texte
 # ── LA CONSTRUCTION ─────────────────────────────────────────────────────────
 asl_client_neuf
 asl_client_annuaire
+asl_client_annuaire_identifie
 asl_client_racines
 asl_client_identite
 asl_client_libere

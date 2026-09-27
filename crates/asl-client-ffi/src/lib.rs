@@ -428,6 +428,59 @@ pub unsafe extern "C" fn asl_client_annuaire(
     })
 }
 
+/// Ajoute un annuaire **par son identité** (`protocole.md` §0, décision 58) —
+/// le pendant, pour une MACHINE, d'`asl_appareil_annuaire_identifie` : un
+/// locateur (une adresse littérale, `[2001:db8::1]:6630` ou `192.0.2.1:6630`)
+/// et l'identifiant `n-…` qu'on doit trouver au bout.
+///
+/// **POURQUOI IL FALLAIT AUSSI CELUI-CI** : sans lui, un daemon — ou l'app
+/// macOS qui enrôle son Mac comme machine — ne savait parler qu'à un annuaire
+/// nommé et signé par une autorité, la forme d'hier. Face à une racine qui ne
+/// sert plus que son certificat d'identité, il n'aurait plus rien trouvé à
+/// croire.
+///
+/// **LA CLÉ EST CE QU'ON CROIT, L'ADRESSE N'EST QUE LE CHEMIN** : l'annuaire
+/// présente un certificat auto-signé par sa clé d'identité, et on l'accepte si
+/// cette clé se déduit en `n`. Une autorité posée par [`asl_client_racines`]
+/// est crue AUSSI, sur le même client, le temps de la bascule.
+///
+/// **Aucun nom n'est résolu** (C20) : un nom se résout chez l'appelant, qui
+/// passe ensuite chacune de ses adresses.
+///
+/// # Safety
+///
+/// `client` vient de [`asl_client_neuf`]. `locateur` et `n` sont des chaînes C
+/// valides, terminées par NUL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn asl_client_annuaire_identifie(
+    client: *mut AslClient,
+    locateur: *const c_char,
+    n: *const c_char,
+) -> i32 {
+    protege(|| {
+        // SAFETY : contrat de la fonction.
+        let Some(client) = (unsafe { client.as_mut() }) else {
+            return ASL_ARGUMENT;
+        };
+        // SAFETY : contrat de la fonction.
+        let (Some(locateur), Some(n)) = (unsafe { chaine(locateur) }, unsafe { chaine(n) }) else {
+            return ASL_ARGUMENT;
+        };
+        let Ok(adresse) = locateur.parse::<std::net::SocketAddr>() else {
+            return ASL_ARGUMENT;
+        };
+        let Ok(identite) = Identifiant::analyser_genre(Genre::Annuaire, n) else {
+            return ASL_ARGUMENT;
+        };
+        client.annuaires.push(Annuaire {
+            adresse,
+            nom: adresse.ip().to_string(),
+            identite: Some(identite),
+        });
+        ASL_OK
+    })
+}
+
 /// Pose les certificats d'autorité, en PEM.
 ///
 /// **IL N'Y A PAS DE REPLI SUR LE MAGASIN DU SYSTÈME**, et l'absence de repli

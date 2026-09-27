@@ -264,9 +264,10 @@ pub fn confiance_de(annuaire: &Annuaire, racines: &[u8]) -> Confiance {
 /// quel ; un nom — une commodité, jamais une preuve (C20) — est résolu, et
 /// **toutes** ses adresses sont gardées.
 ///
-/// **LA LIMITE, DITE** : le `421` ne nomme que le TITULAIRE d'une paire. Le
-/// second membre, qui a sa propre clé, n'est donc pas cru sous la forme
-/// nouvelle tant que le `421` ne porte pas l'identité de chaque membre.
+/// **CHAQUE ADRESSE SOUS L'IDENTITÉ DE SON MEMBRE** (décision 59) : depuis
+/// 0.31.0, le `421` dit quel `n-…` on doit trouver au bout de chaque adresse
+/// — speedy sous sa clé, helium sous la sienne. Un corps d'avant ne nomme que
+/// le titulaire, et chaque adresse est alors attendue sous lui, comme hier.
 ///
 /// Une adresse qui ne se résout pas est sautée : c'est un membre qu'on ne
 /// peut pas joindre, pas une raison de ne pas essayer l'autre.
@@ -276,7 +277,7 @@ pub fn confiance_de(annuaire: &Annuaire, racines: &[u8]) -> Confiance {
 /// il doit le dire des adresses et des noms qu'une attache emploierait.
 pub async fn membres_du_renvoi(renvoi: &Renvoi<'_>) -> Vec<Annuaire> {
     let mut trouves = Vec::new();
-    for texte in renvoi.adresses() {
+    for (texte, identite) in renvoi.membres() {
         let Ok((hote, port)) = separer_l_adresse(texte) else {
             continue;
         };
@@ -284,7 +285,7 @@ pub async fn membres_du_renvoi(renvoi: &Renvoi<'_>) -> Vec<Annuaire> {
             trouves.push(Annuaire {
                 adresse: SocketAddr::new(ip, port),
                 nom: hote.to_owned(),
-                identite: Some(renvoi.annuaire()),
+                identite: Some(identite),
             });
             continue;
         }
@@ -293,7 +294,7 @@ pub async fn membres_du_renvoi(renvoi: &Renvoi<'_>) -> Vec<Annuaire> {
                 trouves.push(Annuaire {
                     adresse,
                     nom: hote.to_owned(),
-                    identite: Some(renvoi.annuaire()),
+                    identite: Some(identite),
                 });
             }
         }

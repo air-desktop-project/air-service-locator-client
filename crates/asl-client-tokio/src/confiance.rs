@@ -18,18 +18,20 @@
 //! diagnose`) : c'est ce qui permettra de savoir quand plus rien ne passe
 //! par la vieille.
 //!
-//! # LA MÊME RÈGLE QUE LE SERVEUR
+//! # LA MÊME RÈGLE QUE LE SERVEUR, ÉCRITE UNE FOIS
 //!
-//! C'est celle d'`asl-loop-tokio::confiance`, dans le dépôt serveur ; ce
-//! dépôt ne tire pas cet étage 3 (il porterait une boucle et un entrepôt dans
-//! un client), et la règle tient en un vérificateur. Les briques — lire la
-//! clé d'un certificat d'identité, en déduire le `n-…` — viennent d'`asl-cle`,
-//! partagées.
+//! La moitié pure — un seul maillon, dont la clé se déduit en un `n-…`
+//! attendu — est `asl_racines::identite_attendue`, la fonction même
+//! qu'appelle `asl-loop-tokio::confiance` côté serveur. Ce qui reste ici est
+//! ce qu'`asl-racines` ne peut pas porter sans entrée-sortie : le branchement
+//! dans `rustls`, la preuve de possession (la signature de la poignée de main
+//! contre cette même clé), le repli sur l'autorité d'hier, et la forme
+//! retenue.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-use asl_cle::identifiant_de_racine;
+use asl_client::racines::identite_attendue;
 use asl_id::Identifiant;
 use rustls::client::WebPkiServerVerifier;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -222,10 +224,8 @@ impl ServerCertVerifier for Verificateur {
     ) -> Result<ServerCertVerified, rustls::Error> {
         // **UN SEUL MAILLON, ET SA CLÉ EST L'IDENTITÉ.** Une chaîne de deux
         // n'est pas un certificat d'identité, même si sa tête en porte un.
-        if intermediaires.is_empty()
-            && let Ok(cle) = asl_cle::cle_du_certificat(certificat)
-            && self.identites.contains(&identifiant_de_racine(&cle))
-        {
+        let maillons = intermediaires.len().saturating_add(1);
+        if identite_attendue(maillons, certificat, &self.identites).is_some() {
             self.retenir(Forme::Identite);
             return Ok(ServerCertVerified::assertion());
         }

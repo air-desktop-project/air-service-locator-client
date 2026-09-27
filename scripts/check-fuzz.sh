@@ -86,7 +86,6 @@ cd "$racine/fuzz"
 CIBLES=$(cat <<'TABLE'
 fuzz_asl_client_reprise reprise
 fuzz_asl_client_renvoi renvoi
-fuzz_asl_client_racines racines
 TABLE
 )
 

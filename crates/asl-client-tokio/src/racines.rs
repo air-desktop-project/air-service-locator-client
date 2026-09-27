@@ -5,11 +5,13 @@
 //!
 //! [`racines_embarquees`] ne rend que des adresses littérales : aucun chemin
 //! par défaut ne passe par le DNS. Un nom reste un locateur qu'un porteur peut
-//! écrire ; ce n'est pas celui qu'on joint quand on ne dit rien.
+//! écrire ; ce n'est pas celui qu'on joint quand on ne dit rien. La liste
+//! embarquée (`asl-racines`, partagée avec le serveur) porte aussi le nom de
+//! chaque racine : il ne se lit pas comme une adresse, et il est donc sauté.
 
 use std::net::SocketAddr;
 
-use asl_client::racines::{FauteDeListe, RACINES, lire_la_liste};
+use asl_client::racines::{RACINES, verifier_la_liste};
 use asl_id::Identifiant;
 
 use crate::{Annuaire, Connexion, Faute};
@@ -23,7 +25,13 @@ use crate::{Annuaire, Connexion, Faute};
 pub fn racines_embarquees() -> Vec<Annuaire> {
     let mut toutes: Vec<Annuaire> = RACINES
         .iter()
-        .filter_map(|racine| racine.identite().ok().map(|identite| (racine, identite)))
+        // **LA CLÉ DOIT DONNER L'IDENTIFIANT ÉCRIT À CÔTÉ** : une racine
+        // embarquée de travers ne se joint pas — elle ne se croirait pas.
+        .filter_map(|racine| {
+            let identite = racine.identite()?;
+            let cle = racine.cle_publique()?;
+            (asl_cle::identifiant_de_racine(&cle) == identite).then_some((racine, identite))
+        })
         .flat_map(|(racine, identite)| {
             racine.locateurs.iter().filter_map(move |texte| {
                 texte.parse::<SocketAddr>().ok().map(|adresse| Annuaire {
@@ -74,9 +82,7 @@ pub async fn apprendre_les_racines(connexion: &mut Connexion) -> Result<Vec<Raci
 ///
 /// [`Faute::Illisible`].
 fn lire_les_racines(corps: &[u8]) -> Result<Vec<RacineApprise>, Faute> {
-    let liste = lire_la_liste(corps).map_err(|faute| match faute {
-        FauteDeListe::Illisible | FauteDeListe::Mensonge => Faute::Illisible,
-    })?;
+    let liste = verifier_la_liste(corps).map_err(|_| Faute::Illisible)?;
     Ok(liste
         .racines()
         .map(|racine| RacineApprise {

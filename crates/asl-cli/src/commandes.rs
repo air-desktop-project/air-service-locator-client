@@ -948,7 +948,13 @@ async fn renvoi_de_l_annonce(connexion: &mut Connexion, reglages: &Reglages) {
                     || "confiance inconnue".to_owned(),
                     |forme| forme.to_string(),
                 );
-                println!("  {:<45} joignable ({forme})", membre.adresse.to_string());
+                let qui = membre
+                    .identite
+                    .map_or_else(String::new, |n| format!(", sous {}", n.texte().as_str()));
+                println!(
+                    "  {:<45} joignable ({forme}{qui})",
+                    membre.adresse.to_string()
+                );
                 let _ = ouverte.fermer().await;
             }
             Ok(Err(quoi)) => println!("  {:<45} INJOIGNABLE — {quoi}", membre.adresse.to_string()),
@@ -958,10 +964,16 @@ async fn renvoi_de_l_annonce(connexion: &mut Connexion, reglages: &Reglages) {
             ),
         }
     }
-    println!(
-        "               il doit présenter la clé de {} — son identité, que le 421 nomme.",
-        renvoi.annuaire().texte().as_str()
-    );
+    if renvoi.nomme_chaque_membre() {
+        println!(
+            "               chaque membre doit présenter SA clé — l'identité que le 421 met à côté de son adresse."
+        );
+    } else {
+        println!(
+            "               il doit présenter la clé de {} — son identité, que le 421 nomme.",
+            renvoi.annuaire().texte().as_str()
+        );
+    }
 }
 
 /// Traduit un refus du réseau en une issue, en gardant la distinction qui compte.

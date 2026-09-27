@@ -8,11 +8,26 @@
 //! destinataire », RFC 9110 §15.5.20) et dit où aller :
 //!
 //! ```text
-//! {"annuaire":"n-…","adresses":["hôte:port",…]}
+//! {"annuaire":"n-…","adresses":["hôte:port",…],"identites":"n-A n-A n-B"}
 //! ```
 //!
-//! — l'annuaire, et l'adresse déclarée de chacun de ses membres acceptés (une
-//! paire en a deux). Le daemon le suit, comme une redirection.
+//! — l'annuaire, les locateurs de chacun de ses membres acceptés (une paire en
+//! a deux), et, depuis 0.31.0 (décision 59), **l'identité du membre au bout de
+//! chaque adresse** : le i-ème `n-…` de `identites` est celui qu'on doit
+//! trouver à la i-ème adresse. Le daemon le suit, comme une redirection.
+//!
+//! # CHAQUE MEMBRE SOUS SA PROPRE CLÉ
+//!
+//! Une paire, ce sont deux machines et **deux clés** (décision 49) : speedy et
+//! helium ne sont pas le même `n-…`. Sans `identites`, le corps ne nommait que
+//! le titulaire, et un client qui attendait sa clé au bout de toutes les
+//! adresses refusait l'autre membre. Un corps d'avant 0.31.0 (sans
+//! `identites`) se lit comme hier : chaque adresse sous l'identité du
+//! titulaire.
+//!
+//! **UNE CHAÎNE, PAS UNE LISTE D'OBJETS** : un lecteur d'hier saute une clé
+//! inconnue seulement si sa valeur est une chaîne. Le serveur l'a écrite
+//! ainsi pour ne pas casser les clients déployés ; ce lecteur-ci la lit.
 //!
 //! # CE QUI EST ICI, ET CE QUI N'Y EST PAS
 //!
@@ -71,12 +86,20 @@ pub enum FauteDeRenvoi {
     Adresse,
 }
 
+/// Le séparateur de `identites` : une seule espace entre deux `n-…`.
+const SEPARATEUR_D_IDENTITES: char = ' ';
+
 /// Un `421` lu : l'annuaire local, et où joindre ses membres.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Renvoi<'a> {
     annuaire: Identifiant,
     adresses: [&'a str; ADRESSES_MAX],
+    /// L'identité attendue au bout de chaque adresse — celle du titulaire
+    /// partout pour un corps d'avant 0.31.0.
+    identites: [Identifiant; ADRESSES_MAX],
     combien: usize,
+    /// Le corps nommait-il chaque membre ?
+    par_membre: bool,
 }
 
 impl<'a> Renvoi<'a> {
@@ -103,6 +126,7 @@ impl<'a> Renvoi<'a> {
         let mut annuaire = None;
         let mut adresses = [""; ADRESSES_MAX];
         let mut combien = None;
+        let mut identites_lues = None;
 
         lu.attendre(b'{')?;
         loop {
@@ -119,7 +143,10 @@ impl<'a> Renvoi<'a> {
                 "adresses" if combien.is_none() => {
                     combien = Some(lu.liste(&mut adresses)?);
                 }
-                "annuaire" | "adresses" => return Err(FauteDeRenvoi::Forme),
+                "identites" if identites_lues.is_none() => {
+                    identites_lues = Some(lu.chaine()?);
+                }
+                "annuaire" | "adresses" | "identites" => return Err(FauteDeRenvoi::Forme),
                 // **UNE CLÉ INCONNUE SE SAUTE**, si sa valeur est une chaîne.
                 _ => {
                     lu.chaine()?;
@@ -143,10 +170,16 @@ impl<'a> Renvoi<'a> {
         for adresse in adresses.iter().take(combien) {
             separer_l_adresse(adresse)?;
         }
+        let mut identites = [annuaire; ADRESSES_MAX];
+        if let Some(texte) = identites_lues {
+            lire_les_identites(texte, combien, &mut identites)?;
+        }
         Ok(Self {
             annuaire,
             adresses,
+            identites,
             combien,
+            par_membre: identites_lues.is_some(),
         })
     }
 
@@ -161,13 +194,65 @@ impl<'a> Renvoi<'a> {
     pub fn adresses(&self) -> &[&'a str] {
         self.adresses.get(..self.combien).unwrap_or_default()
     }
+
+    /// Chaque adresse, avec l'identité qu'on doit trouver à son bout.
+    ///
+    /// **C'EST CELLE-LÀ QU'ON ATTEND, ET AUCUNE AUTRE** : le membre au bout de
+    /// l'adresse de speedy doit prouver la clé de speedy, et non celle
+    /// d'helium — un membre qui présenterait la clé de l'autre est refusé.
+    pub fn membres(&self) -> impl Iterator<Item = (&'a str, Identifiant)> + '_ {
+        self.adresses()
+            .iter()
+            .zip(self.identites.iter())
+            .map(|(&adresse, &identite)| (adresse, identite))
+    }
+
+    /// Le corps nommait-il chaque membre (`identites`, depuis 0.31.0) ?
+    /// Sinon, chaque adresse est attendue sous l'identité du titulaire.
+    #[must_use]
+    pub const fn nomme_chaque_membre(&self) -> bool {
+        self.par_membre
+    }
+}
+
+/// Lit `identites` : exactement `combien` identifiants d'annuaire, séparés
+/// chacun par UNE espace — ni plus, ni moins, ni blanc en tête ou en queue.
+///
+/// **UN DÉCOMPTE QUI NE TOMBE PAS JUSTE EST UN REFUS** : une identité de trop
+/// ou de moins, et l'on ne saurait plus laquelle va avec quelle adresse.
+///
+/// # Errors
+///
+/// [`FauteDeRenvoi::Forme`] pour un décompte faux ou une case vide,
+/// [`FauteDeRenvoi::Annuaire`] pour un identifiant qui n'en est pas un.
+fn lire_les_identites(
+    texte: &str,
+    combien: usize,
+    identites: &mut [Identifiant; ADRESSES_MAX],
+) -> Result<(), FauteDeRenvoi> {
+    let mut lues = 0_usize;
+    for morceau in texte.split(SEPARATEUR_D_IDENTITES) {
+        let case = identites
+            .get_mut(lues)
+            .filter(|_| lues < combien)
+            .ok_or(FauteDeRenvoi::Forme)?;
+        *case = Identifiant::analyser_genre(Genre::Annuaire, morceau)
+            .map_err(|_| FauteDeRenvoi::Annuaire)?;
+        lues = lues.saturating_add(1);
+    }
+    if lues == combien {
+        Ok(())
+    } else {
+        Err(FauteDeRenvoi::Forme)
+    }
 }
 
 /// Sépare `hôte:port` : l'hôte (sans crochets), et le port.
 ///
-/// L'hôte est ce que le certificat de l'annuaire local doit porter — c'est
-/// donc aussi le nom qu'on exige de lui (décision 50 : le même nom pour les
-/// deux membres d'une paire, sous l'autorité propre au propriétaire).
+/// L'hôte ne sert plus qu'à joindre et à remplir `:authority` : ce qu'on
+/// croit est l'identité du membre ([`Renvoi::membres`], décisions 53 et 59).
+/// Un annuaire local d'hier qui ne servirait qu'une chaîne le reçoit encore
+/// comme nom exigé, le temps de la bascule (décision 58).
 ///
 /// Formes acceptées : `nom.exemple:6630`, `192.0.2.7:6630`,
 /// `[2001:db8::7]:6630`. Un nom ne porte que des lettres ASCII, des chiffres,

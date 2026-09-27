@@ -168,6 +168,7 @@ internal object Abi {
         "asl_faute_texte" to FunctionDescriptor.of(ADRESSE, ENTIER),
         "asl_client_neuf" to FunctionDescriptor.of(ENTIER, ADRESSE),
         "asl_client_annuaire" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE, ADRESSE),
+        "asl_client_annuaire_identifie" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE, ADRESSE),
         "asl_client_racines" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE, TAILLE),
         "asl_client_identite" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE, ADRESSE),
         "asl_client_libere" to FunctionDescriptor.ofVoid(ADRESSE),

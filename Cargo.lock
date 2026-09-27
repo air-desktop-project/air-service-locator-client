@@ -147,8 +147,8 @@ dependencies = [
 
 [[package]]
 name = "asl-api"
-version = "0.30.0"
-source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=5b9f9bd#5b9f9bddbfa6a6bc5950e1f98940db5183ba1054"
+version = "0.31.0"
+source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=da94625#da946258823166d3d38d494c18919f067bd34dac"
 dependencies = [
  "asl-id",
  "asl-proto",
@@ -156,8 +156,8 @@ dependencies = [
 
 [[package]]
 name = "asl-cle"
-version = "0.30.0"
-source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=5b9f9bd#5b9f9bddbfa6a6bc5950e1f98940db5183ba1054"
+version = "0.31.0"
+source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=da94625#da946258823166d3d38d494c18919f067bd34dac"
 dependencies = [
  "asl-id",
  "ed25519-dalek",
@@ -167,7 +167,7 @@ dependencies = [
 
 [[package]]
 name = "asl-cli"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "ams-quic-client",
  "asl-cle",
@@ -180,17 +180,18 @@ dependencies = [
 
 [[package]]
 name = "asl-client"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "asl-api",
  "asl-cle",
  "asl-id",
  "asl-proto",
+ "asl-racines",
 ]
 
 [[package]]
 name = "asl-client-android"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "asl-client-ffi",
  "jni",
@@ -198,7 +199,7 @@ dependencies = [
 
 [[package]]
 name = "asl-client-ffi"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "ams-h3",
  "ams-proto-http",
@@ -219,7 +220,7 @@ dependencies = [
 
 [[package]]
 name = "asl-client-tokio"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "ams-h3",
  "ams-proto-h3",
@@ -240,14 +241,24 @@ dependencies = [
 
 [[package]]
 name = "asl-id"
-version = "0.30.0"
-source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=5b9f9bd#5b9f9bddbfa6a6bc5950e1f98940db5183ba1054"
+version = "0.31.0"
+source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=da94625#da946258823166d3d38d494c18919f067bd34dac"
 
 [[package]]
 name = "asl-proto"
-version = "0.30.0"
-source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=5b9f9bd#5b9f9bddbfa6a6bc5950e1f98940db5183ba1054"
+version = "0.31.0"
+source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=da94625#da946258823166d3d38d494c18919f067bd34dac"
 dependencies = [
+ "asl-id",
+]
+
+[[package]]
+name = "asl-racines"
+version = "0.31.0"
+source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=da94625#da946258823166d3d38d494c18919f067bd34dac"
+dependencies = [
+ "asl-api",
+ "asl-cle",
  "asl-id",
 ]
 
