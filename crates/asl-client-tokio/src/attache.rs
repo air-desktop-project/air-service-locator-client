@@ -23,6 +23,7 @@ use core::time::Duration;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
+use asl_client::renvoi::{Aiguillage, Cote, Renvoi, separer_l_adresse};
 use asl_client::{Identite, Reprise, Tournee};
 
 use crate::{Connexion, Faute};
@@ -101,6 +102,16 @@ impl Reglages {
     pub fn annuaires(&self) -> &[Annuaire] {
         &self.annuaires
     }
+
+    /// Les autorités épinglées (`--roots`), en PEM.
+    ///
+    /// **CE SONT AUSSI CELLES DE L'ANNUAIRE LOCAL** (décision 50) : le
+    /// propriétaire ajoute la sienne à celle des racines, et un renvoi ne
+    /// change rien à qui l'on croit.
+    #[must_use]
+    pub fn racines(&self) -> &[u8] {
+        &self.racines
+    }
 }
 
 /// Ce qu'un pas de tournée a donné.
@@ -115,6 +126,18 @@ enum Pas {
     Arret,
 }
 
+/// Deux octets d'aléa pour le bruit du recul.
+///
+/// **UNE SEULE SOURCE D'ALÉA**, celle de l'appelant : deux octets suffisent
+/// au bruit du recul, et il ne mérite pas un générateur à lui.
+fn bruit(alea: &(dyn Fn() -> [u8; 16] + Sync)) -> u16 {
+    let graine = alea();
+    u16::from_le_bytes([
+        graine.first().copied().unwrap_or(0),
+        graine.get(1).copied().unwrap_or(0),
+    ])
+}
+
 /// Un pas de la tournée : attendre s'il le faut, puis essayer un annuaire.
 async fn un_pas(
     reglages: &Reglages,
@@ -122,43 +145,131 @@ async fn un_pas(
     tournee: &mut Tournee,
     arret: Option<&AtomicBool>,
 ) -> Pas {
-    let parti = || arret.is_some_and(|drapeau| drapeau.load(Ordering::Acquire));
-    if parti() {
+    if arret.is_some_and(|drapeau| drapeau.load(Ordering::Acquire)) {
         return Pas::Arret;
     }
-
-    // **UNE SEULE SOURCE D'ALÉA**, celle de l'appelant : deux octets suffisent
-    // au bruit du recul, et il ne mérite pas un générateur à lui.
-    let graine = alea();
-    let bruit = u16::from_le_bytes([
-        graine.first().copied().unwrap_or(0),
-        graine.get(1).copied().unwrap_or(0),
-    ]);
-
-    let Some(etape) = tournee.prochaine(&reglages.adresses, bruit) else {
+    let Some(etape) = tournee.prochaine(&reglages.adresses, bruit(alea)) else {
         // `Reglages::nouveaux` a déjà refusé la liste vide ; on ne peut arriver
         // ici qu'en ayant contourné le constructeur.
         return Pas::Impossible(Faute::SansAnnuaire);
     };
+    let cible = reglages.annuaires.get(etape.place);
+    essayer(
+        cible,
+        etape.attendre_ms,
+        &reglages.racines,
+        alea,
+        arret,
+        true,
+    )
+    .await
+}
 
-    if etape.attendre_ms > 0 {
-        tokio::time::sleep(Duration::from_millis(etape.attendre_ms)).await;
+/// Un pas de la tournée d'une attache, qui peut avoir été renvoyée vers un
+/// annuaire local : l'[`Aiguillage`] dit de quel côté chercher.
+async fn un_pas_aiguille(
+    reglages: &Reglages,
+    local: &[Annuaire],
+    alea: &(dyn Fn() -> [u8; 16] + Sync),
+    aiguillage: &mut Aiguillage,
+    arret: Option<&AtomicBool>,
+) -> Pas {
+    if arret.is_some_and(|drapeau| drapeau.load(Ordering::Acquire)) {
+        return Pas::Arret;
+    }
+    let adresses_locales: Vec<SocketAddr> = local.iter().map(|ou| ou.adresse).collect();
+    let Some(etape) = aiguillage.prochaine(&reglages.adresses, &adresses_locales, bruit(alea))
+    else {
+        return Pas::Impossible(Faute::SansAnnuaire);
+    };
+    let (cible, racine) = match etape.cote {
+        Cote::Racines => (reglages.annuaires.get(etape.place), true),
+        Cote::Local => (local.get(etape.place), false),
+    };
+    essayer(
+        cible,
+        etape.attendre_ms,
+        &reglages.racines,
+        alea,
+        arret,
+        racine,
+    )
+    .await
+}
+
+/// Attendre, puis ouvrir une connexion vers cet annuaire.
+///
+/// `configure` dit si l'annuaire vient de la configuration du porteur (une
+/// racine) ou d'un renvoi : seule une faute TLS sur un annuaire CONFIGURÉ est
+/// une faute de configuration qui arrête l'attache. Un nom de serveur illisible
+/// venu d'un `421` est un échec de ce membre, et la tournée continue — sans
+/// quoi un annuaire local mal déclaré suffirait à faire taire le daemon.
+async fn essayer(
+    cible: Option<&Annuaire>,
+    attendre_ms: u64,
+    racines: &[u8],
+    alea: &(dyn Fn() -> [u8; 16] + Sync),
+    arret: Option<&AtomicBool>,
+    configure: bool,
+) -> Pas {
+    let parti = || arret.is_some_and(|drapeau| drapeau.load(Ordering::Acquire));
+    if attendre_ms > 0 {
+        tokio::time::sleep(Duration::from_millis(attendre_ms)).await;
         if parti() {
             return Pas::Arret;
         }
     }
 
-    let Some(cible) = reglages.annuaires.get(etape.place) else {
+    let Some(cible) = cible else {
         return Pas::Ratee;
     };
-    match Connexion::ouvrir(cible.adresse, &cible.nom, &reglages.racines, alea).await {
+    match Connexion::ouvrir(cible.adresse, &cible.nom, racines, alea).await {
         Ok(connexion) => Pas::Ouverte(Box::new(connexion)),
         // **UNE RACINE ILLISIBLE NE DEVIENT PAS LISIBLE EN RÉESSAYANT.** Une
         // faute de configuration réessayée à l'infini est une panne muette : le
         // porteur voit un daemon qui « cherche », alors qu'il ne trouvera jamais.
-        Err(Faute::Tls(quoi)) => Pas::Impossible(Faute::Tls(quoi)),
+        Err(Faute::Tls(quoi)) if configure => Pas::Impossible(Faute::Tls(quoi)),
         Err(_) => Pas::Ratee,
     }
+}
+
+/// Les annuaires qu'un renvoi désigne, résolus.
+///
+/// **LE NOM EXIGÉ EST L'HÔTE DE L'ADRESSE DÉCLARÉE** (décision 50) : le
+/// propriétaire frappe, sous son autorité propre, un certificat au nom qu'il
+/// a déclaré pour ses membres — le même pour les deux —, et c'est ce nom
+/// qu'on vérifie. Une adresse littérale est gardée telle quelle ; un nom est
+/// résolu, et **toutes** ses adresses sont gardées, comme pour les racines.
+///
+/// Une adresse qui ne se résout pas est sautée : c'est un membre qu'on ne
+/// peut pas joindre, pas une raison de ne pas essayer l'autre.
+///
+/// **PUBLIQUE POUR QU'UN DIAGNOSTIC ESSAIE LES MÊMES** que l'attache : `asl
+/// diagnose` dit si l'annuaire local qu'une racine désigne est joignable, et
+/// il doit le dire des adresses et des noms qu'une attache emploierait.
+pub async fn membres_du_renvoi(renvoi: &Renvoi<'_>) -> Vec<Annuaire> {
+    let mut trouves = Vec::new();
+    for texte in renvoi.adresses() {
+        let Ok((hote, port)) = separer_l_adresse(texte) else {
+            continue;
+        };
+        if let Ok(ip) = hote.parse::<std::net::IpAddr>() {
+            trouves.push(Annuaire {
+                adresse: SocketAddr::new(ip, port),
+                nom: hote.to_owned(),
+            });
+            continue;
+        }
+        if let Ok(adresses) = tokio::net::lookup_host((hote, port)).await {
+            for adresse in adresses {
+                trouves.push(Annuaire {
+                    adresse,
+                    nom: hote.to_owned(),
+                });
+            }
+        }
+    }
+    trouves
 }
 
 /// Ouvre une connexion à l'un de ces annuaires, et n'abandonne pas.
@@ -227,6 +338,13 @@ pub struct Etat {
     /// CHANGÉ, et un service dont les sondes confirment ce qu'il disait déjà n'en
     /// produit aucune.
     pub poussees: u64,
+    /// Combien de renvois vers un annuaire local ont été suivis (`421`).
+    ///
+    /// **ZÉRO POUR UNE MACHINE DONT LE DOMAINE EST AUX RACINES** — le cas
+    /// ordinaire. Un compte qui monte sans que [`Etat::attachee`] tienne dit
+    /// qu'on est renvoyé vers un annuaire local qui ne répond pas :
+    /// [`Attache::annuaire_local`] dit lequel.
+    pub renvois: u64,
 }
 
 /// Ce que la tâche et son propriétaire se disent.
@@ -251,6 +369,9 @@ struct Partage {
     /// n'est pris que le temps d'un remplacement ou d'une lecture, jamais
     /// pendant une attente réseau.
     poussee: Mutex<Option<Vec<u8>>>,
+    renvois: AtomicU64,
+    /// L'annuaire local vers lequel le dernier renvoi a dirigé l'attache.
+    annuaire_local: Mutex<Option<String>>,
 }
 
 /// Une annonce tenue vivante, quoi qu'il arrive au réseau.
@@ -333,7 +454,21 @@ impl Attache {
             ruptures: self.partage.ruptures.load(Ordering::Relaxed),
             abandonnee: self.partage.abandonnee.load(Ordering::Acquire),
             poussees: self.partage.poussees.load(Ordering::Relaxed),
+            renvois: self.partage.renvois.load(Ordering::Relaxed),
         }
+    }
+
+    /// L'annuaire local (`n-…`) vers lequel une racine a renvoyé l'attache,
+    /// s'il y en a eu un.
+    ///
+    /// `None` pour une machine dont le domaine est tenu par les racines.
+    #[must_use]
+    pub fn annuaire_local(&self) -> Option<String> {
+        self.partage
+            .annuaire_local
+            .lock()
+            .ok()
+            .and_then(|quoi| quoi.clone())
     }
 
     /// La dernière poussée de verdict, telle qu'elle est arrivée.
@@ -395,9 +530,19 @@ async fn tenir_toujours(
     alea: Arc<dyn Fn() -> [u8; 16] + Send + Sync>,
     partage: Arc<Partage>,
 ) {
-    let mut tournee = Tournee::nouvelle(reglages.reprise);
+    let mut aiguillage = Aiguillage::nouveau(reglages.reprise);
+    // Les membres de l'annuaire local, tels que le dernier renvoi les a
+    // donnés. Vide tant qu'aucune racine n'a renvoyé.
+    let mut local: Vec<Annuaire> = Vec::new();
     loop {
-        let connexion = match un_pas(&reglages, &*alea, &mut tournee, Some(&partage.retrait)).await
+        let connexion = match un_pas_aiguille(
+            &reglages,
+            &local,
+            &*alea,
+            &mut aiguillage,
+            Some(&partage.retrait),
+        )
+        .await
         {
             Pas::Ouverte(connexion) => connexion,
             Pas::Ratee => continue,
@@ -409,24 +554,41 @@ async fn tenir_toujours(
         };
 
         let mut connexion = connexion;
-        let attachee = tenir(&mut connexion, &identite, &annonces, &partage).await;
-
-        // **LE RECUL NE REPART DE ZÉRO QU'ICI** : une connexion ouverte ne
-        // prouve rien, une annonce acceptée prouve tout.
-        //
-        // **ET C'EST AUSSI CE QUI REND UN `401` NON DÉFINITIF**
-        // (`replication.md` §6). Une machine tout juste enrôlée chez une racine
-        // n'est pas encore connue de l'autre, qui refuse alors sa preuve. Comme
-        // `tenir` a rendu `false`, on ne rappelle pas `Tournee::reussite` : le
-        // rang n'est pas remis à zéro, et le pas suivant essaie l'annuaire
-        // SUIVANT, sans attendre — le recul n'arrive qu'une fois le tour bouclé.
-        // Appeler `reussite` sur une connexion seulement ouverte réessaierait
-        // le refusant à l'infini, et la panne serait muette puisque la socket,
-        // elle, s'ouvre. Éprouvé par `un_401_sur_une_racine_n_est_pas_definitif`.
-        if attachee {
-            tournee.reussite();
-            partage.attachee.store(false, Ordering::Release);
-            partage.ruptures.fetch_add(1, Ordering::Relaxed);
+        match tenir(&mut connexion, &identite, &annonces, &partage).await {
+            // **LE RECUL NE REPART DE ZÉRO QU'ICI** : une connexion ouverte ne
+            // prouve rien, une annonce acceptée prouve tout.
+            //
+            // **ET C'EST AUSSI CE QUI REND UN `401` NON DÉFINITIF**
+            // (`replication.md` §6). Une machine tout juste enrôlée chez une
+            // racine n'est pas encore connue de l'autre, qui refuse alors sa
+            // preuve. Comme `tenir` n'a pas rendu `Attachee`, on ne rappelle
+            // pas `reussite` : le rang n'est pas remis à zéro, et le pas
+            // suivant essaie l'annuaire SUIVANT, sans attendre — le recul
+            // n'arrive qu'une fois le tour bouclé. Éprouvé par
+            // `un_401_sur_une_racine_n_est_pas_definitif`.
+            Issue::Attachee => {
+                aiguillage.reussite();
+                partage.attachee.store(false, Ordering::Release);
+                partage.ruptures.fetch_add(1, Ordering::Relaxed);
+            }
+            Issue::Refusee => {}
+            // **UN RENVOI SE SUIT, UNE FOIS** (`asl_client::renvoi`) : l'aiguillage
+            // refuse un second saut, et un corps illisible ou sans adresse
+            // joignable n'emmène nulle part — c'est alors un refus de cette
+            // racine, et la tournée continue.
+            Issue::Renvoyee(corps) => {
+                if let Ok(renvoi) = Renvoi::lire(&corps) {
+                    let membres = membres_du_renvoi(&renvoi).await;
+                    if !membres.is_empty() && aiguillage.renvoye() {
+                        local = membres;
+                        partage.renvois.fetch_add(1, Ordering::Relaxed);
+                        if let Ok(mut place) = partage.annuaire_local.lock() {
+                            *place = Some(renvoi.annuaire().texte().as_str().to_owned());
+                        }
+                    }
+                }
+                let _ = connexion.fermer().await;
+            }
         }
 
         if partage.retrait.load(Ordering::Acquire) {
@@ -436,22 +598,35 @@ async fn tenir_toujours(
     }
 }
 
+/// Ce qu'une connexion a donné.
+enum Issue {
+    /// Authentifiés et annoncés, puis la connexion est tombée.
+    Attachee,
+    /// Refusés avant d'être attachés.
+    Refusee,
+    /// Renvoyés vers un annuaire local : le corps du `421`.
+    Renvoyee(Vec<u8>),
+}
+
 /// S'authentifier, réannoncer, puis ne plus disparaître.
 ///
-/// Rend `true` si l'attache a bien été établie — c'est ce qui distingue une
-/// rupture d'un refus, et le recul en dépend.
+/// Rend [`Issue::Attachee`] si l'attache a bien été établie — c'est ce qui
+/// distingue une rupture d'un refus, et le recul en dépend — et le corps du
+/// `421` si une racine renvoie ailleurs.
 async fn tenir(
     connexion: &mut Connexion,
     identite: &Identite,
     annonces: &[Vec<u8>],
     partage: &Partage,
-) -> bool {
+) -> Issue {
     if connexion.authentifier(identite).await.is_err() {
-        return false;
+        return Issue::Refusee;
     }
     for annonce in annonces {
-        let Ok(reponse) = connexion.annoncer_encodee(annonce).await else {
-            return false;
+        let reponse = match connexion.annoncer_encodee(annonce).await {
+            Ok(reponse) => reponse,
+            Err(Faute::Renvoye(corps)) => return Issue::Renvoyee(corps),
+            Err(_) => return Issue::Refusee,
         };
         // **LA CADENCE DE MAINTIEN VIENT D'ICI, ET DE NULLE PART AILLEURS.**
         // `modele.md` §4.1 : les deux valeurs du bail viennent du serveur,
@@ -490,7 +665,7 @@ async fn tenir(
         }
         recueillir_les_poussees(connexion, partage);
     }
-    true
+    Issue::Attachee
 }
 
 /// Range la dernière poussée arrivée, s'il en est arrivé.

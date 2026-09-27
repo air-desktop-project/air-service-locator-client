@@ -74,7 +74,8 @@
 //! parcours des annuaires qui l'emploie — IPv6 d'abord, l'attente entre les
 //! TOURS et non entre les annuaires ; [`Identite`], ce qu'une machine détient et
 //! ce qu'elle en fait ; [`Enrolement`], comment elle acquiert tout cela ; et
-//! [`appareil`], ce qu'un TÉLÉPHONE compose — lui ne signe pas ici, sa clé vit
+//! [`renvoi`], ce qu'un daemon fait d'un `421` qui l'envoie vers un annuaire
+//! local ; et [`appareil`], ce qu'un TÉLÉPHONE compose — lui ne signe pas ici, sa clé vit
 //! dans son matériel, et ce module ne fait que lui dire quoi signer.
 //!
 //! **Pas écrit** : le transport. Tant que la pile QUIC n'est pas câblée, cette
@@ -88,6 +89,7 @@
 use asl_cle::{ClePublique, CleSecrete, CodeEnrolement, Defi, LiaisonDeCanal, Signature};
 
 pub mod appareil;
+pub mod renvoi;
 
 /// L'étiquette que les deux camps donnent à leur exportateur TLS.
 ///

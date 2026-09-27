@@ -38,3 +38,9 @@ path = "fuzz_targets/fuzz_asl_client_reprise.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_asl_client_renvoi"
+path = "fuzz_targets/fuzz_asl_client_renvoi.rs"
+test = false
+doc = false

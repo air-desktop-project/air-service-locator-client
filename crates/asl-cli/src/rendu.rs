@@ -439,8 +439,17 @@ pub fn machines(corps: &[u8]) -> Result<String, String> {
     let mut texte = String::new();
     let mut combien = 0_usize;
     for element in elements {
-        let (machine, nom) = machine_vue(element)?;
-        texte.push_str(&format!("{}   {nom}\n", machine.texte().as_str()));
+        let (machine, nom, alias) = machine_vue(element)?;
+        match alias {
+            // **L'ALIAS APRÈS LE NOM, ENTRE GUILLEMETS** (0.26.0) : le nom est
+            // le nom d'hôte, l'alias un texte libre que la machine porte
+            // en plus — et qui peut contenir des espaces.
+            Some(alias) => texte.push_str(&format!(
+                "{}   {nom}   « {alias} »\n",
+                machine.texte().as_str()
+            )),
+            None => texte.push_str(&format!("{}   {nom}\n", machine.texte().as_str())),
+        }
         combien = combien.saturating_add(1);
     }
     if combien == 0 {
@@ -452,17 +461,18 @@ pub fn machines(corps: &[u8]) -> Result<String, String> {
     Ok(texte)
 }
 
-/// Lit `{"machine":"m-…","nom":"…"}`.
+/// Lit `{"machine":"m-…","nom":"…"}`, et `"alias"` s'il y est.
 ///
 /// **LE MÊME LECTEUR QUE LE SERVEUR** (`asl_proto::cadrage`), et non une
 /// recherche de sous-chaîne : le nom est du texte libre, avec ses accents et
 /// ses émoji, et c'est `texte_libre` qui sait le lire.
-fn machine_vue(octets: &[u8]) -> Result<(asl_id::Identifiant, String), String> {
+fn machine_vue(octets: &[u8]) -> Result<(asl_id::Identifiant, String, Option<String>), String> {
     let mut lecteur = asl_proto::cadrage::Lecteur::nouveau(octets);
     let faute = |quoi: asl_proto::Erreur| format!("une machine ne se lit pas : {quoi:?}");
     lecteur.attendre(b'{', "un objet").map_err(faute)?;
     let mut machine = None;
     let mut nom = None;
+    let mut alias = None;
     loop {
         lecteur.sauter_blancs();
         let champ = lecteur.chaine().map_err(faute)?;
@@ -476,6 +486,7 @@ fn machine_vue(octets: &[u8]) -> Result<(asl_id::Identifiant, String), String> {
                 );
             }
             "nom" => nom = Some(lecteur.texte_libre().map_err(faute)?.to_owned()),
+            "alias" => alias = Some(lecteur.texte_libre().map_err(faute)?.to_owned()),
             // **UN CHAMP INCONNU SE SAUTE** : un annuaire plus récent peut en
             // ajouter, et un `asl` d'hier doit encore lire ce qu'il comprend.
             _ => {
@@ -492,6 +503,7 @@ fn machine_vue(octets: &[u8]) -> Result<(asl_id::Identifiant, String), String> {
     Ok((
         machine.ok_or_else(|| "il manque `machine`".to_owned())?,
         nom.ok_or_else(|| "il manque `nom`".to_owned())?,
+        alias,
     ))
 }
 
@@ -1376,6 +1388,23 @@ mod tests {
                 "{}   grenier\n{}   Mac « été » 🖥\n",
                 m1.texte().as_str(),
                 m2.texte().as_str()
+            )
+        );
+    }
+
+    #[test]
+    fn l_alias_d_une_machine_suit_son_nom() {
+        let m = asl_id::Identifiant::depuis_entropie(asl_id::Genre::Machine, [0x31; 16]);
+        let corps = format!(
+            r#"[{{"machine":"{}","nom":"grenier","alias":"Serveur de la cave"}}]"#,
+            m.texte().as_str()
+        );
+        let dit = machines(corps.as_bytes()).expect("lisible");
+        assert_eq!(
+            dit,
+            format!(
+                "{}   grenier   « Serveur de la cave »\n",
+                m.texte().as_str()
             )
         );
     }

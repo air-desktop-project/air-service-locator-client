@@ -43,7 +43,7 @@ mod pont;
 mod reponse;
 
 pub use appareil::{CompteCree, NOUVELLE_MAX, Nouvelle, Tenue};
-pub use attache::{Annuaire, Attache, Etat, Reglages, cadence_du_bail, joindre};
+pub use attache::{Annuaire, Attache, Etat, Reglages, cadence_du_bail, joindre, membres_du_renvoi};
 pub use pont::Pont;
 pub use reponse::Reponse;
 
@@ -73,6 +73,13 @@ pub enum Faute {
     SansLiaison,
     /// La configuration TLS ne se monte pas.
     Tls(String),
+    /// L'annuaire renvoie ailleurs (`421`) : la machine est rangée dans un
+    /// domaine confié à un annuaire local (`protocole.md` §3 ter).
+    ///
+    /// **LE CORPS EST GARDÉ**, tel qu'il est arrivé : il dit où aller
+    /// (`asl_client::renvoi::Renvoi::lire`). [`Attache`] le suit ; un porteur
+    /// qui tient sa propre boucle peut le suivre de même.
+    Renvoye(Vec<u8>),
     /// Il n'y a aucun annuaire à essayer.
     ///
     /// **CE N'EST PAS UNE PANNE, C'EST UNE CONFIGURATION**, et c'est pourquoi
@@ -91,6 +98,7 @@ impl core::fmt::Display for Faute {
             Self::Http3(quoi) => write!(f, "HTTP/3 a refusé : {quoi}"),
             Self::Delai => write!(f, "l'annuaire n'a pas répondu à temps"),
             Self::Statut(code) => write!(f, "l'annuaire a répondu {code}"),
+            Self::Renvoye(_) => write!(f, "l'annuaire renvoie vers un annuaire local (421)"),
             Self::Illisible => write!(f, "la réponse de l'annuaire ne se lit pas"),
             Self::SansLiaison => write!(f, "la liaison de canal ne s'exporte pas"),
             Self::Tls(quoi) => write!(f, "la configuration TLS : {quoi}"),
@@ -820,7 +828,8 @@ impl Connexion {
     ///
     /// # Errors
     ///
-    /// Celles de [`Connexion::requete`], plus [`Faute::Statut`].
+    /// Celles de [`Connexion::requete`], plus [`Faute::Statut`] et
+    /// [`Faute::Renvoye`].
     pub async fn annoncer_encodee(&mut self, annonce: &[u8]) -> Result<Vec<u8>, Faute> {
         let reponse = self
             .requete(
@@ -830,6 +839,12 @@ impl Connexion {
                 annonce,
             )
             .await?;
+        // **UN `421` N'EST PAS UN REFUS** (0.28.0) : la machine s'annonce
+        // ailleurs, et le corps dit où. Le rendre comme `Statut(421)` le
+        // perdrait.
+        if reponse.statut == 421 {
+            return Err(Faute::Renvoye(reponse.corps));
+        }
         reponse.exige(200)?;
         Ok(reponse.corps)
     }

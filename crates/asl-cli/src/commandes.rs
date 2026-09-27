@@ -795,6 +795,10 @@ pub async fn diagnostic(invocation: &Invocation, dossier: &Path) -> Sortie {
                             ),
                         },
                     }
+                    // **OÙ CETTE MACHINE S'ANNONCE** (0.28.0) : une racine
+                    // renvoie en `421` l'annonce d'une machine dont le
+                    // domaine est confié à un annuaire local.
+                    renvoi_de_l_annonce(&mut connexion, &reglages).await;
                 }
                 Err(quoi) => {
                     println!("clé            REFUSÉE — {quoi}");
@@ -816,6 +820,83 @@ pub async fn diagnostic(invocation: &Invocation, dossier: &Path) -> Sortie {
     );
     let _ = connexion.fermer().await;
     Ok(())
+}
+
+/// Dit si les annonces de cette machine sont renvoyées vers un annuaire local,
+/// lequel, et si on l'atteint.
+///
+/// # UNE SONDE QUI N'ANNONCE RIEN
+///
+/// Le diagnostic n'annonce jamais en douce (voir [`diagnostic`]). Il pose
+/// donc `POST /v1/annonce` avec un corps VIDE : une racine qui renvoie répond
+/// `421` avant de lire le corps ; sinon le corps vide est refusé, et rien n'a
+/// été créé. Un refus veut alors dire « pas de renvoi » — et non « pas le
+/// droit d'annoncer », que ce diagnostic ne sait pas trancher et ne prétend
+/// pas trancher.
+async fn renvoi_de_l_annonce(connexion: &mut Connexion, reglages: &Reglages) {
+    let json: (&[u8], &[u8]) = (b"content-type", b"application/json");
+    let reponse = match connexion
+        .requete(b"POST", b"/v1/annonce", &[json], b"")
+        .await
+    {
+        Ok(reponse) => reponse,
+        Err(quoi) => {
+            println!("annonce        INCONNU — la sonde n'a pas abouti ({quoi})");
+            return;
+        }
+    };
+    if reponse.statut != 421 {
+        println!("annonce        ici — aucun renvoi : le domaine de cette machine est aux racines");
+        return;
+    }
+    let renvoi = match asl_client::renvoi::Renvoi::lire(&reponse.corps) {
+        Ok(renvoi) => renvoi,
+        Err(quoi) => {
+            println!("annonce        renvoyée, mais le renvoi ne se lit pas ({quoi:?})");
+            return;
+        }
+    };
+    println!(
+        "annonce        renvoyée vers l'annuaire local {}",
+        renvoi.annuaire().texte().as_str()
+    );
+    let membres = asl_client_tokio::membres_du_renvoi(&renvoi).await;
+    if membres.is_empty() {
+        println!(
+            "               aucune de ses adresses ne se résout : {:?}",
+            renvoi.adresses()
+        );
+        return;
+    }
+    let patience = tokio::time::Duration::from_secs(patience());
+    for membre in &membres {
+        let essai = tokio::time::timeout(
+            patience,
+            Connexion::ouvrir(membre.adresse, &membre.nom, reglages.racines(), &|| {
+                etat::hasard::<16>().unwrap_or([0; 16])
+            }),
+        )
+        .await;
+        match essai {
+            Ok(Ok(mut ouverte)) => {
+                println!(
+                    "  {:<45} joignable (nom exigé : {})",
+                    membre.adresse.to_string(),
+                    membre.nom
+                );
+                let _ = ouverte.fermer().await;
+            }
+            Ok(Err(quoi)) => println!("  {:<45} INJOIGNABLE — {quoi}", membre.adresse.to_string()),
+            Err(_) => println!(
+                "  {:<45} INJOIGNABLE — aucune réponse",
+                membre.adresse.to_string()
+            ),
+        }
+    }
+    println!(
+        "               son certificat doit être signé par une autorité de --roots :\n\
+         \x20              celle des racines, et celle que son propriétaire a frappée."
+    );
 }
 
 /// Traduit un refus du réseau en une issue, en gardant la distinction qui compte.
