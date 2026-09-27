@@ -34,6 +34,126 @@ fn le_corps_du_serveur_se_lit_tel_qu_il_est_emis() {
     assert_eq!(lu.adresses(), ["speedy.example:6630", "[2001:db8::7]:6630"]);
 }
 
+fn membre(octet: u8) -> Identifiant {
+    Identifiant::depuis_entropie(Genre::Annuaire, [octet; 16])
+}
+
+/// Le corps de 0.31.0 (décision 59), avec `identites` à la lettre.
+fn corps_nommant(adresses: &str, identites: &str) -> String {
+    format!(
+        r#"{{"annuaire":"{}","adresses":[{adresses}],"identites":"{identites}"}}"#,
+        annuaire().texte().as_str()
+    )
+}
+
+#[test]
+fn un_corps_d_avant_attend_le_titulaire_au_bout_de_chaque_adresse() {
+    let texte = corps(r#""192.0.2.7:6630","192.0.2.8:6630""#);
+    let lu = Renvoi::lire(texte.as_bytes()).expect("lisible");
+    assert!(!lu.nomme_chaque_membre());
+    let membres: Vec<(&str, Identifiant)> = lu.membres().collect();
+    assert_eq!(
+        membres,
+        [
+            ("192.0.2.7:6630", annuaire()),
+            ("192.0.2.8:6630", annuaire())
+        ]
+    );
+}
+
+#[test]
+fn chaque_adresse_porte_l_identite_que_le_421_met_a_cote() {
+    // Le titulaire aux deux adresses de speedy, helium à la sienne : le corps
+    // tel que la racine l'émet depuis 0.31.0.
+    let (titulaire, helium) = (annuaire(), membre(0x48));
+    let texte = corps_nommant(
+        r#""[2001:db8::1]:6630","192.0.2.1:6630","192.0.2.2:6630""#,
+        &format!(
+            "{t} {t} {h}",
+            t = titulaire.texte().as_str(),
+            h = helium.texte().as_str()
+        ),
+    );
+    let lu = Renvoi::lire(texte.as_bytes()).expect("la forme de 0.31.0");
+    assert!(lu.nomme_chaque_membre());
+    assert_eq!(lu.annuaire(), titulaire);
+    let membres: Vec<(&str, Identifiant)> = lu.membres().collect();
+    assert_eq!(
+        membres,
+        [
+            ("[2001:db8::1]:6630", titulaire),
+            ("192.0.2.1:6630", titulaire),
+            ("192.0.2.2:6630", helium),
+        ]
+    );
+    // L'ordre des clés ne change rien : `identites` peut venir d'abord.
+    let avant = format!(
+        r#"{{"identites":"{} {}","annuaire":"{}","adresses":["192.0.2.1:6630","192.0.2.2:6630"]}}"#,
+        titulaire.texte().as_str(),
+        helium.texte().as_str(),
+        titulaire.texte().as_str()
+    );
+    let lu = Renvoi::lire(avant.as_bytes()).expect("dans n'importe quel ordre");
+    assert_eq!(lu.membres().nth(1), Some(("192.0.2.2:6630", helium)));
+}
+
+#[test]
+fn des_identites_qui_ne_tombent_pas_juste_refusent_le_renvoi() {
+    let (t, h) = (annuaire(), membre(0x48));
+    let (t, h) = (t.texte().as_str().to_owned(), h.texte().as_str().to_owned());
+    let deux = r#""192.0.2.1:6630","192.0.2.2:6630""#;
+    let formes = [
+        // Une de moins, une de trop.
+        (corps_nommant(deux, &t), FauteDeRenvoi::Forme),
+        (
+            corps_nommant(deux, &format!("{t} {h} {h}")),
+            FauteDeRenvoi::Forme,
+        ),
+        // Une case vide : deux espaces, une espace en tête ou en queue, rien.
+        (
+            corps_nommant(deux, &format!("{t}  {h}")),
+            FauteDeRenvoi::Annuaire,
+        ),
+        (
+            corps_nommant(deux, &format!(" {t} {h}")),
+            FauteDeRenvoi::Annuaire,
+        ),
+        (
+            corps_nommant(deux, &format!("{t} {h} ")),
+            FauteDeRenvoi::Forme,
+        ),
+        (corps_nommant(deux, ""), FauteDeRenvoi::Annuaire),
+        // Un identifiant qui n'est pas celui d'un annuaire.
+        (
+            corps_nommant(
+                deux,
+                &format!(
+                    "{t} {}",
+                    Identifiant::depuis_entropie(Genre::Machine, [1; 16])
+                        .texte()
+                        .as_str()
+                ),
+            ),
+            FauteDeRenvoi::Annuaire,
+        ),
+        // Deux fois la clé.
+        (
+            format!(
+                r#"{{"annuaire":"{t}","adresses":[{deux}],"identites":"{t} {h}","identites":"{t} {h}"}}"#
+            ),
+            FauteDeRenvoi::Forme,
+        ),
+        // Une liste d'objets n'est pas la forme émise.
+        (
+            format!(r#"{{"annuaire":"{t}","adresses":[{deux}],"identites":["{t}","{h}"]}}"#),
+            FauteDeRenvoi::Forme,
+        ),
+    ];
+    for (texte, faute) in formes {
+        assert_eq!(Renvoi::lire(texte.as_bytes()).err(), Some(faute), "{texte}");
+    }
+}
+
 #[test]
 fn l_ordre_des_cles_les_blancs_et_une_cle_inconnue_ne_changent_rien() {
     let texte = format!(

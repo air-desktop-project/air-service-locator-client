@@ -326,3 +326,91 @@ async fn un_renvoi_se_suit_par_l_identite_qu_il_nomme_sans_autorite() {
     tache_l.abort();
     tache_r.abort();
 }
+
+/// Une racine qui renvoie vers une PAIRE dont le premier membre est mort, et
+/// dont le second — au bout de sa propre adresse — présente la clé `presentee`
+/// alors que le `421` y annonce `nommee`. Rend le nombre d'annonces arrivées
+/// chez le second membre dans le temps donné.
+async fn suivre_la_paire(
+    titulaire: &CleSecrete,
+    presentee: &CleSecrete,
+    nommee: &CleSecrete,
+    patience: Duration,
+) -> usize {
+    let chez_le_second = Arc::new(AtomicUsize::new(0));
+    let (cert_s, cle_s) = materiel_d_identite(presentee);
+    let (ecoute_s, tache_s) = lever(
+        cert_s,
+        cle_s,
+        Compteur {
+            annonces: Arc::clone(&chez_le_second),
+        },
+    )
+    .await;
+    let mort = banc::adresse_morte().await;
+    // **LE 421 DE 0.31.0** (décision 59) : le i-ème `n-…` est l'identité du
+    // membre au bout de la i-ème adresse.
+    let corps = format!(
+        r#"{{"annuaire":"{t}","adresses":["{mort}","127.0.0.1:{port}"],"identites":"{t} {n}"}}"#,
+        t = identite_de(titulaire).texte().as_str(),
+        port = ecoute_s.port(),
+        n = identite_de(nommee).texte().as_str(),
+    )
+    .into_bytes();
+    let racine = CleSecrete::depuis_entropie([0x40; 32]);
+    let (cert_r, cle_r) = materiel_d_identite(&racine);
+    let (ecoute_r, tache_r) = lever(cert_r, cle_r, Renvoyeur { corps }).await;
+
+    let reglages = Reglages::nouveaux(
+        vec![Annuaire {
+            adresse: ecoute_r,
+            nom: "127.0.0.1".to_owned(),
+            identite: Some(identite_de(&racine)),
+        }],
+        Vec::new(),
+        PLAFOND_MS,
+    )
+    .expect("la configuration est bonne");
+    let machine = Identifiant::depuis_entropie(Genre::Machine, [0x11; 16]);
+    let identite = Identite::nouvelle(machine, [0x42; 32]).expect("une identité d'essai");
+    let attache = Attache::annoncer(reglages, identite, vec![b"{}".to_vec()], Arc::new(alea));
+
+    let depart = Instant::now();
+    while chez_le_second.load(Ordering::Relaxed) == 0 && depart.elapsed() < patience {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let arrivees = chez_le_second.load(Ordering::Relaxed);
+    tokio::time::timeout(Duration::from_secs(5), attache.retirer())
+        .await
+        .expect("le retrait rend la main");
+    tache_s.abort();
+    tache_r.abort();
+    arrivees
+}
+
+#[tokio::test]
+async fn chaque_membre_d_une_paire_est_joint_sous_sa_propre_cle() {
+    // speedy (le titulaire) est mort ; helium, second membre, a SA clé et le
+    // `421` la nomme à côté de son adresse. Un client qui attendrait la clé du
+    // titulaire partout refuserait helium, et la paire ne servirait à rien.
+    let speedy = CleSecrete::depuis_entropie([0x41; 32]);
+    let helium = CleSecrete::depuis_entropie([0x42; 32]);
+    assert!(
+        suivre_la_paire(&speedy, &helium, &helium, Duration::from_secs(10)).await >= 1,
+        "le second membre, sous sa propre clé, doit recevoir l'annonce"
+    );
+}
+
+#[tokio::test]
+async fn un_membre_qui_presente_la_cle_de_l_autre_est_refuse() {
+    // Au bout de l'adresse d'helium, quelqu'un présente la clé de SPEEDY : le
+    // `421` y annonce helium. C'est un imposteur — une clé juste, au mauvais
+    // endroit —, et il n'est pas cru.
+    let speedy = CleSecrete::depuis_entropie([0x43; 32]);
+    let helium = CleSecrete::depuis_entropie([0x44; 32]);
+    assert_eq!(
+        suivre_la_paire(&speedy, &speedy, &helium, Duration::from_secs(3)).await,
+        0,
+        "la clé d'un autre membre ne fait pas croire celui-ci"
+    );
+}

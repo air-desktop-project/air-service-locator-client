@@ -12,7 +12,9 @@
 //!
 //! 1. **Rien ne panique**, quels que soient les octets.
 //! 2. **Un renvoi lu est un renvoi vérifié** : un annuaire `n-…`, entre une et
-//!    `ADRESSES_MAX` adresses, chacune `hôte:port` au port non nul.
+//!    `ADRESSES_MAX` adresses, chacune `hôte:port` au port non nul — et
+//!    **chaque adresse a exactement une identité d'annuaire** (décision 59) :
+//!    celle que `identites` met à côté, ou le titulaire pour un corps d'avant.
 //! 3. **Un seul saut** : un renvoi reçu du côté local ne compte pas.
 //! 4. **Un retour aux racines depuis le local se paie** : jamais d'attente
 //!    nulle à ce moment-là.
@@ -70,6 +72,15 @@ fuzz_target!(|entree: Entree| {
         for adresse in adresses {
             let (_, port) = separer_l_adresse(adresse).expect("vérifiée à la lecture");
             assert_ne!(port, 0);
+        }
+        let membres: Vec<_> = renvoi.membres().collect();
+        assert_eq!(membres.len(), adresses.len());
+        for ((adresse, identite), attendue) in membres.iter().zip(adresses) {
+            assert_eq!(adresse, attendue);
+            assert!(identite.texte().as_str().starts_with("n-"));
+            if !renvoi.nomme_chaque_membre() {
+                assert_eq!(*identite, renvoi.annuaire());
+            }
         }
     }
 

@@ -185,6 +185,18 @@ int32_t asl_client_neuf(asl_client **sortie);
  */
 int32_t asl_client_annuaire(asl_client *client, const char *adresse, const char *nom);
 
+/* Un annuaire par son IDENTITÉ (décisions 58 et 59), le pendant pour une
+ * MACHINE d'asl_appareil_annuaire_identifie : un locateur — une adresse
+ * littérale, "[2001:db8::1]:6630" ou "192.0.2.1:6630" — et l'identifiant
+ * "n-…" qu'on doit trouver au bout. L'annuaire présente un certificat
+ * auto-signé par sa clé d'identité ; on le croit si cette clé se déduit en
+ * `n`. Aucune autorité requise ; une posée par asl_client_racines est crue
+ * AUSSI, sur le même client, le temps de la bascule. Aucun nom n'est
+ * résolu : l'appelant passe des adresses. ASL_ARGUMENT pour un locateur ou
+ * un `n` de travers. */
+int32_t asl_client_annuaire_identifie(asl_client *client, const char *locateur,
+                                      const char *n);
+
 /* Pose les certificats d'autorité, en PEM.
  *
  * IL N'Y A PAS DE REPLI SUR LE MAGASIN DU SYSTÈME : les annuaires racines sont
