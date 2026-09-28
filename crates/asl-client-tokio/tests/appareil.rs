@@ -75,9 +75,9 @@ fn secrete() -> CleSecreteAppareil {
 
 #[tokio::test]
 async fn un_appareil_enrole_prouve_sa_cle_sur_la_connexion() {
-    let (_atelier, autorite, cert, cle) = materiel("appareil");
+    let (identite_attendue, cert, cle) = materiel("appareil");
     let (adresse, tache) = lever(cert, cle, FauxAnnuaireMobile).await;
-    let mut connexion = Connexion::ouvrir(adresse, "localhost", &autorite, &|| [0x11; 16])
+    let mut connexion = Connexion::ouvrir(adresse, "localhost", identite_attendue, &|| [0x11; 16])
         .await
         .expect("la connexion s'ouvre");
 
@@ -111,9 +111,9 @@ async fn un_appareil_enrole_prouve_sa_cle_sur_la_connexion() {
 
 #[tokio::test]
 async fn creer_un_compte_puis_servir_un_ecran_sur_la_connexion_tenue() {
-    let (_atelier, autorite, cert, cle) = materiel("compte");
+    let (identite_attendue, cert, cle) = materiel("compte");
     let (adresse, tache) = lever(cert, cle, FauxAnnuaireMobile).await;
-    let mut connexion = Connexion::ouvrir(adresse, "localhost", &autorite, &|| [0x22; 16])
+    let mut connexion = Connexion::ouvrir(adresse, "localhost", identite_attendue, &|| [0x22; 16])
         .await
         .expect("la connexion s'ouvre");
 
@@ -188,9 +188,9 @@ async fn creer_un_compte_puis_servir_un_ecran_sur_la_connexion_tenue() {
 
 #[tokio::test]
 async fn un_appareil_qui_rejoint_prouve_et_atteste_sur_la_connexion_du_defi() {
-    let (_atelier, autorite, cert, cle) = materiel("rejoindre");
+    let (identite_attendue, cert, cle) = materiel("rejoindre");
     let (adresse, tache) = lever(cert, cle, FauxAnnuaireMobile).await;
-    let mut connexion = Connexion::ouvrir(adresse, "localhost", &autorite, &|| [0x33; 16])
+    let mut connexion = Connexion::ouvrir(adresse, "localhost", identite_attendue, &|| [0x33; 16])
         .await
         .expect("la connexion s'ouvre");
 

@@ -38,37 +38,6 @@ fn moteur() -> tokio::runtime::Runtime {
         .expect("un moteur pour le banc")
 }
 
-/// Encode en PEM — ce que le banc lit.
-fn pem(etiquette: &str, der: &[u8]) -> Vec<u8> {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    const DECALAGES_OCTETS: [u32; 3] = [16, 8, 0];
-    const DECALAGES_SIGNES: [u32; 4] = [18, 12, 6, 0];
-    let mut b64 = Vec::new();
-    for bloc in der.chunks(3) {
-        let n = bloc
-            .iter()
-            .zip(DECALAGES_OCTETS)
-            .fold(0_u32, |acc, (&o, decalage)| {
-                acc | (u32::from(o) << decalage)
-            });
-        for (i, decalage) in DECALAGES_SIGNES.into_iter().enumerate() {
-            if i <= bloc.len() {
-                let rang = usize::try_from((n >> decalage) & 0x3f).expect("six bits");
-                b64.push(TABLE[rang]);
-            } else {
-                b64.push(b'=');
-            }
-        }
-    }
-    let mut sortie = format!("-----BEGIN {etiquette}-----\n").into_bytes();
-    for ligne in b64.chunks(64) {
-        sortie.extend_from_slice(ligne);
-        sortie.push(b'\n');
-    }
-    sortie.extend_from_slice(format!("-----END {etiquette}-----\n").as_bytes());
-    sortie
-}
-
 /// Un client machine qui vise ce locateur sous cette identité, et qui a son
 /// identité de machine.
 fn client_identifie(locateur: &str, n: &str) -> *mut AslClient {
@@ -123,8 +92,8 @@ fn une_machine_s_annonce_a_un_annuaire_qui_ne_sert_que_son_identite() {
     let banc = moteur();
     let cle = CleSecrete::depuis_entropie([0x31; 32]);
     let (ecoute, tache) = banc.block_on(lever(
-        pem("CERTIFICATE", &asl_cle::certificat_d_identite(&cle)),
-        pem("PRIVATE KEY", &asl_cle::cle_pkcs8(&cle)),
+        banc::pem("CERTIFICATE", &asl_cle::certificat_d_identite(&cle)),
+        banc::pem("PRIVATE KEY", &asl_cle::cle_pkcs8(&cle)),
         FauxAnnuaire,
     ));
     let n = asl_cle::identifiant_de_racine(&cle.publique());
@@ -144,8 +113,8 @@ fn une_machine_qui_attend_une_autre_identite_ne_s_attache_pas() {
     let banc = moteur();
     let cle = CleSecrete::depuis_entropie([0x32; 32]);
     let (ecoute, tache) = banc.block_on(lever(
-        pem("CERTIFICATE", &asl_cle::certificat_d_identite(&cle)),
-        pem("PRIVATE KEY", &asl_cle::cle_pkcs8(&cle)),
+        banc::pem("CERTIFICATE", &asl_cle::certificat_d_identite(&cle)),
+        banc::pem("PRIVATE KEY", &asl_cle::cle_pkcs8(&cle)),
         FauxAnnuaire,
     ));
     // Le banc présente la clé 0x32 ; on attend celle de 0x33.

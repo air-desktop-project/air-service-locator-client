@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import gc
 import ipaddress
-import threading
+import socket
 import unittest
 
 import asl
@@ -31,14 +31,13 @@ import asl
 MACHINE = "m-0H248H248H248H248H248H248H"
 GRAINE = bytes(range(32))
 
+# Une identité d'annuaire VALIDE, recopiée pour la même raison.
+ANNUAIRE = "n-0PWT8HZD80QMSPPDZ5CQXXYHQC"
+
 
 def client_configure(**extra) -> asl.Client:
-    """Un client dont la racine est illisible : de quoi atteindre `Configuration`."""
-    return asl.Client(
-        annuaires=[("127.0.0.1:1", "localhost")],
-        racines=b"pas un PEM",
-        **extra,
-    )
+    """Un client qui vise un annuaire où rien n'écoute, sous son identité."""
+    return asl.Client(annuaires=[("127.0.0.1:1", ANNUAIRE)], **extra)
 
 
 class LaVersion(unittest.TestCase):
@@ -96,23 +95,23 @@ class LaConstruction(unittest.TestCase):
             "",
         ):
             with self.assertRaises(asl.MauvaisArgument, msg=mauvaise):
-                asl.Client(annuaires=[(mauvaise, "localhost")])
+                asl.Client(annuaires=[(mauvaise, ANNUAIRE)])
 
     def test_une_adresse_litterale_des_deux_familles_est_acceptee(self):
         with asl.Client(
             annuaires=[
-                ("203.0.113.7:6630", "nitrogen.example"),
-                ("[2001:db8::1]:6630", "nitrogen.example"),
+                ("203.0.113.7:6630", ANNUAIRE),
+                ("[2001:db8::1]:6630", ANNUAIRE),
             ]
         ) as client:
             self.assertIsNotNone(client)
 
-    def test_des_racines_en_texte_sont_refusees_avant_la_frontiere(self):
-        # Le refus vient de Python, et il nomme la faute : `ctypes` aurait rendu
-        # un `ArgumentError` illisible.
-        with asl.Client() as client:
-            with self.assertRaises(asl.MauvaisArgument):
-                client.poser_racines("-----BEGIN CERTIFICATE-----")
+    def test_un_nom_a_la_place_de_l_identite_est_refuse(self):
+        # **LA FORME D'HIER EST RETIRÉE** (décision 58, étape 5) : un annuaire
+        # se croit par sa clé, et un nom de certificat ne dit pas laquelle.
+        with self.assertRaises(asl.MauvaisArgument):
+            asl.Client(annuaires=[("203.0.113.7:6630", "nitrogen.example")])
+        self.assertFalse(hasattr(asl.Client, "poser_racines"))
 
     def test_une_graine_de_mauvaise_taille_est_refusee_avec_les_deux_nombres(self):
         with asl.Client() as client:
@@ -125,7 +124,7 @@ class LaConstruction(unittest.TestCase):
         # plus court que celui qu'on croit lui avoir donné.
         with asl.Client() as client:
             with self.assertRaises(asl.MauvaisArgument):
-                client.ajouter_annuaire("127.0.0.1:1\x00tricherie", "localhost")
+                client.ajouter_annuaire("127.0.0.1:1\x00tricherie", ANNUAIRE)
 
 
 class LAnnonce(unittest.TestCase):
@@ -154,29 +153,22 @@ class LAnnonce(unittest.TestCase):
 
     def test_le_fil_natif_tourne_sans_que_personne_l_attende(self):
         # **C'EST L'ESSAI QUI COMPTE LE PLUS.** `annoncer` a rendu la main et
-        # l'appelant est parti ; si le fil natif ne tournait pas, `abandonnee` ne
-        # passerait jamais à vrai — et rien ici ne lèverait.
-        with client_configure(identite=(MACHINE, GRAINE)) as client:
-            client.annoncer("depot", [asl.Point(asl.Protocole.TCP, 8080)])
-            for _ in range(250):
-                etat = client.etat()
-                if etat.abandonnee:
-                    break
-                threading.Event().wait(0.02)
-            self.assertTrue(
-                etat.abandonnee,
-                "le fil natif n'a pas tourné, ou la racine illisible a été acceptée",
-            )
-            self.assertFalse(etat.attachee)
-            self.assertEqual(etat.attaches, 0)
-
-    def test_l_identite_survit_a_l_annonce(self):
-        # L'annonce CONSOMME une identité côté Rust ; si le client la perdait,
-        # `ou` répondrait « aucune identité » à un daemon qui vient de s'annoncer.
-        with client_configure(identite=(MACHINE, GRAINE)) as client:
-            client.annoncer("depot", [asl.Point(asl.Protocole.TCP, 8080)])
-            with self.assertRaises(asl.Configuration):
-                client.ou(MACHINE, "depot")
+        # l'appelant est parti ; si le fil natif ne tournait pas, le pair MUET
+        # ne recevrait jamais le premier paquet de la poignée de main — et rien
+        # ici ne lèverait. (Que l'identité survive à l'annonce est une affaire
+        # du côté Rust : `asl-client-ffi/tests/abi.rs` la tient, sur un banc.)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as muet:
+            muet.bind(("127.0.0.1", 0))
+            muet.settimeout(5)
+            port = muet.getsockname()[1]
+            with asl.Client(
+                annuaires=[(f"127.0.0.1:{port}", ANNUAIRE)],
+                identite=(MACHINE, GRAINE),
+            ) as client:
+                client.annoncer("depot", [asl.Point(asl.Protocole.TCP, 8080)])
+                paquet, _ = muet.recvfrom(2048)
+                self.assertGreater(len(paquet), 0, "le fil natif n'a pas tourné")
+                self.assertFalse(client.etat().attachee)
 
 
 class LaFermeture(unittest.TestCase):

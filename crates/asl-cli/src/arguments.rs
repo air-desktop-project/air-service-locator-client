@@ -83,9 +83,12 @@ pub struct Cible {
     /// Le port.
     pub port: u16,
     /// L'identité `n-…` qu'on doit trouver au bout (`--directory
-    /// <locateur>=<n-…>`, décision 58) — `None` : la forme d'hier, une chaîne
-    /// signée par l'autorité de `--roots`, au nom de l'hôte.
-    pub identite: Option<Identifiant>,
+    /// <locateur>=<n-…>`, décision 58).
+    ///
+    /// **ELLE N'EST PLUS FACULTATIVE** (décision 58, étape 5) : sans elle,
+    /// rien ne dit qui croire au bout, depuis que l'autorité d'hier est
+    /// retirée.
+    pub identite: Identifiant,
 }
 
 /// L'invocation entière.
@@ -93,11 +96,10 @@ pub struct Cible {
 pub struct Invocation {
     /// Les annuaires à essayer.
     pub annuaires: Vec<Cible>,
-    /// Le fichier de certificats d'autorité, en PEM.
-    pub racines: Option<String>,
     /// Le répertoire où vit l'identité de cette machine.
     pub etat: Option<String>,
-    /// Le nom exigé du certificat, quand il n'est pas celui de l'hôte.
+    /// Le nom à mettre dans `:authority`, quand il n'est pas celui de
+    /// l'hôte. Il ne prouve rien (C20).
     pub nom: Option<String>,
     /// Ce qu'il faut faire.
     pub commande: Commande,
@@ -112,6 +114,8 @@ pub enum Faute {
     OptionInconnue(String),
     /// Une option sans sa valeur.
     ValeurManquante(String),
+    /// Une option qui a existé, et qui n'existe plus : on dit quoi faire.
+    OptionRetiree(&'static str),
     /// Une commande qu'on ne connaît pas.
     CommandeInconnue(String),
     /// Il manque un argument à la commande.
@@ -125,6 +129,8 @@ pub enum Faute {
     ArgumentEnTrop(String),
     /// Cet annuaire ne se lit pas.
     AnnuaireIllisible(String),
+    /// Cet annuaire ne dit pas qui l'on doit trouver au bout.
+    IdentiteManquante(String),
     /// Ce point d'écoute ne se lit pas.
     PointIllisible(String),
     /// Cet identifiant de machine ne se lit pas.
@@ -139,6 +145,14 @@ impl core::fmt::Display for Faute {
             Self::RienADire => write!(f, "il n'y a pas de commande — essayez `asl help`"),
             Self::OptionInconnue(quoi) => write!(f, "l'option `{quoi}` n'existe pas"),
             Self::ValeurManquante(quoi) => write!(f, "l'option `{quoi}` attend une valeur"),
+            // **LA SEULE OPTION RETIRÉE, ET CE QU'ON FAIT À LA PLACE** : la
+            // décision 58 est allée au bout, un annuaire se croit par sa clé.
+            Self::OptionRetiree(quoi) => write!(
+                f,
+                "`{quoi}` n'existe plus : un annuaire se croit par sa clé, plus par une \
+                 autorité — `--directory <hôte:port>=<n-…>`, ou rien pour les racines \
+                 embarquées (`asl roots` les liste)"
+            ),
             Self::CommandeInconnue(quoi) => write!(f, "la commande `{quoi}` n'existe pas"),
             Self::ArgumentManquant { commande, quoi } => {
                 write!(f, "`asl {commande}` attend {quoi}")
@@ -147,6 +161,11 @@ impl core::fmt::Display for Faute {
             Self::AnnuaireIllisible(quoi) => {
                 write!(f, "`{quoi}` ne se lit pas comme un `hôte:port`")
             }
+            Self::IdentiteManquante(quoi) => write!(
+                f,
+                "`{quoi}` ne dit pas qui l'on doit trouver au bout : écrivez `{quoi}=n-…`, \
+                 l'identité de l'annuaire (`asl roots` donne celle des racines)"
+            ),
             Self::PointIllisible(quoi) => {
                 write!(f, "`{quoi}` ne se lit pas comme un `protocole:port`")
             }
@@ -167,14 +186,12 @@ impl core::fmt::Display for Faute {
 fn cible(texte: &str) -> Result<Cible, Faute> {
     let illisible = || Faute::AnnuaireIllisible(texte.to_owned());
     // **`=n-…` DIT QUI L'ON DOIT TROUVER AU BOUT**, comme `--federation` côté
-    // serveur. Aucune adresse ne contient de `=`.
-    let (locateur, identite) = match texte.split_once('=') {
-        Some((locateur, n)) => (
-            locateur,
-            Some(Identifiant::analyser_genre(Genre::Annuaire, n).map_err(|_| illisible())?),
-        ),
-        None => (texte, None),
+    // serveur. Aucune adresse ne contient de `=`. Sans lui, rien ne dit qui
+    // croire : l'autorité d'hier, qui le disait à sa place, est retirée.
+    let Some((locateur, n)) = texte.split_once('=') else {
+        return Err(Faute::IdentiteManquante(texte.to_owned()));
     };
+    let identite = Identifiant::analyser_genre(Genre::Annuaire, n).map_err(|_| illisible())?;
     let (hote, port) = match locateur.strip_prefix('[') {
         Some(reste) => {
             let (adresse, apres) = reste.split_once(']').ok_or_else(illisible)?;
@@ -234,7 +251,6 @@ where
 {
     let mut restants = arguments.into_iter().peekable();
     let mut annuaires = Vec::new();
-    let mut racines = None;
     let mut etat = None;
     let mut nom = None;
 
@@ -248,13 +264,14 @@ where
         let mut valeur = || restants.next().ok_or(Faute::ValeurManquante(mot.clone()));
         match mot.as_str() {
             "--directory" => annuaires.push(cible(&valeur()?)?),
-            "--roots" => racines = Some(valeur()?),
+            // Refusée tout de suite, valeur ou non : ce n'est pas la valeur
+            // qui manque, c'est l'option qui n'est plus.
+            "--roots" => return Err(Faute::OptionRetiree("--roots")),
             "--state" => etat = Some(valeur()?),
             "--name" => nom = Some(valeur()?),
             "--help" | "--version" => {
                 return Ok(Invocation {
                     annuaires,
-                    racines,
                     etat,
                     nom,
                     commande: if mot == "--help" {
@@ -351,7 +368,6 @@ where
 
     Ok(Invocation {
         annuaires,
-        racines,
         etat,
         nom,
         commande,
@@ -403,13 +419,22 @@ mod essais {
     fn un_annuaire_ipv6_litteral_se_lit_entre_crochets() {
         // **SANS LES CROCHETS, `::1:6630` EST AMBIGU** — et les refuser rendrait
         // tout annuaire IPv6 littéral inatteignable.
-        let lu = lire(&["--directory", "[2001:db8::1]:6630", "diagnose"]).unwrap();
+        let lu = lire(&[
+            "--directory",
+            "[2001:db8::1]:6630=n-0PWT8HZD80QMSPPDZ5CQXXYHQC",
+            "diagnose",
+        ])
+        .unwrap();
         assert_eq!(
             lu.annuaires,
             vec![Cible {
                 hote: "2001:db8::1".to_owned(),
                 port: 6630,
-                identite: None
+                identite: Identifiant::analyser_genre(
+                    Genre::Annuaire,
+                    "n-0PWT8HZD80QMSPPDZ5CQXXYHQC"
+                )
+                .unwrap()
             }]
         );
     }
@@ -418,9 +443,9 @@ mod essais {
     fn un_annuaire_se_lit_par_son_nom_ou_par_une_adresse_v4() {
         let lu = lire(&[
             "--directory",
-            "nitrogen.example:6630",
+            "nitrogen.example:6630=n-0PWT8HZD80QMSPPDZ5CQXXYHQC",
             "--directory",
-            "203.0.113.7:6630",
+            "203.0.113.7:6630=n-0PWT8HZD80QMSPPDZ5CQXXYHQC",
             "diagnose",
         ])
         .unwrap();
@@ -440,11 +465,41 @@ mod essais {
             "[2001:db8::1:6630",      // crochet non refermé
             "[2001:db8::1]6630",      // pas de `:` après le crochet
         ] {
+            let complet = format!("{quoi}=n-0PWT8HZD80QMSPPDZ5CQXXYHQC");
             assert_eq!(
-                lire(&["--directory", quoi, "diagnose"]),
-                Err(Faute::AnnuaireIllisible(quoi.to_owned())),
+                lire(&["--directory", &complet, "diagnose"]),
+                Err(Faute::AnnuaireIllisible(complet.clone())),
                 "{quoi}"
             );
+        }
+    }
+
+    #[test]
+    fn un_annuaire_sans_identite_est_refuse_et_l_on_dit_quoi_ecrire() {
+        // **LA FORME D'HIER EST RETIRÉE** (décision 58, étape 5) : un
+        // `hôte:port` seul ne dit pas qui croire au bout.
+        let refus = lire(&["--directory", "nitrogen.example:6630", "diagnose"]);
+        assert_eq!(
+            refus,
+            Err(Faute::IdentiteManquante("nitrogen.example:6630".to_owned()))
+        );
+        let texte = refus.unwrap_err().to_string();
+        assert!(texte.contains("nitrogen.example:6630=n-…"), "{texte}");
+    }
+
+    #[test]
+    fn roots_n_existe_plus_et_dit_quoi_faire() {
+        // **UNE OPTION RETIRÉE SE DIT RETIRÉE**, et non inconnue : qui l'a
+        // dans un script doit apprendre ce qui la remplace.
+        for ligne in [
+            &["--roots", "/etc/asl/ca.pem", "diagnose"][..],
+            &["--roots"][..],
+        ] {
+            let refus = lire(ligne);
+            assert_eq!(refus, Err(Faute::OptionRetiree("--roots")));
+            let texte = refus.unwrap_err().to_string();
+            assert!(texte.contains("n'existe plus"), "{texte}");
+            assert!(texte.contains("--directory <hôte:port>=<n-…>"), "{texte}");
         }
     }
 
@@ -535,10 +590,8 @@ mod essais {
         .unwrap();
         assert_eq!(lu.annuaires[0].hote, "2001:db8::1");
         assert_eq!(
-            lu.annuaires[0]
-                .identite
-                .map(|id| id.texte().as_str().to_owned()),
-            Some("n-0PWT8HZD80QMSPPDZ5CQXXYHQC".to_owned())
+            lu.annuaires[0].identite.texte().as_str(),
+            "n-0PWT8HZD80QMSPPDZ5CQXXYHQC"
         );
         // Une identité qui n'est pas celle d'un annuaire est refusée.
         assert!(matches!(
@@ -565,7 +618,7 @@ mod essais {
 
     #[test]
     fn une_option_sans_valeur_est_refusee() {
-        for quoi in ["--directory", "--roots", "--state", "--name"] {
+        for quoi in ["--directory", "--state", "--name"] {
             assert_eq!(lire(&[quoi]), Err(Faute::ValeurManquante(quoi.to_owned())));
         }
     }
@@ -589,8 +642,6 @@ mod essais {
         // Après la commande, un `--` est un argument comme un autre — et c'est
         // ce qui rend la lecture non ambiguë.
         let lu = lire(&[
-            "--roots",
-            "/etc/asl/ca.pem",
             "--state",
             "/var/lib/asl",
             "--name",
@@ -598,13 +649,12 @@ mod essais {
             "diagnose",
         ])
         .unwrap();
-        assert_eq!(lu.racines.as_deref(), Some("/etc/asl/ca.pem"));
         assert_eq!(lu.etat.as_deref(), Some("/var/lib/asl"));
         assert_eq!(lu.nom.as_deref(), Some("nitrogen.example"));
 
         assert_eq!(
-            lire(&["diagnose", "--roots", "/etc/asl/ca.pem"]),
-            Err(Faute::ArgumentEnTrop("--roots".to_owned()))
+            lire(&["diagnose", "--state", "/var/lib/asl"]),
+            Err(Faute::ArgumentEnTrop("--state".to_owned()))
         );
     }
 
@@ -710,9 +760,13 @@ mod essais {
         assert_eq!(lire(&["--version"]).unwrap().commande, Commande::Version);
         assert_eq!(lire(&["version"]).unwrap().commande, Commande::Version);
         assert_eq!(
-            lire(&["--directory", "[::1]:6630", "--version"])
-                .unwrap()
-                .commande,
+            lire(&[
+                "--directory",
+                "[::1]:6630=n-0PWT8HZD80QMSPPDZ5CQXXYHQC",
+                "--version"
+            ])
+            .unwrap()
+            .commande,
             Commande::Version
         );
     }
@@ -723,9 +777,13 @@ mod essais {
         // commande qu'on tape justement parce qu'on ne sait pas quoi configurer.
         assert_eq!(lire(&["--help"]).unwrap().commande, Commande::Aide);
         assert_eq!(
-            lire(&["--directory", "[::1]:6630", "--help"])
-                .unwrap()
-                .commande,
+            lire(&[
+                "--directory",
+                "[::1]:6630=n-0PWT8HZD80QMSPPDZ5CQXXYHQC",
+                "--help"
+            ])
+            .unwrap()
+            .commande,
             Commande::Aide
         );
     }

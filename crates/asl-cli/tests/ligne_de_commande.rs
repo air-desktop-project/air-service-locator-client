@@ -15,10 +15,14 @@ use std::process::{Command, Output};
 
 use asl_id::{Genre, Identifiant};
 
+/// Un annuaire où rien n'écoute, avec l'identité qu'on y attendrait : la
+/// forme que `--directory` exige depuis la décision 58, étape 5.
+const MUET: &str = "127.0.0.1:1=n-0PWT8HZD80QMSPPDZ5CQXXYHQC";
+
 /// Lance `asl`, dans un environnement propre.
 ///
 /// **L'ENVIRONNEMENT EST VIDÉ DE CE QUI COMPTE.** `ASL_DIRECTORY`, `ASL_ROOTS`
-/// et `ASL_STATE` posés sur la machine de qui lance les essais changeraient leur
+/// (qui n'est plus lue, mais qu'on signale) et `ASL_STATE` posés sur la machine de qui lance les essais changeraient leur
 /// résultat — et c'est exactement le genre d'essai qui passe chez son auteur.
 fn asl(arguments: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_asl"))
@@ -153,10 +157,10 @@ fn ce_qui_ne_se_lit_pas_rend_un_et_le_dit_sur_stderr() {
     }
 }
 
-// ── La configuration : code 2 ───────────────────────────────────────────────
+// ── Sans rien dire : les racines embarquées ─────────────────────────────────
 
 #[test]
-fn une_configuration_qui_manque_rend_deux_et_dit_quoi_poser() {
+fn sans_annuaire_donne_ce_sont_les_racines_embarquees() {
     let bac = Bac::neuf("config");
     let etat = bac.chemin().to_string_lossy().into_owned();
 
@@ -172,49 +176,82 @@ fn une_configuration_qui_manque_rend_deux_et_dit_quoi_poser() {
     assert!(dit.contains("n-3K3P6H252W8K9370QG1YYTWBWB"), "{dit}");
     assert!(dit.contains("2001:41d0:20a:900::1dd4"), "{dit}");
     assert!(!dit.contains("asl-root.air-desktop.org"), "{dit}");
-
-    // Un annuaire, mais aucune racine donnée : **celle d'air-desktop-project
-    // est épinglée**, et c'est elle qui vaut — pas le magasin du système. Un
-    // annuaire qui n'est pas signé par elle est donc refusé, et ce n'est pas
-    // une faute de configuration non plus.
-    let sortie = asl(&[
-        "--state",
-        &etat,
-        "--directory",
-        "127.0.0.1:6630",
-        "diagnose",
-    ]);
-    assert_ne!(code(&sortie), Some(2), "{}", texte(&sortie.stderr));
-
-    // Un fichier de racines qui n'existe pas.
-    let sortie = asl(&[
-        "--state",
-        &etat,
-        "--directory",
-        "127.0.0.1:6630",
-        "--roots",
-        "/n-existe-pas/ca.pem",
-        "diagnose",
-    ]);
-    assert_eq!(code(&sortie), Some(2));
-    assert!(texte(&sortie.stderr).contains("/n-existe-pas/ca.pem"));
 }
+
+// ── La forme d'hier : retirée, et dite comme telle ──────────────────────────
+
+#[test]
+fn la_forme_d_hier_se_refuse_et_dit_quoi_ecrire() {
+    // **DÉCISION 58, ÉTAPE 5** : un annuaire se croit par sa clé. Un
+    // `hôte:port` sans identité, ou `--roots`, se refusent à la lecture de
+    // la ligne — code 1, rien n'a été essayé — et le refus dit la forme qui
+    // les remplace.
+    let bac = Bac::neuf("forme-d-hier");
+    let etat = bac.chemin().to_string_lossy().into_owned();
+
+    let sortie = asl(&[
+        "--state",
+        &etat,
+        "--directory",
+        "127.0.0.1:6630",
+        "diagnose",
+    ]);
+    assert_eq!(code(&sortie), Some(1), "{}", texte(&sortie.stderr));
+    assert!(
+        texte(&sortie.stderr).contains("127.0.0.1:6630=n-…"),
+        "{}",
+        texte(&sortie.stderr)
+    );
+
+    let sortie = asl(&["--state", &etat, "--roots", "/etc/asl/ca.pem", "diagnose"]);
+    assert_eq!(code(&sortie), Some(1), "{}", texte(&sortie.stderr));
+    let dit = texte(&sortie.stderr);
+    assert!(dit.contains("`--roots` n'existe plus"), "{dit}");
+    assert!(dit.contains("--directory <hôte:port>=<n-…>"), "{dit}");
+}
+
+/// `ASL_ROOTS` n'est plus lue, et on le dit — sans échouer : une unité
+/// systemd qui la pose encore ne doit pas faire tomber un daemon qui joint
+/// très bien les racines par leur identité.
+#[test]
+fn asl_roots_est_signalee_et_non_fatale() {
+    let bac = Bac::neuf("asl-roots");
+    let sortie = Command::new(env!("CARGO_BIN_EXE_asl"))
+        .args([
+            "--state",
+            &bac.chemin().to_string_lossy(),
+            "--directory",
+            MUET,
+            "diagnose",
+        ])
+        .env_remove("ASL_STATE")
+        .env_remove("ASL_DIRECTORY")
+        .env("ASL_ROOTS", "/etc/asl/ca.pem")
+        .env("ASL_TIMEOUT", "2")
+        .output()
+        .expect("le binaire `asl` se lance");
+    let dit = texte(&sortie.stderr);
+    assert_eq!(
+        code(&sortie),
+        Some(4),
+        "personne ne répond, c'est tout : {dit}"
+    );
+    assert!(dit.contains("`ASL_ROOTS` est ignorée"), "{dit}");
+}
+
+// ── La configuration : code 2 ───────────────────────────────────────────────
 
 #[test]
 fn un_nom_qui_ne_se_resout_pas_rend_deux_et_non_quatre() {
     // **CE N'EST PAS UNE PANNE DE RÉSEAU** : rien n'a été essayé. Le rendre en
     // `4` enverrait chercher un câble là où il y a une faute de frappe.
     let bac = Bac::neuf("dns");
-    let racines = bac.chemin().join("ca.pem");
-    std::fs::write(&racines, b"pas un PEM").expect("le fichier s'écrit");
 
     let sortie = asl(&[
         "--state",
         &bac.chemin().to_string_lossy(),
         "--directory",
-        "annuaire.invalid:6630",
-        "--roots",
-        &racines.to_string_lossy(),
+        "annuaire.invalid:6630=n-0PWT8HZD80QMSPPDZ5CQXXYHQC",
         "diagnose",
     ]);
     assert_eq!(code(&sortie), Some(2), "{}", texte(&sortie.stderr));
@@ -225,24 +262,21 @@ fn un_nom_qui_ne_se_resout_pas_rend_deux_et_non_quatre() {
 /// précisément là qu'un renommage de commande s'est cassé une fois : la
 /// variable était relue à travers l'analyseur avec un mot de commande qui
 /// n'existait plus. Une adresse posée par la variable doit donc arriver au
-/// même endroit que l'option — ici, jusqu'au refus du PEM, code 2, sans
-/// jamais dire qu'une commande n'existe pas.
+/// même endroit que l'option — ici, jusqu'au nom qui ne se résout pas, code
+/// 2, sans jamais dire qu'une commande n'existe pas.
 #[test]
 fn asl_directory_se_lit_comme_l_option() {
     let bac = Bac::neuf("env");
-    let racines = bac.chemin().join("ca.pem");
-    std::fs::write(&racines, b"pas un PEM").expect("le fichier s'écrit");
 
     let sortie = Command::new(env!("CARGO_BIN_EXE_asl"))
-        .args([
-            "--state",
-            &bac.chemin().to_string_lossy(),
-            "--roots",
-            &racines.to_string_lossy(),
-            "diagnose",
-        ])
+        .args(["--state", &bac.chemin().to_string_lossy(), "diagnose"])
         .env_remove("ASL_STATE")
-        .env("ASL_DIRECTORY", "annuaire.invalid:6630, [::1]:6630")
+        .env_remove("ASL_ROOTS")
+        .env(
+            "ASL_DIRECTORY",
+            "annuaire.invalid:6630=n-0PWT8HZD80QMSPPDZ5CQXXYHQC, \
+             [::1]:6630=n-0PWT8HZD80QMSPPDZ5CQXXYHQC",
+        )
         .env("ASL_TIMEOUT", "2")
         .output()
         .expect("le binaire `asl` se lance");
@@ -288,7 +322,7 @@ fn une_machine_non_enrolee_l_apprend_avant_toute_connexion() {
         "--state",
         &bac.chemin().to_string_lossy(),
         "--directory",
-        "127.0.0.1:1",
+        MUET,
         "where",
         Identifiant::depuis_entropie(Genre::Machine, [3; 16])
             .texte()
@@ -323,7 +357,7 @@ fn enrolled_refuse_un_compte_etranger_avant_toute_connexion() {
         "--state",
         &bac.chemin().to_string_lossy(),
         "--directory",
-        "127.0.0.1:1",
+        MUET,
         "enrolled",
         autre.texte().as_str(),
     ]);
@@ -353,15 +387,9 @@ fn enrolled_et_machines_avec_le_compte_de_la_machine_ou_sans_vont_a_l_annuaire()
     // la lecture de l'identité, puis vont joindre l'annuaire — qui, ici, ne
     // répond pas : `4`, personne n'a répondu, et non `1` ni `2`.
     let bac = Bac::neuf("enrolled-formes");
-    let racines = bac.chemin().join("ca.pem");
-    let atelier = ams_quic_client::atelier("asl-cli-enrolled");
-    let (autorite, _cert, _cle) =
-        ams_quic_client::materiel(atelier.chemin()).expect("`openssl` est requis pour cet essai");
-    std::fs::write(&racines, &autorite).expect("la racine s'écrit");
     let notre = Identifiant::depuis_entropie(Genre::Utilisateur, [0x51; 16]);
     poser_une_identite_avec_compte(bac.chemin(), 0o600, Some(notre));
     let etat = bac.chemin().to_string_lossy().into_owned();
-    let racines = racines.to_string_lossy().into_owned();
     let notre = notre.texte();
 
     for ligne in [
@@ -372,14 +400,7 @@ fn enrolled_et_machines_avec_le_compte_de_la_machine_ou_sans_vont_a_l_annuaire()
         // Même voie, même identité, même issue quand personne ne répond.
         vec!["replication"],
     ] {
-        let mut arguments = vec![
-            "--state",
-            etat.as_str(),
-            "--directory",
-            "127.0.0.1:1",
-            "--roots",
-            racines.as_str(),
-        ];
+        let mut arguments = vec!["--state", etat.as_str(), "--directory", MUET];
         arguments.extend_from_slice(&ligne);
         let sortie = asl(&arguments);
         assert_eq!(
@@ -397,11 +418,6 @@ fn enrolled_sans_compte_connu_ne_refuse_pas_hors_ligne() {
     // ne peut pas se décider hors ligne, et c'est `GET /v1/moi` qui tranchera
     // — donc on joint, et ici personne ne répond : `4`.
     let bac = Bac::neuf("enrolled-sans-compte");
-    let racines = bac.chemin().join("ca.pem");
-    let atelier = ams_quic_client::atelier("asl-cli-enrolled-sans-compte");
-    let (autorite, _cert, _cle) =
-        ams_quic_client::materiel(atelier.chemin()).expect("`openssl` est requis pour cet essai");
-    std::fs::write(&racines, &autorite).expect("la racine s'écrit");
     poser_une_identite(bac.chemin(), 0o600);
     let autre = Identifiant::depuis_entropie(Genre::Utilisateur, [0x52; 16]);
 
@@ -409,9 +425,7 @@ fn enrolled_sans_compte_connu_ne_refuse_pas_hors_ligne() {
         "--state",
         &bac.chemin().to_string_lossy(),
         "--directory",
-        "127.0.0.1:1",
-        "--roots",
-        &racines.to_string_lossy(),
+        MUET,
         "enrolled",
         autre.texte().as_str(),
     ]);
@@ -424,21 +438,12 @@ fn enrolled_sans_compte_connu_ne_refuse_pas_hors_ligne() {
 fn un_annuaire_qui_ne_repond_pas_rend_quatre() {
     // La distinction qui compte : `4` est un réseau, `3` serait un droit.
     let bac = Bac::neuf("injoignable");
-    let racines = bac.chemin().join("ca.pem");
-    // **UNE RACINE QUE `rustls` SAIT LIRE**, sans quoi l'on obtiendrait `2` et
-    // l'essai prouverait le contraire de ce qu'il cherche.
-    let atelier = ams_quic_client::atelier("asl-cli");
-    let (autorite, _cert, _cle) =
-        ams_quic_client::materiel(atelier.chemin()).expect("`openssl` est requis pour cet essai");
-    std::fs::write(&racines, &autorite).expect("la racine s'écrit");
 
     let sortie = asl(&[
         "--state",
         &bac.chemin().to_string_lossy(),
         "--directory",
-        "127.0.0.1:1",
-        "--roots",
-        &racines.to_string_lossy(),
+        MUET,
         "diagnose",
     ]);
     assert_eq!(code(&sortie), Some(4), "{}", texte(&sortie.stderr));

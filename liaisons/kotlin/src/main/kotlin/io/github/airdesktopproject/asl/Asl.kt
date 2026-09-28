@@ -5,8 +5,7 @@
 // daemon ANNONCE le port que le système lui a donné, et ses clients le DEMANDENT.
 //
 //     Client.ouvrir(
-//         annuaires = listOf("203.0.113.7:6630" to "nitrogen.example"),
-//         racines = Files.readAllBytes(Path.of("/etc/asl/ca.pem")),
+//         annuaires = listOf("203.0.113.7:6630" to "n-0PWT8HZD80QMSPPDZ5CQXXYHQC"),
 //         identite = Identite(machine, graine),
 //     ).getOrThrow().use { client ->
 //         client.annoncer("depot", listOf(Point(Protocole.TCP, 8080))).getOrThrow()
@@ -61,7 +60,7 @@ public class MauvaisArgument internal constructor(message: String) : AslErreur(m
     override val code: Int get() = Abi.ARGUMENT
 }
 
-/** Il manque un annuaire, une racine, ou la racine ne se lit pas.
+/** Il manque un annuaire, ou il a été posé d'une façon qui ne se croit plus.
  *
  * **CE N'EST PAS UNE PANNE**, et c'est pourquoi elle est distincte
  * d'[Injoignable] : réessayer ne la réparerait jamais.
@@ -375,24 +374,20 @@ public class Client private constructor(brut: MemorySegment) : AutoCloseable {
         /** Monte un client. **Il n'ouvre aucune connexion** : un annuaire
          * injoignable ne doit pas empêcher un daemon de démarrer.
          *
-         * `annuaires` est une liste de couples `adresse to nom`. L'adresse est
+         * `annuaires` est une liste de couples `adresse to n`. L'adresse est
          * LITTÉRALE — `"203.0.113.7:6630"` ou `"[2001:db8::1]:6630"` —, jamais un
          * nom d'hôte : **la résolution vous appartient**, parce que vous avez déjà
          * un résolveur, une politique de cache et des fils. `InetAddress` fait
          * l'affaire, et un nom qui rend plusieurs adresses les rend toutes
          * utilisables ici.
          *
-         * Le second membre est le nom qu'on EXIGE du certificat. Il n'est pas
-         * déduit de l'adresse : le déduire reviendrait à faire confiance à qui
-         * répond à cette adresse.
-         *
-         * `racines` est le contenu d'un fichier PEM. **Il n'y a pas de repli sur
-         * le magasin du système** : les annuaires sont signés par LEUR autorité.
+         * Le second membre est l'identité `n-…` qu'on doit trouver au bout : la
+         * clé du certificat que l'annuaire présente doit s'y déduire, et rien
+         * d'autre ne le fait croire — ni autorité, ni nom (décision 58).
          */
         @JvmStatic
         public fun ouvrir(
             annuaires: List<Pair<String, String>> = emptyList(),
-            racines: ByteArray? = null,
             identite: Identite? = null,
         ): Result<Client> {
             val neuf = Arena.ofConfined().use { arene ->
@@ -406,14 +401,8 @@ public class Client private constructor(brut: MemorySegment) : AutoCloseable {
             // Sans ceci, une adresse mal écrite laisserait un objet natif que seul
             // le ramasse-miettes finirait par rendre, un jour.
             try {
-                for ((adresse, nom) in annuaires) {
-                    client.ajouterAnnuaire(adresse, nom).getOrElse {
-                        client.close()
-                        return Result.failure(it)
-                    }
-                }
-                if (racines != null) {
-                    client.poserRacines(racines).getOrElse {
+                for ((adresse, n) in annuaires) {
+                    client.ajouterAnnuaire(adresse, n).getOrElse {
                         client.close()
                         return Result.failure(it)
                     }
@@ -437,24 +426,18 @@ public class Client private constructor(brut: MemorySegment) : AutoCloseable {
 
     // ── La configuration ────────────────────────────────────────────────────
 
-    /** Ajoute un annuaire à essayer. **Répétable, et l'ordre compte.**
+    /** Ajoute un annuaire à essayer, par son identité `n-…`. **Répétable, et
+     * l'ordre compte.**
      *
      * L'IPv6 est essayé d'abord quel que soit l'ordre des appels ; à l'intérieur
      * d'une famille, c'est cet ordre qui décide.
      */
-    public fun ajouterAnnuaire(adresse: String, nom: String): Result<Unit> =
+    public fun ajouterAnnuaire(adresse: String, n: String): Result<Unit> =
         appeler { brut, arene ->
-            fonctions["asl_client_annuaire"].invoke(
-                brut, chaineC(arene, adresse), chaineC(arene, nom),
+            fonctions["asl_client_annuaire_identifie"].invoke(
+                brut, chaineC(arene, adresse), chaineC(arene, n),
             ) as Int
         }
-
-    /** Pose les certificats d'autorité, en PEM. */
-    public fun poserRacines(pem: ByteArray): Result<Unit> = appeler { brut, arene ->
-        val tampon = arene.allocate(pem.size.toLong().coerceAtLeast(1L))
-        MemorySegment.copy(pem, 0, tampon, ValueLayout.JAVA_BYTE, 0L, pem.size)
-        fonctions["asl_client_racines"].invoke(brut, tampon, pem.size.toLong()) as Int
-    }
 
     /** Installe l'identité de cette machine. */
     public fun poserIdentite(identite: Identite): Result<Unit> = appeler { brut, arene ->

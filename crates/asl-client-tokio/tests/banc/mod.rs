@@ -353,12 +353,69 @@ where
     (adresse, tache, voie)
 }
 
-/// Le matériel de banc : une autorité, un certificat, une clé.
-pub fn materiel(nom: &str) -> (ams_quic_client::Atelier, Vec<u8>, Vec<u8>, Vec<u8>) {
-    let atelier = ams_quic_client::atelier(nom);
-    let (autorite, cert, cle) =
-        ams_quic_client::materiel(atelier.chemin()).expect("`openssl` est requis pour cet essai");
-    (atelier, autorite, cert, cle)
+/// Encode en PEM — ce que `ams_tls::quic_server_config` lit.
+pub fn pem(etiquette: &str, der: &[u8]) -> Vec<u8> {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    // Sans arithmétique libre : trois octets donnent vingt-quatre bits, lus
+    // par quatre décalages fixes.
+    const DECALAGES_OCTETS: [u32; 3] = [16, 8, 0];
+    const DECALAGES_SIGNES: [u32; 4] = [18, 12, 6, 0];
+    let mut b64 = Vec::new();
+    for bloc in der.chunks(3) {
+        let n = bloc
+            .iter()
+            .zip(DECALAGES_OCTETS)
+            .fold(0_u32, |acc, (&o, decalage)| {
+                acc | (u32::from(o) << decalage)
+            });
+        for (i, decalage) in DECALAGES_SIGNES.into_iter().enumerate() {
+            if i <= bloc.len() {
+                let rang = usize::try_from((n >> decalage) & 0x3f).expect("six bits");
+                b64.push(TABLE[rang]);
+            } else {
+                b64.push(b'=');
+            }
+        }
+    }
+    let mut sortie = format!("-----BEGIN {etiquette}-----\n").into_bytes();
+    for ligne in b64.chunks(64) {
+        sortie.extend_from_slice(ligne);
+        sortie.push(b'\n');
+    }
+    sortie.extend_from_slice(format!("-----END {etiquette}-----\n").as_bytes());
+    sortie
+}
+
+/// Le certificat d'identité et sa clé, en PEM : ce que sert un annuaire.
+pub fn materiel_d_identite(cle: &asl_cle::CleSecrete) -> (Vec<u8>, Vec<u8>) {
+    (
+        pem("CERTIFICATE", &asl_cle::certificat_d_identite(cle)),
+        pem("PRIVATE KEY", &asl_cle::cle_pkcs8(cle)),
+    )
+}
+
+/// Le `n-…` qu'on doit trouver au bout d'un annuaire qui tient cette clé.
+pub fn identite_de(cle: &asl_cle::CleSecrete) -> asl_id::Identifiant {
+    asl_cle::identifiant_de_racine(&cle.publique())
+}
+
+/// Le matériel de banc : l'identité attendue, le certificat, la clé.
+///
+/// **UNE CLÉ PAR NOM, TOUJOURS LA MÊME** : la graine se tire du nom, pour que
+/// deux bancs d'un même essai ne se prennent pas l'un pour l'autre, et qu'un
+/// essai rejoué retrouve le même `n-…`. Ni autorité ni `openssl` : depuis la
+/// fin de la bascule (décision 58, étape 5), un annuaire ne sert que son
+/// certificat d'identité, et le banc fait de même.
+pub fn materiel(nom: &str) -> (asl_id::Identifiant, Vec<u8>, Vec<u8>) {
+    let mut graine = [0_u8; 32];
+    // La longueur d'abord, pour que « a » et « aa » ne se confondent pas.
+    graine[0] = u8::try_from(nom.len()).unwrap_or(u8::MAX);
+    for (place, octet) in graine.iter_mut().skip(1).zip(nom.bytes().cycle()) {
+        *place = octet;
+    }
+    let cle = asl_cle::CleSecrete::depuis_entropie(graine);
+    let (cert, secrete) = materiel_d_identite(&cle);
+    (identite_de(&cle), cert, secrete)
 }
 
 /// Une adresse où plus rien n'écoute.

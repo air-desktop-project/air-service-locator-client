@@ -20,6 +20,9 @@
 //! les déclarations de l'en-tête, et l'essai ci-dessous compare les CONSTANTES
 //! de l'en-tête à celles de Rust.
 
+#[path = "../../asl-client-tokio/tests/banc/mod.rs"]
+mod banc;
+
 use core::ffi::CStr;
 use std::ptr;
 
@@ -30,8 +33,8 @@ use asl_client_ffi::{
     ASL_JOIGNABLE, ASL_NAT_INDETERMINE, ASL_NAT_NON, ASL_NAT_OUI, ASL_NON_CONNECTE, ASL_NON_SONDE,
     ASL_OK, ASL_PAS_D_IDENTITE, ASL_PAS_DE_POUSSEE, ASL_REFLEXIF, ASL_REFUSE,
     ASL_SIGNATURE_REFUSEE, ASL_TAMPON_TROP_PETIT, ASL_TCP, ASL_TROP_D_ESSAIS, ASL_UDP, AslCandidat,
-    AslClient, AslEtat, AslPoint, asl_annoncer, asl_client_annuaire, asl_client_identite,
-    asl_client_libere, asl_client_neuf, asl_client_racines, asl_derniere_poussee, asl_enroler,
+    AslClient, AslEtat, AslPoint, asl_annoncer, asl_client_annuaire, asl_client_annuaire_identifie,
+    asl_client_identite, asl_client_libere, asl_client_neuf, asl_derniere_poussee, asl_enroler,
     asl_etat, asl_faute_texte, asl_ou, asl_poussees_recues, asl_version,
 };
 use asl_id::{Genre, Identifiant};
@@ -124,7 +127,7 @@ fn un_pointeur_nul_rend_un_code_et_n_emporte_pas_le_processus() {
         ASL_ARGUMENT
     );
     assert_eq!(
-        unsafe { asl_client_racines(ptr::null_mut(), ptr::null(), 0) },
+        unsafe { asl_client_annuaire_identifie(ptr::null_mut(), vide.as_ptr(), vide.as_ptr()) },
         ASL_ARGUMENT
     );
     assert_eq!(
@@ -191,11 +194,11 @@ fn un_annuaire_se_pose_par_une_adresse_litterale_et_jamais_par_un_nom() {
     // **LA RÉSOLUTION APPARTIENT À L'APPELANT** : un daemon chargé dans un
     // interpréteur a déjà son résolveur, sa politique de cache et ses fils.
     let client = client();
-    let nom = c"nitrogen.example";
+    let n = c"n-0PWT8HZD80QMSPPDZ5CQXXYHQC";
 
     for bonne in [c"203.0.113.7:6630", c"[2001:db8::1]:6630"] {
         assert_eq!(
-            unsafe { asl_client_annuaire(client, bonne.as_ptr(), nom.as_ptr()) },
+            unsafe { asl_client_annuaire_identifie(client, bonne.as_ptr(), n.as_ptr()) },
             ASL_OK,
             "{bonne:?}"
         );
@@ -207,15 +210,38 @@ fn un_annuaire_se_pose_par_une_adresse_litterale_et_jamais_par_un_nom() {
         c"",
     ] {
         assert_eq!(
-            unsafe { asl_client_annuaire(client, mauvaise.as_ptr(), nom.as_ptr()) },
+            unsafe { asl_client_annuaire_identifie(client, mauvaise.as_ptr(), n.as_ptr()) },
             ASL_ARGUMENT,
             "{mauvaise:?}"
         );
     }
-    // Un nom vide ne vérifie aucun certificat.
+    // Une identité qui n'est pas celle d'un annuaire ne dit pas qui croire.
+    let machine = machine_texte();
     assert_eq!(
-        unsafe { asl_client_annuaire(client, c"203.0.113.7:6630".as_ptr(), c"".as_ptr()) },
+        unsafe {
+            asl_client_annuaire_identifie(client, c"203.0.113.7:6630".as_ptr(), machine.as_ptr())
+        },
         ASL_ARGUMENT
+    );
+    unsafe { asl_client_libere(client) };
+}
+
+#[test]
+fn un_annuaire_par_son_nom_ne_se_croit_plus() {
+    // **LA FORME D'HIER EST RETIRÉE** (décision 58, étape 5) : le symbole
+    // reste, pour qui le lie encore, et il refuse tout de suite — une
+    // configuration, pas un argument : ce qui est écrit est bien formé, c'est
+    // la façon qui n'existe plus.
+    let client = client();
+    assert_eq!(
+        unsafe {
+            asl_client_annuaire(
+                client,
+                c"203.0.113.7:6630".as_ptr(),
+                c"nitrogen.example".as_ptr(),
+            )
+        },
+        ASL_CONFIGURATION
     );
     unsafe { asl_client_libere(client) };
 }
@@ -247,18 +273,30 @@ fn une_identite_exige_une_machine_et_trente_deux_octets() {
 
 // ── L'ANNONCE ───────────────────────────────────────────────────────────────
 
-/// Un client configuré, avec une racine que `rustls` REFUSERA.
-///
-/// C'est ce qu'il faut pour éprouver le seul cas où l'attache renonce.
-fn client_a_racine_illisible() -> *mut AslClient {
+/// Un moteur à lui pour le banc : les appels d'ABI qui suivent bloquent le
+/// fil de l'essai, et le banc ne doit pas en dépendre.
+fn moteur() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("un moteur pour le banc")
+}
+
+/// Un client qui vise un vrai banc sous son identité, avec son identité de
+/// machine — le banc dit oui à tout, et c'est ce qu'on veut : ce qui est
+/// éprouvé ici est la frontière, pas l'annuaire.
+fn client_au_banc(
+    moteur: &tokio::runtime::Runtime,
+    nom: &str,
+) -> (*mut AslClient, tokio::task::JoinHandle<()>) {
+    let (identite, cert, cle) = banc::materiel(nom);
+    let (ecoute, tache) = moteur.block_on(banc::lever(cert, cle, banc::FauxAnnuaire));
     let client = client();
-    let racines = b"pas un PEM";
+    let locateur = std::ffi::CString::new(format!("127.0.0.1:{}", ecoute.port())).unwrap();
+    let n = std::ffi::CString::new(identite.texte().as_str()).unwrap();
     assert_eq!(
-        unsafe { asl_client_annuaire(client, c"127.0.0.1:1".as_ptr(), c"localhost".as_ptr()) },
-        ASL_OK
-    );
-    assert_eq!(
-        unsafe { asl_client_racines(client, racines.as_ptr(), racines.len()) },
+        unsafe { asl_client_annuaire_identifie(client, locateur.as_ptr(), n.as_ptr()) },
         ASL_OK
     );
     let machine = machine_texte();
@@ -267,7 +305,7 @@ fn client_a_racine_illisible() -> *mut AslClient {
         unsafe { asl_client_identite(client, machine.as_ptr(), graine.as_ptr()) },
         ASL_OK
     );
-    client
+    (client, tache)
 }
 
 #[test]
@@ -342,9 +380,10 @@ fn l_ordonnanceur_tourne_sans_que_personne_l_attende() {
     // l'appelant est parti faire autre chose — c'est précisément ce que
     // `protocole.md` §1.4 exige.
     //
-    // Si le moteur n'avait pas son propre fil, `abandonnee` ne passerait JAMAIS
+    // Si le moteur n'avait pas son propre fil, `attachee` ne passerait JAMAIS
     // à 1, et tout compilerait.
-    let client = client_a_racine_illisible();
+    let banc = moteur();
+    let (client, tache) = client_au_banc(&banc, "abi-ordonnanceur");
     let tcp = AslPoint {
         port: 8080,
         protocole: ASL_TCP,
@@ -365,19 +404,20 @@ fn l_ordonnanceur_tourne_sans_que_personne_l_attende() {
     let mut etat = etat_sali();
     while depart.elapsed() < std::time::Duration::from_secs(5) {
         assert_eq!(unsafe { asl_etat(client, &raw mut etat) }, ASL_OK);
-        if etat.abandonnee == 1 {
+        if etat.attachee == 1 {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert_eq!(
-        etat.abandonnee, 1,
+        etat.attachee, 1,
         "la tâche n'a pas tourné : le moteur n'a pas de fil à lui"
     );
-    assert_eq!(etat.attachee, 0);
-    assert_eq!(etat.attaches, 0, "une racine illisible n'attache rien");
+    assert_eq!(etat.attaches, 1);
+    assert_eq!(etat.abandonnee, 0);
 
     unsafe { asl_client_libere(client) };
+    tache.abort();
 }
 
 #[test]
@@ -532,7 +572,8 @@ fn l_identite_survit_a_l_annonce() {
     // telle quelle dans le client, elle disparaissait au premier `asl_annoncer`
     // — et le `asl_ou` suivant répondait « aucune identité » à un daemon qui
     // venait précisément de s'annoncer. Rien ne le disait à la compilation.
-    let client = client_a_racine_illisible();
+    let banc = moteur();
+    let (client, tache) = client_au_banc(&banc, "abi-identite-survit");
     let tcp = AslPoint {
         port: 8080,
         protocole: ASL_TCP,
@@ -540,6 +581,18 @@ fn l_identite_survit_a_l_annonce() {
     };
     assert_eq!(
         unsafe { asl_annoncer(client, c"depot".as_ptr(), &raw const tcp, 1) },
+        ASL_OK
+    );
+
+    // **UN SECOND BANC, POSÉ APRÈS L'ANNONCE** : un banc ne sert qu'une
+    // connexion de toute sa vie, et l'attache tient le premier. `asl_ou` le
+    // trouvera muet (le délai de poignée de main), puis joindra celui-ci.
+    let (identite, cert, cle) = banc::materiel("abi-identite-survit-bis");
+    let (ecoute, tache_bis) = banc.block_on(banc::lever(cert, cle, banc::FauxAnnuaire));
+    let locateur = std::ffi::CString::new(format!("127.0.0.1:{}", ecoute.port())).unwrap();
+    let n = std::ffi::CString::new(identite.texte().as_str()).unwrap();
+    assert_eq!(
+        unsafe { asl_client_annuaire_identifie(client, locateur.as_ptr(), n.as_ptr()) },
         ASL_OK
     );
 
@@ -559,11 +612,13 @@ fn l_identite_survit_a_l_annonce() {
         code, ASL_PAS_D_IDENTITE,
         "l'annonce a emporté l'identité du client"
     );
-    // La racine reste illisible : ce qu'on obtient est une configuration, et
-    // c'est bien le chemin qu'on voulait atteindre.
-    assert_eq!(code, ASL_CONFIGURATION, "{code}");
+    // Le banc ne sait pas `GET /v1/ou` : un refus de l'annuaire, et c'est
+    // bien le chemin qu'on voulait atteindre — la requête est partie, signée.
+    assert_eq!(code, ASL_REFUSE, "{code}");
 
     unsafe { asl_client_libere(client) };
+    tache.abort();
+    tache_bis.abort();
 }
 
 // ── LES VERDICTS POUSSÉS ────────────────────────────────────────────────────

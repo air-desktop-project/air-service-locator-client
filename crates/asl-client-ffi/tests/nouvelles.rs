@@ -22,10 +22,10 @@ use std::time::{Duration, Instant};
 
 use ams_proto_http::{Method, StatusCode};
 use asl_client_ffi::appareil::{
-    ASL_ADRESSE_OCTETS, ASL_NOUVELLE_MAX, AslAppareil, asl_appareil_annuaire,
+    ASL_ADRESSE_OCTETS, ASL_NOUVELLE_MAX, AslAppareil, asl_appareil_annuaire_identifie,
     asl_appareil_connecter, asl_appareil_deconnecter, asl_appareil_distante, asl_appareil_libere,
     asl_appareil_neuf, asl_appareil_nouvelle, asl_appareil_nouvelles_ouvrir,
-    asl_appareil_nouvelles_recues, asl_appareil_racines, asl_appareil_requete,
+    asl_appareil_nouvelles_recues, asl_appareil_requete,
 };
 use asl_client_ffi::{
     ASL_DEJA, ASL_NON_CONNECTE, ASL_OK, ASL_PAS_DE_POUSSEE, ASL_REFUSE, ASL_TAMPON_TROP_PETIT,
@@ -104,17 +104,14 @@ fn moteur() -> tokio::runtime::Runtime {
 
 /// Un appareil connecté — nu : le banc ne vérifie rien, et c'est le flux qu'on
 /// éprouve, pas la preuve.
-fn connecte(adresse: std::net::SocketAddr, autorite: &[u8]) -> *mut AslAppareil {
+fn connecte(adresse: std::net::SocketAddr, identite: asl_id::Identifiant) -> *mut AslAppareil {
     let mut brut: *mut AslAppareil = ptr::null_mut();
     let ou = CString::new(adresse.to_string()).expect("une adresse");
+    let n = CString::new(identite.texte().as_str()).expect("sans NUL");
     unsafe {
         assert_eq!(asl_appareil_neuf(&raw mut brut), ASL_OK);
         assert_eq!(
-            asl_appareil_annuaire(brut, ou.as_ptr(), c"localhost".as_ptr()),
-            ASL_OK
-        );
-        assert_eq!(
-            asl_appareil_racines(brut, autorite.as_ptr(), autorite.len()),
+            asl_appareil_annuaire_identifie(brut, ou.as_ptr(), n.as_ptr()),
             ASL_OK
         );
         assert_eq!(asl_appareil_connecter(brut), ASL_OK);
@@ -137,11 +134,11 @@ fn attendre(brut: *const AslAppareil, attente_ms: u32, tampon: &mut [u8]) -> (i3
 
 #[test]
 fn une_ligne_arrive_une_attente_rend_rien_et_un_second_flux_est_deja_la() {
-    let (_atelier, autorite, cert, cle) = materiel("abi-nouvelles");
+    let (identite, cert, cle) = materiel("abi-nouvelles");
     let moteur = moteur();
     let (adresse, tache, voie) =
         moteur.block_on(async { lever_qui_pousse(cert, cle, AnnuaireQuiNotifie::default()).await });
-    let brut = connecte(adresse, &autorite);
+    let brut = connecte(adresse, identite);
     let mut ligne = [0_u8; ASL_NOUVELLE_MAX];
 
     // Pas encore ouvert : l'attente ne dort pas pour rien.
@@ -238,10 +235,10 @@ fn une_ligne_arrive_une_attente_rend_rien_et_un_second_flux_est_deja_la() {
 
 #[test]
 fn un_appareil_revoque_se_voit_refuser_le_flux() {
-    let (_atelier, autorite, cert, cle) = materiel("abi-nouvelles-401");
+    let (identite, cert, cle) = materiel("abi-nouvelles-401");
     let moteur = moteur();
     let (adresse, tache) = moteur.block_on(async { lever(cert, cle, Revoque).await });
-    let brut = connecte(adresse, &autorite);
+    let brut = connecte(adresse, identite);
     let mut ligne = [0_u8; ASL_NOUVELLE_MAX];
     unsafe {
         assert_eq!(asl_appareil_nouvelles_ouvrir(brut), ASL_REFUSE);
@@ -267,11 +264,11 @@ fn l_adresse_jointe_se_lit_meme_pendant_qu_un_fil_attend() {
     // plusieurs : le banc n'a qu'une adresse, et c'est elle qui doit revenir,
     // écrite comme `SocketAddr` l'écrit. Et comme l'en-tête le range parmi les
     // verbes qui ne font que lire, il doit passer pendant une attente.
-    let (_atelier, autorite, cert, cle) = materiel("abi-distante");
+    let (identite, cert, cle) = materiel("abi-distante");
     let moteur = moteur();
     let (adresse, tache, _voie) =
         moteur.block_on(async { lever_qui_pousse(cert, cle, AnnuaireQuiNotifie::default()).await });
-    let brut = connecte(adresse, &autorite);
+    let brut = connecte(adresse, identite);
     assert_eq!(distante(brut), (ASL_OK, adresse.to_string()));
 
     assert_eq!(unsafe { asl_appareil_nouvelles_ouvrir(brut) }, ASL_OK);

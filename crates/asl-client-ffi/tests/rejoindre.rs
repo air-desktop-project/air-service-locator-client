@@ -26,9 +26,8 @@ use std::ptr;
 
 use asl_client_ffi::appareil::{
     ASL_CLE_APPAREIL_OCTETS, ASL_DEFI_OCTETS, ASL_SIGNATURE_OCTETS, AslAppareil,
-    asl_appareil_annuaire, asl_appareil_cle, asl_appareil_connecter, asl_appareil_defi,
+    asl_appareil_annuaire_identifie, asl_appareil_cle, asl_appareil_connecter, asl_appareil_defi,
     asl_appareil_identite, asl_appareil_liaison, asl_appareil_libere, asl_appareil_neuf,
-    asl_appareil_racines,
 };
 use asl_client_ffi::{ASL_INJOIGNABLE, ASL_NON_CONNECTE, ASL_OK, ASL_SIGNATURE_REFUSEE};
 use asl_id::{Genre, Identifiant};
@@ -92,7 +91,7 @@ fn liaison(brut: *mut AslAppareil) -> [u8; ASL_DEFI_OCTETS] {
 /// le défi de sa connexion.
 #[test]
 fn un_geste_refuse_garde_le_defi_un_geste_accepte_le_depense() {
-    let (_atelier, autorite, cert, cle) = materiel("defi-refus");
+    let (identite, cert, cle) = materiel("defi-refus");
     let moteur = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -104,14 +103,11 @@ fn un_geste_refuse_garde_le_defi_un_geste_accepte_le_depense() {
     let mut brut: *mut AslAppareil = ptr::null_mut();
     assert_eq!(unsafe { asl_appareil_neuf(&raw mut brut) }, ASL_OK);
     let ou = CString::new(adresse.to_string()).expect("une adresse");
+    let n = CString::new(identite.texte().as_str()).expect("sans NUL");
     let mut compteur: u32 = 0;
     unsafe {
         assert_eq!(
-            asl_appareil_annuaire(brut, ou.as_ptr(), c"localhost".as_ptr()),
-            ASL_OK
-        );
-        assert_eq!(
-            asl_appareil_racines(brut, autorite.as_ptr(), autorite.len()),
+            asl_appareil_annuaire_identifie(brut, ou.as_ptr(), n.as_ptr()),
             ASL_OK
         );
         assert_eq!(

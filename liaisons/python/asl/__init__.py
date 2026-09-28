@@ -7,8 +7,7 @@ ANNONCE le port que le système lui a donné, et ses clients le DEMANDENT.
     import asl
 
     with asl.Client(
-        annuaires=[("203.0.113.7:6630", "nitrogen.example")],
-        racines=open("/etc/asl/ca.pem", "rb").read(),
+        annuaires=[("203.0.113.7:6630", "n-0PWT8HZD80QMSPPDZ5CQXXYHQC")],
         identite=(machine, graine),
     ) as client:
         client.annoncer("depot", [asl.Point(asl.Protocole.TCP, 8080)])
@@ -99,7 +98,7 @@ class MauvaisArgument(Erreur):
 
 
 class Configuration(Erreur):
-    """Il manque un annuaire, une racine, ou la racine ne se lit pas.
+    """Il manque un annuaire, ou il a été posé d'une façon qui ne se croit plus.
 
     **CE N'EST PAS UNE PANNE**, et c'est pourquoi elle est distincte de
     `Injoignable` : réessayer ne la réparerait jamais.
@@ -319,8 +318,8 @@ class Etat:
     abandonnee: bool
     """La tâche a renoncé, et ne réessaiera pas.
 
-    **Elle ne renonce que sur une faute de configuration** — une racine
-    illisible, aucun annuaire. Jamais sur une panne de réseau, quelle qu'en soit
+    **Elle ne renonce que sur une faute de configuration** — une
+    configuration TLS qui ne se monte pas, aucun annuaire. Jamais sur une panne de réseau, quelle qu'en soit
     la durée. C'est le seul état dont un humain doit être averti.
     """
 
@@ -379,12 +378,11 @@ class Client:
     def __init__(
         self,
         annuaires: Iterable[tuple[str, str]] = (),
-        racines: bytes | None = None,
         identite: tuple[str, bytes] | None = None,
     ) -> None:
         """Monte un client. **Il n'ouvre aucune connexion.**
 
-        `annuaires` est une suite de couples ``(adresse, nom)``. L'adresse est
+        `annuaires` est une suite de couples ``(adresse, n)``. L'adresse est
         LITTÉRALE — ``"203.0.113.7:6630"`` ou ``"[2001:db8::1]:6630"`` —, jamais
         un nom d'hôte : **la résolution vous appartient**, parce que vous avez
         déjà un résolveur, une politique de cache et des fils, et que vous en
@@ -392,12 +390,10 @@ class Client:
         fait très bien l'affaire, et un nom qui rend plusieurs adresses les rend
         toutes utilisables ici.
 
-        Le second membre est le nom qu'on EXIGE du certificat. Il n'est pas
-        déduit de l'adresse, et il ne peut pas l'être : le déduire reviendrait à
-        faire confiance à qui répond à cette adresse.
-
-        `racines` est le contenu d'un fichier PEM. **Il n'y a pas de repli sur le
-        magasin du système** : les annuaires sont signés par LEUR autorité.
+        Le second membre est l'identité ``n-…`` qu'on doit trouver au bout : la
+        clé du certificat que l'annuaire présente doit s'y déduire, et rien
+        d'autre ne le fait croire — ni autorité, ni nom (décision 58). ``asl
+        roots`` donne celle des racines.
 
         `identite` est le couple ``(machine, graine)`` rendu par `enroler`.
         """
@@ -422,10 +418,8 @@ class Client:
         self._brut = brut
 
         try:
-            for adresse, nom in annuaires:
-                self.ajouter_annuaire(adresse, nom)
-            if racines is not None:
-                self.poser_racines(racines)
+            for adresse, n in annuaires:
+                self.ajouter_annuaire(adresse, n)
             if identite is not None:
                 self.poser_identite(*identite)
         except BaseException:
@@ -438,27 +432,18 @@ class Client:
 
     # ── La configuration ────────────────────────────────────────────────────
 
-    def ajouter_annuaire(self, adresse: str, nom: str) -> None:
-        """Ajoute un annuaire à essayer. **Répétable, et l'ordre compte.**
+    def ajouter_annuaire(self, adresse: str, n: str) -> None:
+        """Ajoute un annuaire à essayer, par son identité ``n-…``. **Répétable,
+        et l'ordre compte.**
 
         L'IPv6 est essayé d'abord quel que soit l'ordre des appels ; à
         l'intérieur d'une famille, c'est cet ordre qui décide.
         """
         with self._verrou:
             _verifier(
-                self._lib.asl_client_annuaire(
-                    self._exige(), _octets(adresse), _octets(nom)
+                self._lib.asl_client_annuaire_identifie(
+                    self._exige(), _octets(adresse), _octets(n)
                 )
-            )
-
-    def poser_racines(self, pem: bytes) -> None:
-        """Pose les certificats d'autorité, en PEM."""
-        if not isinstance(pem, (bytes, bytearray)):
-            raise MauvaisArgument("les racines sont des octets, pas du texte")
-        tampon = (ctypes.c_uint8 * len(pem)).from_buffer_copy(pem)
-        with self._verrou:
-            _verifier(
-                self._lib.asl_client_racines(self._exige(), tampon, len(pem))
             )
 
     def poser_identite(self, machine: str, graine: bytes) -> None:

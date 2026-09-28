@@ -19,16 +19,16 @@
 
 mod banc;
 
-use asl_client_tokio::{Connexion, Faute};
+use asl_client_tokio::{Confiance, Connexion, Faute};
 use banc::{Echo, lever, materiel};
 use tokio::net::UdpSocket;
 
 #[tokio::test]
 async fn une_requete_traverse_la_socket_et_la_reponse_revient() {
-    let (_atelier, autorite, cert, cle) = materiel("bout-en-bout");
+    let (identite_attendue, cert, cle) = materiel("bout-en-bout");
     let (adresse, tache) = lever(cert, cle, Echo).await;
 
-    let mut connexion = Connexion::ouvrir(adresse, "localhost", &autorite, &|| [0x5A; 16])
+    let mut connexion = Connexion::ouvrir(adresse, "localhost", identite_attendue, &|| [0x5A; 16])
         .await
         .expect("la connexion s'ouvre");
 
@@ -55,15 +55,15 @@ async fn une_requete_traverse_la_socket_et_la_reponse_revient() {
 async fn deux_connexions_au_meme_annuaire_ont_deux_liaisons() {
     // **C'EST CE QUI FERME LE RELAIS**, et cela ne se voit que d'ici : une
     // empreinte de certificat aurait donné la même valeur aux deux.
-    let (_atelier, autorite, cert, cle) = materiel("deux-liaisons");
+    let (identite_attendue, cert, cle) = materiel("deux-liaisons");
     let (adresse, tache) = lever(cert.clone(), cle.clone(), Echo).await;
-    let une = Connexion::ouvrir(adresse, "localhost", &autorite, &|| [0x11; 16])
+    let une = Connexion::ouvrir(adresse, "localhost", identite_attendue, &|| [0x11; 16])
         .await
         .expect("la première s'ouvre");
     tache.abort();
 
     let (adresse, tache) = lever(cert, cle, Echo).await;
-    let autre = Connexion::ouvrir(adresse, "localhost", &autorite, &|| [0x22; 16])
+    let autre = Connexion::ouvrir(adresse, "localhost", identite_attendue, &|| [0x22; 16])
         .await
         .expect("la seconde s'ouvre");
     tache.abort();
@@ -80,28 +80,28 @@ async fn un_annuaire_qui_ne_repond_pas_rend_un_delai_et_non_une_panne() {
     // **CE N'EST PAS UNE FAUTE DU PAIR** : la connexion dit seulement qu'elle
     // n'a rien obtenu, et c'est à `asl_client::Reprise` d'en tirer une
     // conséquence — elle n'abandonne jamais.
-    let (_atelier, autorite, _cert, _cle) = materiel("muet");
+    let (identite_attendue, _cert, _cle) = materiel("muet");
     // Une socket qui écoute et ne répond à rien.
     let muet = UdpSocket::bind("127.0.0.1:0").await.expect("une socket");
     let adresse = muet.local_addr().expect("une adresse");
 
-    let issue = Connexion::ouvrir(adresse, "localhost", &autorite, &|| [0x33; 16])
+    let issue = Connexion::ouvrir(adresse, "localhost", identite_attendue, &|| [0x33; 16])
         .await
         .expect_err("personne ne répond");
     assert!(matches!(issue, Faute::Delai), "{issue}");
 }
 
 #[tokio::test]
-async fn une_racine_vide_se_refuse_avant_la_socket() {
+async fn sans_identite_attendue_le_refus_vient_avant_la_socket() {
     // Un client qui ne fait confiance à personne ne chiffrerait pas, il
     // accepterait n'importe qui. **Le refus vient avant l'ouverture.**
-    let issue = Connexion::ouvrir(
+    let issue = Connexion::ouvrir_confiance(
         "127.0.0.1:1".parse().expect("une adresse"),
         "localhost",
-        b"",
+        &Confiance::par_identites(&[]),
         &|| [0; 16],
     )
     .await
-    .expect_err("aucune racine");
+    .expect_err("aucune identité à croire");
     assert!(matches!(issue, Faute::Tls(_)), "{issue}");
 }

@@ -16,8 +16,8 @@ use asl_client_ffi::appareil::{
     asl_appareil_defi, asl_appareil_distante, asl_appareil_identifiant, asl_appareil_identite,
     asl_appareil_liaison, asl_appareil_libere, asl_appareil_message_pour_attestation,
     asl_appareil_message_pour_attestation_de_cle, asl_appareil_neuf, asl_appareil_nouvelle,
-    asl_appareil_nouvelles_ouvrir, asl_appareil_nouvelles_recues, asl_appareil_racines,
-    asl_appareil_rejoindre_atteste, asl_appareil_requete,
+    asl_appareil_nouvelles_ouvrir, asl_appareil_nouvelles_recues, asl_appareil_rejoindre_atteste,
+    asl_appareil_requete,
 };
 use asl_client_ffi::{
     ASL_ARGUMENT, ASL_CONFIGURATION, ASL_IDENTIFIANT_OCTETS, ASL_NON_CONNECTE, ASL_OK,
@@ -89,10 +89,6 @@ fn les_pointeurs_nuls_rendent_argument_et_ne_tuent_personne() {
                 c"[::1]:6630".as_ptr(),
                 c"n-0PWT8HZD80QMSPPDZ5CQXXYHQC".as_ptr()
             ),
-            ASL_ARGUMENT
-        );
-        assert_eq!(
-            asl_appareil_racines(ptr::null_mut(), [0].as_ptr(), 1),
             ASL_ARGUMENT
         );
         assert_eq!(
@@ -461,7 +457,7 @@ fn un_annuaire_par_son_identite_se_pose_sans_nom_ni_autorite() {
             asl_appareil_annuaire_identifie(brut, ptr::null(), c"n-x".as_ptr()),
             ASL_ARGUMENT
         );
-        // Posé par son identité, SANS racine PEM : c'est la clé qu'on croira.
+        // Posé par son identité : c'est la clé qu'on croira, et rien d'autre.
         // (La connexion elle-même est éprouvée sur un vrai banc,
         // `asl-client-tokio/tests/identite.rs`.)
         assert_eq!(
@@ -481,19 +477,11 @@ fn se_connecter_sans_annuaire_est_une_configuration_et_sans_reponse_une_injoigna
     let brut = appareil();
     unsafe {
         assert_eq!(asl_appareil_connecter(brut), ASL_CONFIGURATION);
-        // Un nom, et non une adresse : refusé à la pose.
-        assert_eq!(
-            asl_appareil_annuaire(brut, c"annuaire.example:6630".as_ptr(), c"x".as_ptr()),
-            ASL_ARGUMENT
-        );
-        assert_eq!(
-            asl_appareil_annuaire(brut, c"[::1]:6630".as_ptr(), c"".as_ptr()),
-            ASL_ARGUMENT
-        );
-        // Un annuaire posé sans racine : la configuration ne tient toujours pas.
+        // **UN ANNUAIRE PAR SON NOM NE SE CROIT PLUS** (décision 58, étape
+        // 5) : le symbole refuse à la pose, et rien n'est posé.
         assert_eq!(
             asl_appareil_annuaire(brut, c"127.0.0.1:9".as_ptr(), c"localhost".as_ptr()),
-            ASL_OK
+            ASL_CONFIGURATION
         );
         assert_eq!(asl_appareil_connecter(brut), ASL_CONFIGURATION);
         asl_appareil_libere(brut);

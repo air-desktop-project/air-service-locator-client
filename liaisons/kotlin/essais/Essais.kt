@@ -44,6 +44,9 @@ import io.github.airdesktopproject.asl.version
 import java.lang.foreign.MemorySegment
 import java.lang.invoke.MethodHandles
 import java.lang.invoke.MethodType
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicReference
@@ -73,11 +76,14 @@ private const val MACHINE = "m-0H248H248H248H248H248H248H"
 
 private fun identiteDEssai() = Identite(MACHINE, ByteArray(32) { it.toByte() })
 
-/** Un client dont la racine est illisible : de quoi atteindre `Configuration`. */
-private fun clientConfigure(avecIdentite: Boolean): Client =
+/** Une identité d'annuaire VALIDE, recopiée pour la même raison. */
+private const val ANNUAIRE = "n-0PWT8HZD80QMSPPDZ5CQXXYHQC"
+
+/** Un client qui vise cet annuaire — par défaut, un port où rien n'écoute —,
+ * sous son identité. */
+private fun clientConfigure(avecIdentite: Boolean, ou: String = "127.0.0.1:1"): Client =
     Client.ouvrir(
-        annuaires = listOf("127.0.0.1:1" to "localhost"),
-        racines = "pas un PEM".toByteArray(),
+        annuaires = listOf(ou to ANNUAIRE),
         identite = if (avecIdentite) identiteDEssai() else null,
     ).getOrThrow()
 
@@ -204,10 +210,11 @@ private fun chaqueCodeASaClasse() {
 private fun lesMessagesViennentDeLaBibliotheque() {
     // **DEUX LISTES DE MESSAGES FINIRAIENT PAR DIVERGER**, et c'est celle qu'on
     // oublie de corriger que l'utilisateur lirait.
-    val client = clientConfigure(true)
+    // Une identité, aucun annuaire : `ou` le dit sans rien joindre.
+    val client = Client.ouvrir(identite = identiteDEssai()).getOrThrow()
     client.use {
         val quoi = it.ou(MACHINE, "depot").exceptionOrNull()
-        verifie(quoi is Configuration, "une racine illisible est une configuration")
+        verifie(quoi is Configuration, "aucun annuaire est une configuration")
         verifie(
             quoi?.message?.isNotEmpty() == true,
             "le message vient de la bibliothèque native",
@@ -234,7 +241,7 @@ private fun uneAdresseIllisibleEstRefusee() {
         "2001:db8::1:6630", // sans crochets, c'est ambigu
         "",
     )) {
-        val issue = Client.ouvrir(annuaires = listOf(mauvaise to "localhost"))
+        val issue = Client.ouvrir(annuaires = listOf(mauvaise to ANNUAIRE))
         verifie(
             issue.exceptionOrNull() is MauvaisArgument,
             "`$mauvaise` doit être refusée : ${issue.exceptionOrNull()}",
@@ -242,10 +249,14 @@ private fun uneAdresseIllisibleEstRefusee() {
     }
     Client.ouvrir(
         annuaires = listOf(
-            "203.0.113.7:6630" to "nitrogen.example",
-            "[2001:db8::1]:6630" to "nitrogen.example",
+            "203.0.113.7:6630" to ANNUAIRE,
+            "[2001:db8::1]:6630" to ANNUAIRE,
         ),
     ).getOrThrow().use { verifie(it.ouvert, "les deux familles sont acceptées") }
+    // **LA FORME D'HIER EST RETIRÉE** (décision 58, étape 5) : un nom de
+    // certificat ne dit pas quelle clé croire.
+    val nomme = Client.ouvrir(annuaires = listOf("203.0.113.7:6630" to "nitrogen.example"))
+    verifie(nomme.exceptionOrNull() is MauvaisArgument, "un nom à la place de l'identité")
 }
 
 private fun unNulAuMilieuDUneChaineEstRefuse() {
@@ -253,7 +264,7 @@ private fun unNulAuMilieuDUneChaineEstRefuse() {
     // que celui qu'on croit lui avoir donné.
     Client.ouvrir().getOrThrow().use { client ->
         val tricherie = "127.0.0.1:1" + Char(0) + "et la suite"
-        val issue = client.ajouterAnnuaire(tricherie, "localhost")
+        val issue = client.ajouterAnnuaire(tricherie, ANNUAIRE)
         verifie(issue.exceptionOrNull() is MauvaisArgument, "un NUL doit être refusé")
     }
 }
@@ -316,30 +327,24 @@ private fun unClientNAnnonceQuUneFois() {
 
 private fun leFilNatifTourneSansQuePersonneLAttende() {
     // **C'EST L'ESSAI QUI COMPTE LE PLUS.** `annoncer` a rendu la main et
-    // l'appelant est parti ; si le fil natif ne tournait pas, `abandonnee` ne
-    // passerait jamais à vrai — et tout compilerait.
-    clientConfigure(true).use { client ->
-        verifie(client.annoncer("depot", listOf(Point(Protocole.TCP, 8080))).isSuccess, "annoncée")
-        var etat = client.etat().getOrThrow()
-        for (tour in 0 until 250) {
-            etat = client.etat().getOrThrow()
-            if (etat.abandonnee) break
-            Thread.sleep(20)
+    // l'appelant est parti ; si le fil natif ne tournait pas, le pair MUET ne
+    // recevrait jamais le premier paquet de la poignée de main — et tout
+    // compilerait. (Que l'identité survive à l'annonce est une affaire du côté
+    // Rust : `asl-client-ffi/tests/abi.rs` la tient, sur un banc.)
+    DatagramSocket(0, InetAddress.getLoopbackAddress()).use { muet ->
+        muet.soTimeout = 5_000
+        clientConfigure(true, "127.0.0.1:${muet.localPort}").use { client ->
+            verifie(client.annoncer("depot", listOf(Point(Protocole.TCP, 8080))).isSuccess, "annoncée")
+            val paquet = DatagramPacket(ByteArray(2_048), 2_048)
+            val recu = try {
+                muet.receive(paquet)
+                true
+            } catch (_: java.net.SocketTimeoutException) {
+                false
+            }
+            verifie(recu && paquet.length > 0, "le fil natif n'a pas tourné")
+            verifie(!client.etat().getOrThrow().attachee, "et rien n'est attaché")
         }
-        verifie(etat.abandonnee, "le fil natif n'a pas tourné")
-        verifie(!etat.attachee, "et rien n'est attaché")
-        verifieEgal(etat.attaches, 0L, "une racine illisible n'attache rien")
-    }
-}
-
-private fun lIdentiteSurvitALAnnonce() {
-    // L'annonce CONSOMME une identité côté Rust ; si le client la perdait, `ou`
-    // répondrait « aucune identité » à un daemon qui vient de s'annoncer.
-    clientConfigure(true).use { client ->
-        verifie(client.annoncer("depot", listOf(Point(Protocole.TCP, 8080))).isSuccess, "annoncée")
-        val quoi = client.ou(MACHINE, "depot").exceptionOrNull()
-        verifie(quoi !is PasDIdentite, "l'annonce a emporté l'identité")
-        verifie(quoi is Configuration, "la racine reste illisible : ${quoi?.javaClass}")
     }
 }
 
@@ -503,7 +508,6 @@ fun main() {
     uneAnnonceSansPointNAnnonceRien()
     unClientNAnnonceQuUneFois()
     leFilNatifTourneSansQuePersonneLAttende()
-    lIdentiteSurvitALAnnonce()
     fermerDeuxFoisNeFaitRienLaSeconde()
     useFermeMemeQuandLeBlocLeve()
     leNettoyageLibereUneFoisEtUneSeule()

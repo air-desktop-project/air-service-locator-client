@@ -32,15 +32,5 @@ tokio = { workspace = true, features = ["signal"] }
 # crates dans le verrou d'un dépôt dont `check-sans-c.sh` inspecte le graphe
 # construit à chaque passage ne se paierait pas. Voir `src/arguments.rs`.
 
-[dev-dependencies]
-# **POUR FABRIQUER UNE RACINE QUE `rustls` SAIT LIRE**, et rien d'autre. Sans
-# elle, l'essai qui doit obtenir le code `4` obtiendrait le code `2` — et
-# prouverait le contraire de ce qu'il cherche.
-#
-# Le certificat est fabriqué à l'essai plutôt que rangé dans le dépôt : un
-# certificat commité expire un jour, et l'essai se met alors à échouer pour une
-# raison qui n'a rien à voir avec ce qu'il éprouve.
-ams-quic-client.workspace = true
-
 [lints]
 workspace = true

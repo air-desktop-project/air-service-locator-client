@@ -7,8 +7,8 @@ port fixe.
 import io.github.airdesktopproject.asl.*
 
 Client.ouvrir(
-    annuaires = listOf("203.0.113.7:6630" to "nitrogen.example"),
-    racines = Files.readAllBytes(Path.of("/etc/asl/ca.pem")),
+    // L'adresse, et l'identité qu'on doit trouver au bout (`asl roots`).
+    annuaires = listOf("203.0.113.7:6630" to "n-0PWT8HZD80QMSPPDZ5CQXXYHQC"),
     identite = Identite(machine, graine),
 ).getOrThrow().use { client ->
     client.annoncer("depot", listOf(Point(Protocole.TCP, 8080))).getOrThrow()
@@ -91,7 +91,7 @@ Toutes les fautes descendent de `AslErreur`.
 | | |
 |---|---|
 | `MauvaisArgument` | Une adresse illisible, un port nul, une graine de mauvaise taille. |
-| `Configuration` | Il manque un annuaire ou une racine. **Réessayer ne réparerait rien.** |
+| `Configuration` | Il manque un annuaire, ou il a été posé par un nom, ce qui ne se croit plus. **Réessayer ne réparerait rien.** |
 | `Injoignable` | Personne n'a répondu. Un câble débranché. |
 | `Refuse` | L'annuaire a compris, et il a dit non. Un droit manquant. |
 | `PasDIdentite` | Cette machine n'est pas enrôlée. |

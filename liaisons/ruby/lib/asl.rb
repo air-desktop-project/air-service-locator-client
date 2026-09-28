@@ -9,8 +9,7 @@
 #   require "asl"
 #
 #   Asl::Client.ouvrir(
-#     annuaires: [["203.0.113.7:6630", "nitrogen.example"]],
-#     racines: File.binread("/etc/asl/ca.pem"),
+#     annuaires: [["203.0.113.7:6630", "n-0PWT8HZD80QMSPPDZ5CQXXYHQC"]],
 #     identite: [machine, graine]
 #   ) do |client|
 #     client.annoncer("depot", [Asl::Point.new(:tcp, 8080)])
@@ -71,7 +70,7 @@ module Asl
     def self.code = Abi::ARGUMENT
   end
 
-  # Il manque un annuaire, une racine, ou la racine ne se lit pas.
+  # Il manque un annuaire, ou il a été posé d'une façon qui ne se croit plus.
   #
   # **CE N'EST PAS UNE PANNE**, et c'est pourquoi elle est distincte
   # d'{Injoignable} : réessayer ne la réparerait jamais.
@@ -198,8 +197,8 @@ module Asl
 
     # La tâche a renoncé, et ne réessaiera pas.
     #
-    # **Elle ne renonce que sur une faute de configuration** — une racine
-    # illisible, aucun annuaire. Jamais sur une panne de réseau, quelle qu'en soit
+    # **Elle ne renonce que sur une faute de configuration** — une
+    # configuration TLS qui ne se monte pas, aucun annuaire. Jamais sur une panne de réseau, quelle qu'en soit
     # la durée. C'est le seul état dont un humain doit être averti.
     def abandonnee? = abandonnee
   end
@@ -296,22 +295,20 @@ module Asl
 
     # Monte un client. **Il n'ouvre aucune connexion.**
     #
-    # `annuaires` est une liste de couples `[adresse, nom]`. L'adresse est
+    # `annuaires` est une liste de couples `[adresse, n]`. L'adresse est
     # LITTÉRALE — `"203.0.113.7:6630"` ou `"[2001:db8::1]:6630"` —, jamais un nom
     # d'hôte : **la résolution appartient à l'appelant**, parce qu'il a déjà un
     # résolveur, une politique de cache et des fils, et que lui en imposer un
     # autre serait décider à sa place. `Addrinfo.getaddrinfo` fait l'affaire, et
     # un nom qui rend plusieurs adresses les rend toutes utilisables ici.
     #
-    # Le second membre est le nom qu'on EXIGE du certificat. Il n'est pas déduit
-    # de l'adresse, et il ne peut pas l'être : le déduire reviendrait à faire
-    # confiance à qui répond à cette adresse.
-    #
-    # `racines` est le contenu d'un fichier PEM. **Il n'y a pas de repli sur le
-    # magasin du système** : les annuaires sont signés par LEUR autorité.
+    # Le second membre est l'identité `n-…` qu'on doit trouver au bout : la clé
+    # du certificat que l'annuaire présente doit s'y déduire, et rien d'autre ne
+    # le fait croire — ni autorité, ni nom (décision 58). `asl roots` donne celle
+    # des racines.
     #
     # `identite` est le couple `[machine, graine]` rendu par {#enroler}.
-    def initialize(annuaires: [], racines: nil, identite: nil)
+    def initialize(annuaires: [], identite: nil)
       @fonctions = Asl.fonctions
       # **UN SEUL VERROU, ET IL SÉRIALISE TOUT.**
       #
@@ -339,8 +336,7 @@ module Asl
       )
 
       begin
-        annuaires.each { |adresse, nom| ajouter_annuaire(adresse, nom) }
-        poser_racines(racines) unless racines.nil?
+        annuaires.each { |adresse, n| ajouter_annuaire(adresse, n) }
         poser_identite(*identite) unless identite.nil?
       rescue Exception # rubocop:disable Lint/RescueException
         # **CE QUI EST OUVERT SE FERME, MÊME QUAND LE CONSTRUCTEUR ÉCHOUE.**
@@ -373,20 +369,13 @@ module Asl
 
     # ── La configuration ──────────────────────────────────────────────────
 
-    # Ajoute un annuaire à essayer. **Répétable, et l'ordre compte.**
+    # Ajoute un annuaire à essayer, par son identité `n-…`. **Répétable, et
+    # l'ordre compte.**
     #
     # L'IPv6 est essayé d'abord quel que soit l'ordre des appels ; à l'intérieur
     # d'une famille, c'est cet ordre qui décide.
-    def ajouter_annuaire(adresse, nom)
-      appeler(:asl_client_annuaire, Asl.chaine(adresse), Asl.chaine(nom))
-    end
-
-    # Pose les certificats d'autorité, en PEM.
-    def poser_racines(pem)
-      raise MauvaisArgument, "les racines sont des octets" unless pem.is_a?(String)
-
-      octets = pem.dup.force_encoding(Encoding::BINARY)
-      appeler(:asl_client_racines, octets, octets.bytesize)
+    def ajouter_annuaire(adresse, n)
+      appeler(:asl_client_annuaire_identifie, Asl.chaine(adresse), Asl.chaine(n))
     end
 
     # Installe l'identité de cette machine.

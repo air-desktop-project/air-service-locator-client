@@ -6,11 +6,9 @@ port fixe.
 ```python
 import asl
 
-racines = open("/etc/asl/ca.pem", "rb").read()
-
+# L'adresse, et l'identité qu'on doit trouver au bout (`asl roots`).
 with asl.Client(
-    annuaires=[("203.0.113.7:6630", "nitrogen.example")],
-    racines=racines,
+    annuaires=[("203.0.113.7:6630", "n-0PWT8HZD80QMSPPDZ5CQXXYHQC")],
     identite=(machine, graine),
 ) as client:
     client.annoncer("depot", [asl.Point(asl.Protocole.TCP, 8080)])
@@ -88,7 +86,7 @@ les classes filles distinguent ce qui se corrige différemment :
 | | |
 |---|---|
 | `MauvaisArgument` | Une adresse illisible, un port nul, une graine de mauvaise taille. |
-| `Configuration` | Il manque un annuaire ou une racine. **Réessayer ne réparerait rien.** |
+| `Configuration` | Il manque un annuaire, ou il a été posé par un nom, ce qui ne se croit plus. **Réessayer ne réparerait rien.** |
 | `Injoignable` | Personne n'a répondu. Un câble débranché. |
 | `Refuse` | L'annuaire a compris, et il a dit non. Un droit manquant. |
 | `PasDIdentite` | Cette machine n'est pas enrôlée. |

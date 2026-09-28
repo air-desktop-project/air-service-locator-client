@@ -5,8 +5,8 @@
 //!
 //! Qu'un annuaire qui ne présente QUE son certificat d'identité — auto-signé
 //! par sa clé, sans autorité ni nom — est cru par sa clé et par elle seule ;
-//! que la forme d'hier (une chaîne sous `--roots`, au nom exigé) l'est encore
-//! le temps de la bascule ; que la liste des racines se lit et se juge ; et
+//! que la forme d'hier (une chaîne sous une autorité, au nom exigé) ne l'est
+//! plus (décision 58, étape 5) ; que la liste des racines se lit et se juge ; et
 //! qu'un `421` se suit par l'identité qu'il nomme.
 //!
 //! **Aucun nom DNS n'est résolu ici** (C20) : les bancs écoutent sur
@@ -26,58 +26,12 @@ use asl_client_tokio::{
     Annuaire, Attache, Confiance, Connexion, Faute, Forme, Reglages, apprendre_les_racines,
 };
 use asl_id::{Genre, Identifiant};
-use banc::{FauxAnnuaire, lever, materiel};
+use banc::{FauxAnnuaire, identite_de, lever, materiel_d_identite};
 
 const PLAFOND_MS: u64 = 15_000;
 
 fn alea() -> [u8; 16] {
     [0x5A; 16]
-}
-
-/// Encode en PEM — ce que `ams_tls::quic_server_config` lit.
-fn pem(etiquette: &str, der: &[u8]) -> Vec<u8> {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    // Sans arithmétique libre : trois octets donnent vingt-quatre bits, lus
-    // par quatre décalages fixes.
-    const DECALAGES_OCTETS: [u32; 3] = [16, 8, 0];
-    const DECALAGES_SIGNES: [u32; 4] = [18, 12, 6, 0];
-    let mut b64 = Vec::new();
-    for bloc in der.chunks(3) {
-        let n = bloc
-            .iter()
-            .zip(DECALAGES_OCTETS)
-            .fold(0_u32, |acc, (&o, decalage)| {
-                acc | (u32::from(o) << decalage)
-            });
-        for (i, decalage) in DECALAGES_SIGNES.into_iter().enumerate() {
-            if i <= bloc.len() {
-                let rang = usize::try_from((n >> decalage) & 0x3f).expect("six bits");
-                b64.push(TABLE[rang]);
-            } else {
-                b64.push(b'=');
-            }
-        }
-    }
-    let mut sortie = format!("-----BEGIN {etiquette}-----\n").into_bytes();
-    for ligne in b64.chunks(64) {
-        sortie.extend_from_slice(ligne);
-        sortie.push(b'\n');
-    }
-    sortie.extend_from_slice(format!("-----END {etiquette}-----\n").as_bytes());
-    sortie
-}
-
-/// Le certificat d'identité et sa clé, en PEM : ce que sert un annuaire sous
-/// la forme nouvelle.
-fn materiel_d_identite(cle: &CleSecrete) -> (Vec<u8>, Vec<u8>) {
-    (
-        pem("CERTIFICATE", &asl_cle::certificat_d_identite(cle)),
-        pem("PRIVATE KEY", &asl_cle::cle_pkcs8(cle)),
-    )
-}
-
-fn identite_de(cle: &CleSecrete) -> Identifiant {
-    asl_cle::identifiant_de_racine(&cle.publique())
 }
 
 /// Un annuaire qui rend une liste de racines, et fait le faux annuaire pour
@@ -151,38 +105,21 @@ async fn une_autre_cle_que_celle_attendue_est_refusee() {
 }
 
 #[tokio::test]
-async fn pendant_la_bascule_les_deux_formes_sont_crues_et_se_disent() {
-    // La forme nouvelle, avec une autorité d'hier configurée aussi : le nom
-    // part dans le SNI, l'annuaire ne sert que son identité, on la croit.
+async fn la_chaine_d_hier_est_refusee_meme_au_bon_nom() {
+    // **LA PORTE EST FERMÉE** (décision 58, étape 5) : une chaîne signée par
+    // une autorité, au nom qu'on met dans `:authority`, ne porte pas la clé
+    // attendue — et il n'y a plus d'autorité pour la croire à sa place.
     let cle = CleSecrete::depuis_entropie([0x24; 32]);
-    let (certificat, secrete) = materiel_d_identite(&cle);
-    let (ecoute, tache) = lever(certificat, secrete, FauxAnnuaire).await;
-    let (_atelier, autorite, chaine, cle_chaine) = materiel("bascule-identite");
-    let confiance = Confiance::par_identites(&[identite_de(&cle)]).avec_autorite(&autorite);
-    let mut connexion = Connexion::ouvrir_confiance(ecoute, "localhost", &confiance, &alea)
-        .await
-        .expect("son identité passe, autorité ou non");
-    assert_eq!(connexion.forme(), Some(Forme::Identite));
-    let _ = connexion.fermer().await;
-    tache.abort();
-
-    // La forme d'hier : une chaîne sous l'autorité, au nom exigé.
-    let (ecoute, tache) = lever(chaine.clone(), cle_chaine.clone(), FauxAnnuaire).await;
-    let mut connexion = Connexion::ouvrir_confiance(ecoute, "localhost", &confiance, &alea)
-        .await
-        .expect("la chaîne d'hier passe le temps de la bascule");
-    assert_eq!(connexion.forme(), Some(Forme::Autorite));
-    let _ = connexion.fermer().await;
-    tache.abort();
-
-    // Sans autorité, la chaîne d'hier ne vaut plus rien : elle ne porte pas
-    // la clé attendue.
+    let atelier = ams_quic_client::atelier("chaine-d-hier");
+    let (_autorite, chaine, cle_chaine) =
+        ams_quic_client::materiel(atelier.chemin()).expect("`openssl` est requis pour cet essai");
     let (ecoute, tache) = lever(chaine, cle_chaine, FauxAnnuaire).await;
-    let seule = Confiance::par_identites(&[identite_de(&cle)]);
+    let confiance = Confiance::par_identites(&[identite_de(&cle)]);
     assert!(
-        Connexion::ouvrir_confiance(ecoute, "localhost", &seule, &alea)
+        Connexion::ouvrir_confiance(ecoute, "localhost", &confiance, &alea)
             .await
-            .is_err()
+            .is_err(),
+        "une chaîne d'autorité ne vaut plus rien"
     );
     tache.abort();
 }
@@ -298,9 +235,8 @@ async fn un_renvoi_se_suit_par_l_identite_qu_il_nomme_sans_autorite() {
         vec![Annuaire {
             adresse: ecoute_r,
             nom: "127.0.0.1".to_owned(),
-            identite: Some(identite_de(&racine)),
+            identite: identite_de(&racine),
         }],
-        Vec::new(),
         PLAFOND_MS,
     )
     .expect("la configuration est bonne");
@@ -365,9 +301,8 @@ async fn suivre_la_paire(
         vec![Annuaire {
             adresse: ecoute_r,
             nom: "127.0.0.1".to_owned(),
-            identite: Some(identite_de(&racine)),
+            identite: identite_de(&racine),
         }],
-        Vec::new(),
         PLAFOND_MS,
     )
     .expect("la configuration est bonne");

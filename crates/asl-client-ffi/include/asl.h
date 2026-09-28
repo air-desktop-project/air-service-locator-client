@@ -169,41 +169,28 @@ const char *asl_faute_texte(int32_t code);
  * pas empêcher un daemon de démarrer. Se libère par asl_client_libere. */
 int32_t asl_client_neuf(asl_client **sortie);
 
-/* Ajoute un annuaire. Répétable.
+/* Un annuaire par son NOM — CE QUI NE SE CROIT PLUS : rend toujours
+ * ASL_CONFIGURATION (ASL_ARGUMENT pour un client nul).
  *
- * `adresse` est LITTÉRALE — « 203.0.113.7:6630 » ou « [2001:db8::1]:6630 » —,
- * jamais un nom : la résolution appartient à l'appelant, qui a déjà son
- * résolveur, sa politique de cache et ses fils. L'utilitaire `asl` fait le sien
- * avec getaddrinfo.
- *
- * `nom` est celui qu'on EXIGE du certificat. Il n'est pas déduit de l'adresse,
- * et il ne peut pas l'être : le déduire reviendrait à faire confiance à qui
- * répond à cette adresse, ce que le certificat existe pour éviter.
- *
- * L'IPv6 est essayé d'abord quel que soit l'ordre des appels ; à l'intérieur
- * d'une famille, c'est cet ordre qui décide.
+ * Un annuaire posé ainsi n'était cru que par la forme d'hier, une chaîne
+ * signée par l'autorité que posait asl_client_racines. Cette forme est retirée
+ * (décision 58, étape 5 ; 0.19.0), et asl_client_racines avec elle. Le symbole
+ * reste tant que des applications le lient ; asl_client_annuaire_identifie le
+ * remplace.
  */
 int32_t asl_client_annuaire(asl_client *client, const char *adresse, const char *nom);
 
-/* Un annuaire par son IDENTITÉ (décisions 58 et 59), le pendant pour une
- * MACHINE d'asl_appareil_annuaire_identifie : un locateur — une adresse
- * littérale, "[2001:db8::1]:6630" ou "192.0.2.1:6630" — et l'identifiant
- * "n-…" qu'on doit trouver au bout. L'annuaire présente un certificat
- * auto-signé par sa clé d'identité ; on le croit si cette clé se déduit en
- * `n`. Aucune autorité requise ; une posée par asl_client_racines est crue
- * AUSSI, sur le même client, le temps de la bascule. Aucun nom n'est
- * résolu : l'appelant passe des adresses. ASL_ARGUMENT pour un locateur ou
- * un `n` de travers. */
+/* Ajoute un annuaire par son IDENTITÉ (décisions 58 et 59). Répétable, et
+ * c'est la seule façon d'en poser un : un locateur — une adresse LITTÉRALE,
+ * "[2001:db8::1]:6630" ou "192.0.2.1:6630", jamais un nom : la résolution
+ * appartient à l'appelant — et l'identifiant "n-…" qu'on doit trouver au bout.
+ * L'annuaire présente un certificat auto-signé par sa clé d'identité ; on le
+ * croit si cette clé se déduit en `n`, et par rien d'autre. L'IPv6 est essayé
+ * d'abord quel que soit l'ordre des appels ; à l'intérieur d'une famille,
+ * c'est cet ordre qui décide. ASL_ARGUMENT pour un locateur ou un `n` de
+ * travers. */
 int32_t asl_client_annuaire_identifie(asl_client *client, const char *locateur,
                                       const char *n);
-
-/* Pose les certificats d'autorité, en PEM.
- *
- * IL N'Y A PAS DE REPLI SUR LE MAGASIN DU SYSTÈME : les annuaires racines sont
- * signés par LEUR autorité, et se rabattre en silence sur les centaines de
- * racines d'un système ferait accepter un certificat qu'aucune n'aurait émis.
- */
-int32_t asl_client_racines(asl_client *client, const uint8_t *pem, size_t taille);
 
 /* Installe l'identité de cette machine : son identifiant en texte, et les
  * trente-deux octets dont la clé se dérive — ceux qu'asl_enroler a rendus.
@@ -359,21 +346,20 @@ typedef int32_t (*asl_signataire)(void *contexte, const uint8_t *message,
 /* Crée un appareil. N'ouvre aucune connexion. Se libère par asl_appareil_libere. */
 int32_t asl_appareil_neuf(asl_appareil **sortie);
 
-/* Un annuaire, comme asl_client_annuaire : adresse littérale, nom du certificat. */
+/* Un annuaire par son NOM, comme asl_client_annuaire : CE QUI NE SE CROIT
+ * PLUS — rend toujours ASL_CONFIGURATION. asl_appareil_racines est retirée
+ * (0.19.0) ; asl_appareil_annuaire_identifie remplace les deux. */
 int32_t asl_appareil_annuaire(asl_appareil *appareil, const char *adresse, const char *nom);
 
 /* Un annuaire par son IDENTITÉ (décision 58) : un locateur — une adresse
  * littérale, "[2001:db8::1]:6630" ou "192.0.2.1:6630" — et l'identifiant
  * "n-…" qu'on doit trouver au bout. L'annuaire présente un certificat
  * auto-signé par sa clé d'identité ; on le croit si cette clé se déduit en
- * `n`. Aucune autorité requise ; une posée par asl_appareil_racines est crue
- * AUSSI, le temps de la bascule. Aucun nom n'est résolu : l'appelant passe
- * des adresses. ASL_ARGUMENT pour un locateur ou un `n` de travers. */
+ * `n`, et par rien d'autre. Aucun nom n'est résolu : l'appelant passe des
+ * adresses. ASL_ARGUMENT pour un locateur ou un `n` de travers. */
 int32_t asl_appareil_annuaire_identifie(asl_appareil *appareil, const char *locateur,
                                         const char *n);
 
-/* Les racines, comme asl_client_racines : PEM, et aucun repli sur le système. */
-int32_t asl_appareil_racines(asl_appareil *appareil, const uint8_t *pem, size_t taille);
 
 /* La clé publique de cet appareil (33 octets, VÉRIFIÉE sur la courbe) et la
  * fonction qui signe avec. `contexte` est rendu tel quel au rappel. */
@@ -512,8 +498,8 @@ int32_t asl_appareil_nouvelle(const asl_appareil *appareil, uint32_t attente_ms,
 int32_t asl_appareil_identifiant(const asl_appareil *appareil, char sortie[ASL_IDENTIFIANT_OCTETS]);
 
 /* L'adresse de l'annuaire que la connexion tenue a joint — `[2001:db8::1]:6630`
- * ou `192.0.2.1:6630`, NUL compris. Sous un nom qui rend plusieurs racines,
- * c'est ce qui dit laquelle a répondu : la tournée garde la première qui
+ * ou `192.0.2.1:6630`, NUL compris. Avec plusieurs annuaires posés,
+ * c'est ce qui dit lequel a répondu : la tournée garde la première qui
  * répond, sans le dire. ASL_NON_CONNECTE sans connexion vivante. Ne fait que
  * lire le handle : peut tourner pendant asl_appareil_nouvelle. */
 int32_t asl_appareil_distante(const asl_appareil *appareil, char sortie[ASL_ADRESSE_OCTETS]);

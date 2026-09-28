@@ -7,8 +7,8 @@
 # `scripts/check-abi.sh` compare cette liste aux symboles RÉELLEMENT exportés par
 # `libasl_client_ffi.so`, ET aux fonctions déclarées dans `include/asl.h`. Un
 # ajout est libre mais doit être inscrit ici dans le même commit ; UN RETRAIT EST
-# UNE RUPTURE MAJEURE et appartient à une version majeure, avec sa raison dans le
-# message de commit.
+# UNE RUPTURE, avec sa raison dans le message de commit et une ligne ici : un cran
+# majeur à partir de 1.0, un cran mineur tant qu'on est en 0.x (semver §4).
 #
 # Une ligne par symbole. Les lignes vides et celles commençant par `#` sont
 # ignorées.
@@ -21,7 +21,9 @@ asl_faute_texte
 asl_client_neuf
 asl_client_annuaire
 asl_client_annuaire_identifie
-asl_client_racines
+# `asl_client_racines` — RETIRÉE en 0.19.0 (décision 58, étape 5) : la forme
+# d'hier, une chaîne sous une autorité PEM, n'est plus crue. En 0.x, un
+# retrait se paie d'un cran MINEUR.
 asl_client_identite
 asl_client_libere
 
@@ -43,7 +45,7 @@ asl_derniere_poussee
 asl_appareil_neuf
 asl_appareil_annuaire
 asl_appareil_annuaire_identifie
-asl_appareil_racines
+# `asl_appareil_racines` — RETIRÉE en 0.19.0, pour la même raison.
 asl_appareil_cle
 asl_appareil_identite
 asl_appareil_libere

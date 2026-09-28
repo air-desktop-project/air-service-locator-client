@@ -240,7 +240,6 @@ impl Signataire {
 pub struct AslAppareil {
     moteur: tokio::runtime::Runtime,
     annuaires: Vec<Annuaire>,
-    racines: Vec<u8>,
     signataire: Option<Signataire>,
     /// L'identifiant de cet appareil, une fois enrôlé — ce qu'il signe à chaque
     /// connexion. Absent tant que le compte n'est pas créé.
@@ -253,8 +252,7 @@ pub struct AslAppareil {
 
 impl AslAppareil {
     fn reglages(&self) -> Result<Reglages, i32> {
-        Reglages::nouveaux(self.annuaires.clone(), self.racines.clone(), PLAFOND_MS)
-            .map_err(|_| ASL_CONFIGURATION)
+        Reglages::nouveaux(self.annuaires.clone(), PLAFOND_MS).map_err(|_| ASL_CONFIGURATION)
     }
 
     fn signataire(&self) -> Result<&Signataire, i32> {
@@ -293,7 +291,6 @@ pub unsafe extern "C" fn asl_appareil_neuf(sortie: *mut *mut AslAppareil) -> i32
         let appareil = Box::new(AslAppareil {
             moteur,
             annuaires: Vec::new(),
-            racines: Vec::new(),
             signataire: None,
             identite: None,
             tenue: None,
@@ -306,42 +303,31 @@ pub unsafe extern "C" fn asl_appareil_neuf(sortie: *mut *mut AslAppareil) -> i32
     })
 }
 
-/// Ajoute un annuaire — mêmes règles que `asl_client_annuaire` : une adresse
-/// littérale, un nom exigé du certificat, IPv6 d'abord.
+/// Ajoute un annuaire par son NOM — **ce qui ne se croit plus** : rend
+/// toujours [`ASL_CONFIGURATION`], comme `asl_client_annuaire`.
+///
+/// # RETIRÉE EN SUBSTANCE (décision 58, étape 5)
+///
+/// Un annuaire posé ainsi n'était cru que par la forme d'hier, l'autorité
+/// que posait `asl_appareil_racines` (retirée). **Le symbole reste** tant
+/// qu'une application le lie ; il refuse tout de suite, plutôt que de laisser
+/// la poignée de main échouer sans dire pourquoi.
+/// [`asl_appareil_annuaire_identifie`] le remplace.
 ///
 /// # Safety
 ///
-/// `appareil` vient de [`asl_appareil_neuf`]. `adresse` et `nom` sont des
-/// chaînes C valides.
+/// `appareil` vient de [`asl_appareil_neuf`], ou est nul.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn asl_appareil_annuaire(
     appareil: *mut AslAppareil,
-    adresse: *const c_char,
-    nom: *const c_char,
+    _adresse: *const c_char,
+    _nom: *const c_char,
 ) -> i32 {
-    protege(|| {
-        // SAFETY : contrat de la fonction.
-        let Some(appareil) = (unsafe { appareil.as_mut() }) else {
-            return ASL_ARGUMENT;
-        };
-        // SAFETY : contrat de la fonction.
-        let (Some(adresse), Some(nom)) = (unsafe { chaine(adresse) }, unsafe { chaine(nom) })
-        else {
-            return ASL_ARGUMENT;
-        };
-        let Ok(adresse) = adresse.parse() else {
-            return ASL_ARGUMENT;
-        };
-        if nom.is_empty() {
-            return ASL_ARGUMENT;
-        }
-        appareil.annuaires.push(Annuaire {
-            adresse,
-            nom: nom.to_owned(),
-            identite: None,
-        });
-        ASL_OK
-    })
+    if appareil.is_null() {
+        ASL_ARGUMENT
+    } else {
+        ASL_CONFIGURATION
+    }
 }
 
 /// Ajoute un annuaire **par son identité** (`protocole.md` §0, décision 58) :
@@ -350,8 +336,8 @@ pub unsafe extern "C" fn asl_appareil_annuaire(
 ///
 /// **LA CLÉ EST CE QU'ON CROIT, L'ADRESSE N'EST QUE LE CHEMIN** : l'annuaire
 /// présente un certificat auto-signé par sa clé d'identité, et on l'accepte si
-/// cette clé se déduit en `n`. Aucune autorité n'est requise ; une posée par
-/// [`asl_appareil_racines`] est crue AUSSI, le temps de la bascule.
+/// cette clé se déduit en `n`, et par rien d'autre — c'est la seule façon de
+/// poser un annuaire depuis la décision 58, étape 5.
 ///
 /// **Aucun nom n'est résolu** (C20) : un nom se résout chez l'appelant, qui
 /// passe ensuite chacune de ses adresses.
@@ -384,36 +370,8 @@ pub unsafe extern "C" fn asl_appareil_annuaire_identifie(
         appareil.annuaires.push(Annuaire {
             adresse,
             nom: adresse.ip().to_string(),
-            identite: Some(identite),
+            identite,
         });
-        ASL_OK
-    })
-}
-
-/// Pose les certificats d'autorité, en PEM — mêmes règles que
-/// `asl_client_racines` : aucun repli sur le magasin du système.
-///
-/// # Safety
-///
-/// `appareil` vient de [`asl_appareil_neuf`] ; `pem` vise `taille` octets
-/// lisibles.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn asl_appareil_racines(
-    appareil: *mut AslAppareil,
-    pem: *const u8,
-    taille: usize,
-) -> i32 {
-    protege(|| {
-        // SAFETY : contrat de la fonction.
-        let Some(appareil) = (unsafe { appareil.as_mut() }) else {
-            return ASL_ARGUMENT;
-        };
-        if pem.is_null() || taille == 0 {
-            return ASL_ARGUMENT;
-        }
-        // SAFETY : contrat de la fonction.
-        let octets = unsafe { core::slice::from_raw_parts(pem, taille) };
-        appareil.racines.extend_from_slice(octets);
         ASL_OK
     })
 }
@@ -1418,10 +1376,10 @@ pub unsafe extern "C" fn asl_appareil_identifiant(
 ///
 /// # POURQUOI CE VERBE
 ///
-/// Un annuaire posé par un nom qui rend plusieurs racines — l'alias des deux —
-/// est joint par une tournée qui garde la première adresse qui répond, et ne
-/// dit pas laquelle. L'application le demande ici, pour le journaliser ou
-/// l'afficher : c'est l'adresse, pas le nom — le nom, c'est elle qui l'a posé.
+/// Plusieurs annuaires posés — chaque locateur des deux racines — sont joints
+/// par une tournée qui garde la première adresse qui répond, et ne dit pas
+/// laquelle. L'application le demande ici, pour le journaliser ou
+/// l'afficher.
 ///
 /// `ASL_NON_CONNECTE` sans connexion vivante. **Ne fait que LIRE le handle** :
 /// il peut tourner pendant une attente de [`asl_appareil_nouvelle`] (voir

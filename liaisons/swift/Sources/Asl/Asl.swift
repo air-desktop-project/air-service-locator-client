@@ -5,8 +5,7 @@
 // daemon ANNONCE le port que le système lui a donné, et ses clients le DEMANDENT.
 //
 //     let client = try Client(
-//         annuaires: [("203.0.113.7:6630", "nitrogen.example")],
-//         racines: pem,
+//         annuaires: [("203.0.113.7:6630", "n-0PWT8HZD80QMSPPDZ5CQXXYHQC")],
 //         identite: identite)
 //     try client.annoncer(service: "depot", points: [Point(.tcp, 8080)])
 //     servirPourToujours()          // l'annonce se tient toute seule
@@ -67,7 +66,8 @@ import CAsl
 public enum Faute: Int32, Error, Sendable {
   /// Une adresse illisible, un port nul, une graine de mauvaise taille.
   case argument = -1
-  /// Il manque un annuaire ou une racine. **Réessayer ne réparerait rien.**
+  /// Il manque un annuaire, ou il a été posé d'une façon qui ne se croit plus.
+  /// **Réessayer ne réparerait rien.**
   case configuration = -2
   /// Personne n'a répondu.
   case injoignable = -3
@@ -340,22 +340,18 @@ public final class Client {
   /// Monte un client. **Il n'ouvre aucune connexion** : un annuaire injoignable
   /// ne doit pas empêcher un daemon de démarrer.
   ///
-  /// `annuaires` est une liste de couples `(adresse, nom)`. L'adresse est
+  /// `annuaires` est une liste de couples `(adresse, n)`. L'adresse est
   /// LITTÉRALE — `"203.0.113.7:6630"` ou `"[2001:db8::1]:6630"` —, jamais un nom
   /// d'hôte : **la résolution vous appartient**, parce que vous avez déjà un
   /// résolveur, une politique de cache et des fils.
   ///
-  /// Le second membre est le nom qu'on EXIGE du certificat. Il n'est pas déduit
-  /// de l'adresse : le déduire reviendrait à faire confiance à qui répond à
-  /// cette adresse.
-  ///
-  /// `racines` est le contenu d'un fichier PEM. **Il n'y a pas de repli sur le
-  /// magasin du système** : les annuaires sont signés par LEUR autorité.
+  /// Le second membre est l'identité `n-…` qu'on doit trouver au bout : la clé
+  /// du certificat que l'annuaire présente doit s'y déduire, et rien d'autre ne
+  /// le fait croire — ni autorité, ni nom (décision 58).
   ///
   /// - Throws: `Faute`.
   public init(
     annuaires: [(String, String)] = [],
-    racines: [UInt8]? = nil,
     identite: Identite? = nil
   ) throws {
     var neuf: OpaquePointer?
@@ -366,10 +362,9 @@ public final class Client {
     // Un `init` qui lève n'appelle PAS `deinit` : sans ce `do`, une adresse
     // mal écrite laisserait un objet natif que plus rien ne référence.
     do {
-      for (adresse, nom) in annuaires {
-        try ajouterAnnuaire(adresse, nom: nom)
+      for (adresse, n) in annuaires {
+        try ajouterAnnuaire(adresse, n: n)
       }
-      if let racines { try poserRacines(racines) }
       if let identite { try poserIdentite(identite) }
     } catch {
       fermer()
@@ -398,30 +393,20 @@ public final class Client {
 
   // ── La configuration ────────────────────────────────────────────────────
 
-  /// Ajoute un annuaire à essayer. **Répétable, et l'ordre compte.**
+  /// Ajoute un annuaire à essayer, par son identité `n-…`. **Répétable, et
+  /// l'ordre compte.**
   ///
   /// L'IPv6 est essayé d'abord quel que soit l'ordre des appels ; à l'intérieur
   /// d'une famille, c'est cet ordre qui décide.
   ///
   /// - Throws: `Faute`.
-  public func ajouterAnnuaire(_ adresse: String, nom: String) throws {
+  public func ajouterAnnuaire(_ adresse: String, n: String) throws {
     let vivant = try exige()
     try Self.verifierChaine(adresse)
-    try Self.verifierChaine(nom)
+    try Self.verifierChaine(n)
     try Faute.verifier(
       adresse.withCString { a in
-        nom.withCString { n in asl_client_annuaire(vivant, a, n) }
-      })
-  }
-
-  /// Pose les certificats d'autorité, en PEM.
-  ///
-  /// - Throws: `Faute`.
-  public func poserRacines(_ pem: [UInt8]) throws {
-    let vivant = try exige()
-    try Faute.verifier(
-      pem.withUnsafeBufferPointer { tampon in
-        asl_client_racines(vivant, tampon.baseAddress, tampon.count)
+        n.withCString { identite in asl_client_annuaire_identifie(vivant, a, identite) }
       })
   }
 

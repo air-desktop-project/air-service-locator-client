@@ -7,8 +7,8 @@ port fixe.
 require "asl"
 
 Asl::Client.ouvrir(
-  annuaires: [["203.0.113.7:6630", "nitrogen.example"]],
-  racines: File.binread("/etc/asl/ca.pem"),
+  # L'adresse, et l'identité qu'on doit trouver au bout (`asl roots`).
+  annuaires: [["203.0.113.7:6630", "n-0PWT8HZD80QMSPPDZ5CQXXYHQC"]],
   identite: [machine, graine]
 ) do |client|
   client.annoncer("depot", [Asl::Point.new(:tcp, 8080)])
@@ -107,7 +107,7 @@ attraper toutes.
 | | |
 |---|---|
 | `Asl::MauvaisArgument` | Une adresse illisible, un port nul, une graine de mauvaise taille. |
-| `Asl::Configuration` | Il manque un annuaire ou une racine. **Réessayer ne réparerait rien.** |
+| `Asl::Configuration` | Il manque un annuaire, ou il a été posé par un nom, ce qui ne se croit plus. **Réessayer ne réparerait rien.** |
 | `Asl::Injoignable` | Personne n'a répondu. Un câble débranché. |
 | `Asl::Refuse` | L'annuaire a compris, et il a dit non. Un droit manquant. |
 | `Asl::PasDIdentite` | Cette machine n'est pas enrôlée. |

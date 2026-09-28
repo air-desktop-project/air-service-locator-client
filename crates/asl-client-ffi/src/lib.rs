@@ -238,7 +238,6 @@ const _: () = assert!(core::mem::size_of::<AslEtat>() == 24);
 pub struct AslClient {
     moteur: tokio::runtime::Runtime,
     annuaires: Vec<Annuaire>,
-    racines: Vec<u8>,
     plafond_ms: u64,
     /// **LA MACHINE ET SA GRAINE, ET NON UNE [`Identite`] TOUTE FAITE.**
     ///
@@ -258,12 +257,7 @@ pub struct AslClient {
 impl AslClient {
     /// Monte les réglages, ou dit ce qui manque.
     fn reglages(&self) -> Result<Reglages, i32> {
-        Reglages::nouveaux(
-            self.annuaires.clone(),
-            self.racines.clone(),
-            self.plafond_ms,
-        )
-        .map_err(|_| ASL_CONFIGURATION)
+        Reglages::nouveaux(self.annuaires.clone(), self.plafond_ms).map_err(|_| ASL_CONFIGURATION)
     }
 
     /// Dérive l'identité de cette machine, autant de fois qu'on la demande.
@@ -369,7 +363,6 @@ pub unsafe extern "C" fn asl_client_neuf(sortie: *mut *mut AslClient) -> i32 {
         let client = Box::new(AslClient {
             moteur,
             annuaires: Vec::new(),
-            racines: Vec::new(),
             plafond_ms: PLAFOND_MS,
             machine: None,
             graine: None,
@@ -382,50 +375,34 @@ pub unsafe extern "C" fn asl_client_neuf(sortie: *mut *mut AslClient) -> i32 {
     })
 }
 
-/// Ajoute un annuaire. **Répétable, et l'ordre compte.**
+/// Ajoute un annuaire par son NOM — **ce qui ne se croit plus** : rend
+/// toujours [`ASL_CONFIGURATION`].
 ///
-/// L'IPv6 est essayé d'abord quelle que soit la place à laquelle il est ajouté ;
-/// à l'intérieur d'une famille, c'est l'ordre des appels qui décide.
+/// # RETIRÉE EN SUBSTANCE (décision 58, étape 5)
 ///
-/// **L'ADRESSE EST LITTÉRALE**, et non un nom : la résolution appartient à
-/// l'appelant. Un daemon chargé dans un interpréteur a déjà son résolveur, et
-/// lui en imposer un autre — avec sa politique de cache et ses fils — serait
-/// décider à sa place. L'utilitaire `asl` fait le sien avec `getaddrinfo`.
+/// Un annuaire posé ainsi n'était cru que par la forme d'hier : une chaîne
+/// signée par l'autorité que posait `asl_client_racines` (retirée), au nom
+/// exigé. Cette forme est retirée, et les racines ne la servent plus depuis
+/// le 2026-09-28 : un annuaire sans identité attendue ne serait cru par
+/// rien. **Le symbole
+/// reste** tant que des applications le lient ; il refuse, tout de suite et
+/// sans ambiguïté, plutôt que de laisser une poignée de main échouer plus
+/// tard sans dire pourquoi. [`asl_client_annuaire_identifie`] le remplace.
 ///
 /// # Safety
 ///
-/// `client` vient de [`asl_client_neuf`]. `adresse` et `nom` sont des chaînes C
-/// valides, terminées par NUL.
+/// `client` vient de [`asl_client_neuf`], ou est nul.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn asl_client_annuaire(
     client: *mut AslClient,
-    adresse: *const c_char,
-    nom: *const c_char,
+    _adresse: *const c_char,
+    _nom: *const c_char,
 ) -> i32 {
-    protege(|| {
-        // SAFETY : contrat de la fonction.
-        let Some(client) = (unsafe { client.as_mut() }) else {
-            return ASL_ARGUMENT;
-        };
-        let (Some(adresse), Some(nom)) =
-            // SAFETY : contrat de la fonction.
-            (unsafe { chaine(adresse) }, unsafe { chaine(nom) })
-        else {
-            return ASL_ARGUMENT;
-        };
-        let Ok(adresse) = adresse.parse::<std::net::SocketAddr>() else {
-            return ASL_ARGUMENT;
-        };
-        if nom.is_empty() {
-            return ASL_ARGUMENT;
-        }
-        client.annuaires.push(Annuaire {
-            adresse,
-            nom: nom.to_owned(),
-            identite: None,
-        });
-        ASL_OK
-    })
+    if client.is_null() {
+        ASL_ARGUMENT
+    } else {
+        ASL_CONFIGURATION
+    }
 }
 
 /// Ajoute un annuaire **par son identité** (`protocole.md` §0, décision 58) —
@@ -433,16 +410,12 @@ pub unsafe extern "C" fn asl_client_annuaire(
 /// locateur (une adresse littérale, `[2001:db8::1]:6630` ou `192.0.2.1:6630`)
 /// et l'identifiant `n-…` qu'on doit trouver au bout.
 ///
-/// **POURQUOI IL FALLAIT AUSSI CELUI-CI** : sans lui, un daemon — ou l'app
-/// macOS qui enrôle son Mac comme machine — ne savait parler qu'à un annuaire
-/// nommé et signé par une autorité, la forme d'hier. Face à une racine qui ne
-/// sert plus que son certificat d'identité, il n'aurait plus rien trouvé à
-/// croire.
+/// **C'EST LA SEULE FAÇON DE POSER UN ANNUAIRE** depuis que la forme d'hier
+/// est retirée (décision 58, étape 5) : un annuaire se croit par sa clé.
 ///
 /// **LA CLÉ EST CE QU'ON CROIT, L'ADRESSE N'EST QUE LE CHEMIN** : l'annuaire
 /// présente un certificat auto-signé par sa clé d'identité, et on l'accepte si
-/// cette clé se déduit en `n`. Une autorité posée par [`asl_client_racines`]
-/// est crue AUSSI, sur le même client, le temps de la bascule.
+/// cette clé se déduit en `n`, et par rien d'autre.
 ///
 /// **Aucun nom n'est résolu** (C20) : un nom se résout chez l'appelant, qui
 /// passe ensuite chacune de ses adresses.
@@ -475,38 +448,8 @@ pub unsafe extern "C" fn asl_client_annuaire_identifie(
         client.annuaires.push(Annuaire {
             adresse,
             nom: adresse.ip().to_string(),
-            identite: Some(identite),
+            identite,
         });
-        ASL_OK
-    })
-}
-
-/// Pose les certificats d'autorité, en PEM.
-///
-/// **IL N'Y A PAS DE REPLI SUR LE MAGASIN DU SYSTÈME**, et l'absence de repli
-/// est une décision : les annuaires racines sont signés par LEUR autorité, et se
-/// rabattre en silence sur les centaines de racines d'un système ferait accepter
-/// un certificat qu'aucune d'elles n'aurait dû émettre.
-///
-/// # Safety
-///
-/// `pem` vise `taille` octets lisibles.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn asl_client_racines(
-    client: *mut AslClient,
-    pem: *const u8,
-    taille: usize,
-) -> i32 {
-    protege(|| {
-        // SAFETY : contrat de la fonction.
-        let Some(client) = (unsafe { client.as_mut() }) else {
-            return ASL_ARGUMENT;
-        };
-        if pem.is_null() || taille == 0 {
-            return ASL_ARGUMENT;
-        }
-        // SAFETY : l'appelant garantit `taille` octets lisibles depuis `pem`.
-        client.racines = unsafe { core::slice::from_raw_parts(pem, taille) }.to_vec();
         ASL_OK
     })
 }

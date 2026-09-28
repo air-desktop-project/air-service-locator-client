@@ -8,9 +8,9 @@
 //! éprouvé ici.
 //!
 //! Ici, on éprouve qu'elle est **obéie** : qu'un annuaire mort ne retarde pas
-//! le suivant, qu'une attache perdue se refait ailleurs, et qu'une faute de
-//! configuration ne devient pas une boucle silencieuse. Aucune de ces trois
-//! choses ne se voit sans une socket.
+//! le suivant, qu'une attache perdue se refait ailleurs, et que l'attache rend
+//! la main avant d'avoir trouvé. Aucune de ces trois choses ne se voit sans
+//! une socket.
 //!
 //! # POURQUOI CHAQUE ESSAI EST BORNÉ PAR UN `timeout`
 //!
@@ -43,11 +43,11 @@ fn identite() -> Identite {
     Identite::nouvelle(machine, [0x42; 32]).expect("une identité d'essai")
 }
 
-fn annuaire(adresse: std::net::SocketAddr) -> Annuaire {
+fn annuaire(adresse: std::net::SocketAddr, identite: Identifiant) -> Annuaire {
     Annuaire {
         adresse,
         nom: "localhost".to_owned(),
-        identite: None,
+        identite,
     }
 }
 
@@ -71,15 +71,16 @@ fn une_configuration_fautive_est_refusee_avant_qu_une_tache_parte() {
     // est la seule façon qu'il l'apprenne : une tâche de fond qui les
     // découvrirait toute seule ne parlerait à personne.
     let mort = "127.0.0.1:1".parse().expect("une adresse");
+    let quelconque = Identifiant::depuis_entropie(Genre::Annuaire, [0x6E; 16]);
     assert!(matches!(
-        Reglages::nouveaux(vec![], b"x".to_vec(), PLAFOND_MS),
+        Reglages::nouveaux(vec![], PLAFOND_MS),
         Err(Faute::SansAnnuaire)
     ));
     assert!(matches!(
-        Reglages::nouveaux(vec![annuaire(mort)], b"x".to_vec(), 0),
+        Reglages::nouveaux(vec![annuaire(mort, quelconque)], 0),
         Err(Faute::PlafondNul)
     ));
-    assert!(Reglages::nouveaux(vec![annuaire(mort)], b"x".to_vec(), PLAFOND_MS).is_ok());
+    assert!(Reglages::nouveaux(vec![annuaire(mort, quelconque)], PLAFOND_MS).is_ok());
 }
 
 // ── La bascule ──────────────────────────────────────────────────────────────
@@ -89,7 +90,7 @@ async fn un_annuaire_mort_ne_retarde_pas_le_suivant() {
     // **C'EST LA DÉCISION QUI DONNE À `Tournee` SA RAISON D'EXISTER**, et elle
     // ne se voit que d'ici : reculer entre deux annuaires rendrait la bascule
     // vers le second annuaire racine plus lente que la panne du premier.
-    let (_atelier, autorite, cert, cle) = materiel("bascule");
+    let (identite_attendue, cert, cle) = materiel("bascule");
 
     // # ON MESURE UN ÉCART, PAS UNE DURÉE
     //
@@ -115,12 +116,12 @@ async fn un_annuaire_mort_ne_retarde_pas_le_suivant() {
     for _ in 0..3 {
         for par_le_mort in [false, true] {
             let (vivant, tache) = lever(cert.clone(), cle.clone(), FauxAnnuaire).await;
-            let mut annuaires = vec![annuaire(vivant)];
+            let mut annuaires = vec![annuaire(vivant, identite_attendue)];
             if par_le_mort {
-                annuaires.insert(0, annuaire(adresse_morte().await));
+                annuaires.insert(0, annuaire(adresse_morte().await, identite_attendue));
             }
-            let reglages = Reglages::nouveaux(annuaires, autorite.clone(), PLAFOND_MS)
-                .expect("la configuration est bonne");
+            let reglages =
+                Reglages::nouveaux(annuaires, PLAFOND_MS).expect("la configuration est bonne");
 
             let depart = Instant::now();
             let connexion =
@@ -153,29 +154,12 @@ async fn un_annuaire_mort_ne_retarde_pas_le_suivant() {
 }
 
 #[tokio::test]
-async fn une_racine_illisible_arrete_la_tournee_au_lieu_de_la_faire_tourner() {
-    // **UNE FAUTE DE CONFIGURATION RÉESSAYÉE À L'INFINI EST UNE PANNE MUETTE** :
-    // le porteur voit un daemon qui « cherche », alors qu'il ne trouvera jamais.
-    let mort = adresse_morte().await;
-    let reglages = Reglages::nouveaux(vec![annuaire(mort)], b"pas un PEM".to_vec(), PLAFOND_MS)
-        .expect("la liste, elle, est bonne");
-
-    let issue = tokio::time::timeout(Duration::from_secs(3), joindre(&reglages, &|| [0x5A; 16]))
-        .await
-        .expect("elle ne doit pas réessayer une racine illisible")
-        .expect_err("aucune racine à qui faire confiance");
-    assert!(matches!(issue, Faute::Tls(_)), "{issue}");
-}
-
-// ── L'attache ───────────────────────────────────────────────────────────────
-
-#[tokio::test]
 async fn l_attache_rend_la_main_avant_d_avoir_trouve_quoi_que_ce_soit() {
     // **`protocole.md` §1.4** : un annuaire injoignable ne doit pas empêcher un
     // daemon de démarrer. Le daemon écoute déjà pendant que l'attache cherche.
-    let (_atelier, autorite, _cert, _cle) = materiel("main-rendue");
+    let (identite_attendue, _cert, _cle) = materiel("main-rendue");
     let mort = adresse_morte().await;
-    let reglages = Reglages::nouveaux(vec![annuaire(mort)], autorite, PLAFOND_MS)
+    let reglages = Reglages::nouveaux(vec![annuaire(mort, identite_attendue)], PLAFOND_MS)
         .expect("la configuration est bonne");
 
     let depart = Instant::now();
@@ -196,26 +180,10 @@ async fn l_attache_rend_la_main_avant_d_avoir_trouve_quoi_que_ce_soit() {
 }
 
 #[tokio::test]
-async fn l_attache_renonce_sur_une_configuration_fautive_et_le_dit() {
-    // Le seul cas où elle renonce — et il doit se VOIR, sans quoi c'est une
-    // tâche morte dont personne ne sait qu'elle est morte.
-    let mort = adresse_morte().await;
-    let reglages = Reglages::nouveaux(vec![annuaire(mort)], b"pas un PEM".to_vec(), PLAFOND_MS)
-        .expect("la liste, elle, est bonne");
-    let attache = Attache::annoncer(reglages, identite(), vec![], alea());
-
-    assert!(
-        jusqu_a(3_000, || attache.etat().abandonnee).await,
-        "elle aurait dû renoncer et le dire"
-    );
-    assert!(!attache.etat().attachee);
-}
-
-#[tokio::test]
 async fn l_attache_s_authentifie_puis_annonce_et_tient() {
-    let (_atelier, autorite, cert, cle) = materiel("attache");
+    let (identite_attendue, cert, cle) = materiel("attache");
     let (vivant, tache) = lever(cert, cle, FauxAnnuaire).await;
-    let reglages = Reglages::nouveaux(vec![annuaire(vivant)], autorite, PLAFOND_MS)
+    let reglages = Reglages::nouveaux(vec![annuaire(vivant, identite_attendue)], PLAFOND_MS)
         .expect("la configuration est bonne");
 
     // Une annonce déjà encodée : c'est ce que la tâche répétera.
@@ -247,13 +215,15 @@ async fn une_attache_perdue_se_refait_sur_l_autre_annuaire() {
     // `annuaires.md` §3 : rien n'est répliqué côté serveur, et c'est ce
     // mouvement-ci — se reconnecter ailleurs et tout réannoncer — qui reconstruit
     // l'état. Il n'y a pas d'autre bascule.
-    let (_atelier, autorite, cert, cle) = materiel("haute-dispo");
+    let (identite_attendue, cert, cle) = materiel("haute-dispo");
     let (premier, tache_une) = lever(cert.clone(), cle.clone(), FauxAnnuaire).await;
     let (second, tache_deux) = lever(cert, cle, FauxAnnuaire).await;
 
     let reglages = Reglages::nouveaux(
-        vec![annuaire(premier), annuaire(second)],
-        autorite,
+        vec![
+            annuaire(premier, identite_attendue),
+            annuaire(second, identite_attendue),
+        ],
         PLAFOND_MS,
     )
     .expect("la configuration est bonne");
@@ -295,10 +265,10 @@ async fn un_verdict_pousse_apres_coup_arrive_au_client() {
     // L'annuaire répond `en_cours` pour ne pas faire attendre le démarrage d'un
     // daemon ; le verdict arrive ensuite, sur la connexion déjà tenue. Sans ce
     // flux, il n'arrivait jamais — et rien ne plantait, ce qui est pire.
-    let (_atelier, autorite, cert, cle) = materiel("poussees");
+    let (identite_attendue, cert, cle) = materiel("poussees");
     let (adresse, tache, pousser) = lever_qui_pousse(cert, cle, FauxAnnuaire).await;
 
-    let reglages = Reglages::nouveaux(vec![annuaire(adresse)], autorite, PLAFOND_MS)
+    let reglages = Reglages::nouveaux(vec![annuaire(adresse, identite_attendue)], PLAFOND_MS)
         .expect("la configuration est bonne");
     let mut connexion =
         tokio::time::timeout(Duration::from_secs(10), joindre(&reglages, &|| [0x5A; 16]))
@@ -351,10 +321,10 @@ async fn un_verdict_pousse_apres_coup_arrive_au_client() {
 async fn un_objet_coupe_par_un_datagramme_attend_sa_suite() {
     // **C'EST LE CAS ORDINAIRE D'UN FLUX**, et le refuser ferait rejeter une
     // poussée parfaitement valide parce qu'un paquet n'est pas encore arrivé.
-    let (_atelier, autorite, cert, cle) = materiel("poussees-coupees");
+    let (identite_attendue, cert, cle) = materiel("poussees-coupees");
     let (adresse, tache, pousser) = lever_qui_pousse(cert, cle, FauxAnnuaire).await;
 
-    let reglages = Reglages::nouveaux(vec![annuaire(adresse)], autorite, PLAFOND_MS)
+    let reglages = Reglages::nouveaux(vec![annuaire(adresse, identite_attendue)], PLAFOND_MS)
         .expect("la configuration est bonne");
     let mut connexion =
         tokio::time::timeout(Duration::from_secs(10), joindre(&reglages, &|| [0x5A; 16]))
@@ -398,10 +368,10 @@ async fn un_objet_coupe_par_un_datagramme_attend_sa_suite() {
 
 #[tokio::test]
 async fn sans_flux_ouvert_il_n_y_a_rien_a_lire_et_ce_n_est_pas_une_faute() {
-    let (_atelier, autorite, cert, cle) = materiel("poussees-fermees");
+    let (identite_attendue, cert, cle) = materiel("poussees-fermees");
     let (adresse, tache) = lever(cert, cle, FauxAnnuaire).await;
 
-    let reglages = Reglages::nouveaux(vec![annuaire(adresse)], autorite, PLAFOND_MS)
+    let reglages = Reglages::nouveaux(vec![annuaire(adresse, identite_attendue)], PLAFOND_MS)
         .expect("la configuration est bonne");
     let mut connexion =
         tokio::time::timeout(Duration::from_secs(10), joindre(&reglages, &|| [0x5A; 16]))
@@ -425,10 +395,10 @@ async fn l_attache_ouvre_le_flux_et_retient_la_derniere_poussee() {
     // **UN DAEMON QUI S'ANNONCE A DES VERDICTS À APPRENDRE**, et `Attache` existe
     // pour tenir l'annonce : elle ouvre donc le flux après avoir annoncé. Qui
     // n'en veut pas emploie `joindre` et conduit sa connexion lui-même.
-    let (_atelier, autorite, cert, cle) = materiel("attache-poussees");
+    let (identite_attendue, cert, cle) = materiel("attache-poussees");
     let (adresse, tache, pousser) = lever_qui_pousse(cert, cle, FauxAnnuaire).await;
 
-    let reglages = Reglages::nouveaux(vec![annuaire(adresse)], autorite, PLAFOND_MS)
+    let reglages = Reglages::nouveaux(vec![annuaire(adresse, identite_attendue)], PLAFOND_MS)
         .expect("la configuration est bonne");
     let attache = Attache::annoncer(reglages, identite(), vec![b"{}".to_vec()], alea());
 
@@ -482,10 +452,10 @@ async fn on_apprend_d_ou_l_annuaire_nous_voit_sans_rien_annoncer() {
     // joindre un port. La réponse à une annonce porte déjà le candidat
     // réflexif, mais il faut avoir annoncé pour l'obtenir — donc porter la
     // capacité d'annonce, et avoir un service à publier.
-    let (_atelier, autorite, cert, cle) = materiel("vu");
+    let (identite_attendue, cert, cle) = materiel("vu");
     let (adresse, tache) = lever(cert, cle, FauxAnnuaire).await;
 
-    let mut connexion = Connexion::ouvrir(adresse, "localhost", &autorite, &|| [0x31; 16])
+    let mut connexion = Connexion::ouvrir(adresse, "localhost", identite_attendue, &|| [0x31; 16])
         .await
         .expect("la poignée de main");
     let corps = connexion.vu().await.expect("l'annuaire répond");
@@ -505,10 +475,10 @@ async fn un_annuaire_qui_ne_sert_pas_cette_route_le_dit_par_son_statut() {
     // **ET NON PAR UN CORPS VIDE** : un annuaire plus ancien ne connaît pas
     // `/v1/vu`, et un diagnostic doit pouvoir distinguer « il ne sait pas » de
     // « il n'a rien vu ». `FauxAnnuaire` rend `404` pour tout le reste.
-    let (_atelier, autorite, cert, cle) = materiel("vu-absente");
+    let (identite_attendue, cert, cle) = materiel("vu-absente");
     let (adresse, tache) = lever(cert, cle, FauxAnnuaire).await;
 
-    let mut connexion = Connexion::ouvrir(adresse, "localhost", &autorite, &|| [0x32; 16])
+    let mut connexion = Connexion::ouvrir(adresse, "localhost", identite_attendue, &|| [0x32; 16])
         .await
         .expect("la poignée de main");
     let issue = connexion
@@ -529,10 +499,10 @@ async fn les_machines_du_proprietaire_passent_par_moi_puis_par_son_compte() {
     // client demande d'abord qui il est (`/v1/moi`), puis les machines du
     // compte que l'annuaire vient de nommer — et non d'un compte qu'un fichier
     // local croirait. Le banc ne rend « grenier » que pour CE compte-là.
-    let (_atelier, autorite, cert, cle) = materiel("machines-du-proprietaire");
+    let (identite_attendue, cert, cle) = materiel("machines-du-proprietaire");
     let (adresse, tache) = lever(cert, cle, FauxAnnuaire).await;
 
-    let mut connexion = Connexion::ouvrir(adresse, "localhost", &autorite, &|| [0x33; 16])
+    let mut connexion = Connexion::ouvrir(adresse, "localhost", identite_attendue, &|| [0x33; 16])
         .await
         .expect("la poignée de main");
     let corps = connexion
@@ -559,10 +529,10 @@ async fn les_appareils_du_proprietaire_se_lisent_avec_le_lecteur_de_l_ecran_comp
     // élément se relit avec `asl_api::corps::AppareilRendu`, révoqué marqué,
     // description quand elle est là — un client qui lit l'écran Compte lit
     // ceci sans une ligne de plus.
-    let (_atelier, autorite, cert, cle) = materiel("appareils-du-proprietaire");
+    let (identite_attendue, cert, cle) = materiel("appareils-du-proprietaire");
     let (adresse, tache) = lever(cert, cle, FauxAnnuaire).await;
 
-    let mut connexion = Connexion::ouvrir(adresse, "localhost", &autorite, &|| [0x34; 16])
+    let mut connexion = Connexion::ouvrir(adresse, "localhost", identite_attendue, &|| [0x34; 16])
         .await
         .expect("la poignée de main");
     let corps = connexion
@@ -602,10 +572,10 @@ async fn l_etat_de_la_replication_se_lit_sur_la_voie_machine() {
     // l'horloge et le curseur — rendus tels quels, c'est `asl` qui les met en
     // français. Le banc les sert sans vérifier la preuve ; ce qu'on éprouve
     // est le chemin demandé et le corps rendu intact.
-    let (_atelier, autorite, cert, cle) = materiel("etat-de-la-replication");
+    let (identite_attendue, cert, cle) = materiel("etat-de-la-replication");
     let (adresse, tache) = lever(cert, cle, FauxAnnuaire).await;
 
-    let mut connexion = Connexion::ouvrir(adresse, "localhost", &autorite, &|| [0x35; 16])
+    let mut connexion = Connexion::ouvrir(adresse, "localhost", identite_attendue, &|| [0x35; 16])
         .await
         .expect("la poignée de main");
     let corps = connexion
@@ -639,10 +609,10 @@ async fn la_cadence_de_maintien_vient_du_bail_que_l_annuaire_annonce() {
     //
     // Le banc annonce sept secondes — une valeur qui ne ressemble à aucun
     // défaut, pour qu'en la retrouvant on prouve qu'elle a VOYAGÉ.
-    let (_atelier, autorite, cert, cle) = materiel("maintien");
+    let (identite_attendue, cert, cle) = materiel("maintien");
     let (adresse, tache) = lever(cert, cle, FauxAnnuaire).await;
 
-    let mut connexion = Connexion::ouvrir(adresse, "localhost", &autorite, &|| [0x41; 16])
+    let mut connexion = Connexion::ouvrir(adresse, "localhost", identite_attendue, &|| [0x41; 16])
         .await
         .expect("la poignée de main");
     assert_eq!(

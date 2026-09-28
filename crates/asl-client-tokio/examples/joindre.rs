@@ -11,14 +11,14 @@
 //!
 //! ```sh
 //! cargo run -p asl-client-tokio --example joindre -- \
-//!     '[::1]:6630' localhost racine.crt
+//!     '[::1]:6630' localhost n-…
 //! ```
 
 use std::net::ToSocketAddrs as _;
 
 fn main() -> std::process::ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    let (cible, nom, racines, tenir, cadence) = match arguments.as_slice() {
+    let (cible, nom, identite, tenir, cadence) = match arguments.as_slice() {
         [a, b, c] => (a.clone(), b.clone(), c.clone(), 0_u64, 0_u16),
         [a, b, c, d] => (
             a.clone(),
@@ -35,7 +35,7 @@ fn main() -> std::process::ExitCode {
             e.parse().unwrap_or_default(),
         ),
         _ => {
-            eprintln!("usage : joindre <hôte:port> <nom exigé> <racines.pem> [secondes] [cadence]");
+            eprintln!("usage : joindre <hôte:port> <nom> <n-… attendu> [secondes] [cadence]");
             return std::process::ExitCode::from(1);
         }
     };
@@ -48,12 +48,12 @@ fn main() -> std::process::ExitCode {
         eprintln!("« {cible} » ne rend aucune adresse");
         return std::process::ExitCode::from(2);
     };
-    let pem = match std::fs::read(&racines) {
-        Ok(quoi) => quoi,
-        Err(quoi) => {
-            eprintln!("{racines} : {quoi}");
-            return std::process::ExitCode::from(2);
-        }
+    // **ON JUGE UNE CLÉ, PAS UN NOM** (décision 58) : le `n-…` est ce que
+    // la clé du certificat présenté doit donner.
+    let Ok(identite) = asl_id::Identifiant::analyser_genre(asl_id::Genre::Annuaire, &identite)
+    else {
+        eprintln!("« {identite} » n'est pas une identité d'annuaire (n-…)");
+        return std::process::ExitCode::from(2);
     };
 
     let execution = tokio::runtime::Builder::new_current_thread()
@@ -62,7 +62,7 @@ fn main() -> std::process::ExitCode {
         .expect("une exécution");
 
     execution.block_on(async move {
-        println!("→ {adresse}, nom exigé « {nom} »");
+        println!("→ {adresse}, identité attendue {identite}");
         // **L'ALÉA EST VRAI, MÊME DANS UN EXEMPLE.** §7.2 : l'identifiant de
         // destination du premier paquet doit être imprévisible, parce que §5.2
         // en dérive les clés `Initial`. Un exemple qui figerait une graine
@@ -74,7 +74,7 @@ fn main() -> std::process::ExitCode {
                 .expect("le noyau doit savoir tirer seize octets");
             octets
         };
-        match asl_client_tokio::Connexion::ouvrir(adresse, &nom, &pem, &alea).await {
+        match asl_client_tokio::Connexion::ouvrir(adresse, &nom, identite, &alea).await {
             Ok(mut connexion) => {
                 println!(
                     "✓ poignée de main faite, socket locale {:?}",

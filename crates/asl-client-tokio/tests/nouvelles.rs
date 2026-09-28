@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use ams_proto_http::{Method, StatusCode};
 use asl_client_tokio::{Connexion, Faute, NOUVELLE_MAX, Nouvelle, Tenue};
+use asl_id::Identifiant;
 use banc::{lever, lever_qui_pousse, materiel};
 
 /// Un annuaire qui tient le PREMIER `GET /v1/nouvelles` ouvert, et rend `409`
@@ -69,8 +70,8 @@ const AUTORISATION: &[u8] = br#"{"quoi":"autorisation"}"#;
 /// qui ne se réveillerait pas.
 const PATIENCE: Duration = Duration::from_secs(10);
 
-async fn tenue(adresse: std::net::SocketAddr, autorite: &[u8], graine: u8) -> Tenue {
-    let connexion = Connexion::ouvrir(adresse, "localhost", autorite, &|| [graine; 16])
+async fn tenue(adresse: std::net::SocketAddr, identite_attendue: Identifiant, graine: u8) -> Tenue {
+    let connexion = Connexion::ouvrir(adresse, "localhost", identite_attendue, &|| [graine; 16])
         .await
         .expect("la connexion s'ouvre");
     Tenue::tenir(connexion)
@@ -78,9 +79,9 @@ async fn tenue(adresse: std::net::SocketAddr, autorite: &[u8], graine: u8) -> Te
 
 #[tokio::test]
 async fn un_flux_recoit_ses_lignes_entieres_quel_que_soit_le_decoupage() {
-    let (_atelier, autorite, cert, cle) = materiel("nouvelles");
+    let (identite_attendue, cert, cle) = materiel("nouvelles");
     let (adresse, tache, voie) = lever_qui_pousse(cert, cle, AnnuaireQuiNotifie::default()).await;
-    let tenue = tenue(adresse, &autorite, 0x61).await;
+    let tenue = tenue(adresse, identite_attendue, 0x61).await;
 
     // Rien n'est ouvert : l'attente le dit tout de suite, sans attendre.
     assert_eq!(tenue.nouvelle(PATIENCE).await, Nouvelle::Ferme);
@@ -152,9 +153,9 @@ async fn un_flux_recoit_ses_lignes_entieres_quel_que_soit_le_decoupage() {
 
 #[tokio::test]
 async fn une_attente_rend_rien_a_son_echeance() {
-    let (_atelier, autorite, cert, cle) = materiel("nouvelles-rien");
+    let (identite_attendue, cert, cle) = materiel("nouvelles-rien");
     let (adresse, tache) = lever(cert, cle, AnnuaireQuiNotifie::default()).await;
-    let tenue = tenue(adresse, &autorite, 0x62).await;
+    let tenue = tenue(adresse, identite_attendue, 0x62).await;
     tenue.ecouter_les_nouvelles().await.expect("200");
 
     let avant = Instant::now();
@@ -176,9 +177,9 @@ async fn une_attente_rend_rien_a_son_echeance() {
 
 #[tokio::test]
 async fn un_second_flux_est_refuse_en_409_et_le_premier_vit() {
-    let (_atelier, autorite, cert, cle) = materiel("nouvelles-409");
+    let (identite_attendue, cert, cle) = materiel("nouvelles-409");
     let (adresse, tache, voie) = lever_qui_pousse(cert, cle, AnnuaireQuiNotifie::default()).await;
-    let tenue = tenue(adresse, &autorite, 0x63).await;
+    let tenue = tenue(adresse, identite_attendue, 0x63).await;
 
     tenue.ecouter_les_nouvelles().await.expect("200");
     assert!(matches!(
@@ -197,9 +198,9 @@ async fn un_second_flux_est_refuse_en_409_et_le_premier_vit() {
 
 #[tokio::test]
 async fn un_appareil_revoque_se_voit_refuser_le_flux_en_401() {
-    let (_atelier, autorite, cert, cle) = materiel("nouvelles-401");
+    let (identite_attendue, cert, cle) = materiel("nouvelles-401");
     let (adresse, tache) = lever(cert, cle, Revoque).await;
-    let tenue = tenue(adresse, &autorite, 0x64).await;
+    let tenue = tenue(adresse, identite_attendue, 0x64).await;
 
     assert!(matches!(
         tenue.ecouter_les_nouvelles().await,

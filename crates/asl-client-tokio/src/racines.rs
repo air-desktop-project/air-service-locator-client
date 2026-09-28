@@ -37,7 +37,7 @@ pub fn racines_embarquees() -> Vec<Annuaire> {
                 texte.parse::<SocketAddr>().ok().map(|adresse| Annuaire {
                     adresse,
                     nom: adresse.ip().to_string(),
-                    identite: Some(identite),
+                    identite,
                 })
             })
         })
@@ -107,7 +107,11 @@ mod tests {
         assert_eq!(toutes.len(), 4);
         assert!(toutes[0].adresse.is_ipv6() && toutes[1].adresse.is_ipv6());
         assert!(toutes[2].adresse.is_ipv4() && toutes[3].adresse.is_ipv4());
-        assert!(toutes.iter().all(|annuaire| annuaire.identite.is_some()));
+        assert!(
+            toutes
+                .iter()
+                .all(|annuaire| annuaire.identite.genre() == asl_id::Genre::Annuaire)
+        );
         assert_ne!(toutes[0].identite, toutes[1].identite);
     }
 

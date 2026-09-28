@@ -16,7 +16,6 @@
 # mauvais endroit.
 
 require "minitest/autorun"
-require "openssl"
 require "socket"
 
 require "asl"
@@ -30,38 +29,13 @@ require "asl"
 MACHINE = "m-0H248H248H248H248H248H248H"
 GRAINE = (0...32).map(&:chr).join.b
 
-module Aide
-  # Un client dont la racine est illisible : de quoi atteindre `Configuration`.
-  def client_configure(**extra)
-    Asl::Client.new(
-      annuaires: [["127.0.0.1:1", "localhost"]],
-      racines: "pas un PEM",
-      **extra
-    )
-  end
+# Une identité d'annuaire VALIDE, recopiée pour la même raison.
+ANNUAIRE = "n-0PWT8HZD80QMSPPDZ5CQXXYHQC"
 
-  # Une racine que `rustls` sait LIRE.
-  #
-  # Elle est fabriquée à l'essai plutôt que rangée dans le dépôt : un certificat
-  # committé expire un jour, et l'essai se met alors à échouer pour une raison
-  # qui n'a rien à voir avec ce qu'il éprouve. `openssl` est dans la distribution
-  # de Ruby — ici seulement, jamais dans la bibliothèque.
-  def racine_lisible
-    cle = OpenSSL::PKey::EC.generate("prime256v1")
-    nom = OpenSSL::X509::Name.parse("/CN=banc-asl-ruby")
-    cert = OpenSSL::X509::Certificate.new
-    cert.version = 2
-    cert.serial = 1
-    cert.subject = nom
-    cert.issuer = nom
-    cert.public_key = cle
-    cert.not_before = Time.now - 3600
-    cert.not_after = Time.now + 3600
-    extensions = OpenSSL::X509::ExtensionFactory.new(cert, cert)
-    cert.add_extension(extensions.create_extension("basicConstraints", "CA:TRUE", true))
-    cert.add_extension(extensions.create_extension("keyUsage", "keyCertSign,cRLSign", true))
-    cert.sign(cle, OpenSSL::Digest.new("SHA256"))
-    cert.to_pem
+module Aide
+  # Un client qui vise un annuaire où rien n'écoute, sous son identité.
+  def client_configure(**extra)
+    Asl::Client.new(annuaires: [["127.0.0.1:1", ANNUAIRE]], **extra)
   end
 end
 
@@ -129,22 +103,25 @@ class LaConstruction < Minitest::Test
       ""
     ].each do |mauvaise|
       assert_raises(Asl::MauvaisArgument, mauvaise) do
-        Asl::Client.new(annuaires: [[mauvaise, "localhost"]])
+        Asl::Client.new(annuaires: [[mauvaise, ANNUAIRE]])
       end
     end
   end
 
   def test_une_adresse_litterale_des_deux_familles_est_acceptee
-    Asl::Client.ouvrir(annuaires: [["203.0.113.7:6630", "nitrogen.example"],
-                                   ["[2001:db8::1]:6630", "nitrogen.example"]]) do |client|
+    Asl::Client.ouvrir(annuaires: [["203.0.113.7:6630", ANNUAIRE],
+                                   ["[2001:db8::1]:6630", ANNUAIRE]]) do |client|
       assert_predicate client, :ouvert?
     end
   end
 
-  def test_des_racines_qui_ne_sont_pas_des_octets_sont_refusees
-    Asl::Client.ouvrir do |client|
-      assert_raises(Asl::MauvaisArgument) { client.poser_racines(:pem) }
+  def test_un_nom_a_la_place_de_l_identite_est_refuse
+    # **LA FORME D'HIER EST RETIRÉE** (décision 58, étape 5) : un annuaire se
+    # croit par sa clé, et un nom de certificat ne dit pas laquelle.
+    assert_raises(Asl::MauvaisArgument) do
+      Asl::Client.new(annuaires: [["203.0.113.7:6630", "nitrogen.example"]])
     end
+    refute_respond_to Asl::Client.new.tap(&:fermer), :poser_racines
   end
 
   def test_une_graine_de_mauvaise_taille_est_refusee_avec_les_deux_nombres
@@ -160,7 +137,7 @@ class LaConstruction < Minitest::Test
     # que celui qu'on croit lui avoir donné.
     Asl::Client.ouvrir do |client|
       assert_raises(Asl::MauvaisArgument) do
-        client.ajouter_annuaire("127.0.0.1:1\0tricherie", "localhost")
+        client.ajouter_annuaire("127.0.0.1:1\0tricherie", ANNUAIRE)
       end
     end
   end
@@ -170,8 +147,7 @@ class LAnnonce < Minitest::Test
   include Aide
 
   def test_sans_identite_on_ne_peut_rien_signer
-    Asl::Client.ouvrir(annuaires: [["127.0.0.1:1", "localhost"]],
-                       racines: "pas un PEM") do |client|
+    Asl::Client.ouvrir(annuaires: [["127.0.0.1:1", ANNUAIRE]]) do |client|
       assert_raises(Asl::PasDIdentite) do
         client.annoncer("depot", [Asl::Point.new(:tcp, 8080)])
       end
@@ -204,35 +180,26 @@ class LAnnonce < Minitest::Test
 
   def test_le_fil_natif_tourne_sans_que_personne_l_attende
     # **C'EST L'ESSAI QUI COMPTE LE PLUS.** `annoncer` a rendu la main et
-    # l'appelant est parti ; si le fil natif ne tournait pas, `abandonnee` ne
-    # passerait jamais à vrai — et rien ici ne lèverait.
-    client = client_configure(identite: [MACHINE, GRAINE])
+    # l'appelant est parti ; si le fil natif ne tournait pas, le pair MUET ne
+    # recevrait jamais le premier paquet de la poignée de main — et rien ici ne
+    # lèverait. (Que l'identité survive à l'annonce est une affaire du côté
+    # Rust : `asl-client-ffi/tests/abi.rs` la tient, sur un banc.)
+    muet = UDPSocket.new
+    muet.bind("127.0.0.1", 0)
+    client = Asl::Client.new(annuaires: [["127.0.0.1:#{muet.addr[1]}", ANNUAIRE]],
+                             identite: [MACHINE, GRAINE])
     client.annoncer("depot", [Asl::Point.new(:tcp, 8080)])
 
-    etat = nil
-    250.times do
-      etat = client.etat
-      break if etat.abandonnee?
+    pret = muet.wait_readable(5)
 
-      sleep 0.02
-    end
+    refute_nil pret, "le fil natif n'a pas tourné"
+    paquet, = muet.recvfrom(2048)
 
-    assert_predicate etat, :abandonnee?,
-                     "le fil natif n'a pas tourné, ou la racine illisible a été acceptée"
-    refute_predicate etat, :attachee?
-    assert_equal 0, etat.attaches
+    refute_empty paquet
+    refute_predicate client.etat, :attachee?
   ensure
     client&.fermer
-  end
-
-  def test_l_identite_survit_a_l_annonce
-    # L'annonce CONSOMME une identité côté Rust ; si le client la perdait, `ou`
-    # répondrait « aucune identité » à un daemon qui vient de s'annoncer.
-    client = client_configure(identite: [MACHINE, GRAINE])
-    client.annoncer("depot", [Asl::Point.new(:tcp, 8080)])
-    assert_raises(Asl::Configuration) { client.ou(MACHINE, "depot") }
-  ensure
-    client&.fermer
+    muet&.close
   end
 end
 
@@ -252,8 +219,7 @@ class LeGvl < Minitest::Test
     port = muet.addr[1]
 
     client = Asl::Client.new(
-      annuaires: [["127.0.0.1:#{port}", "localhost"]],
-      racines: racine_lisible,
+      annuaires: [["127.0.0.1:#{port}", ANNUAIRE]],
       identite: [MACHINE, GRAINE]
     )
     client.annoncer("depot", [Asl::Point.new(:tcp, 8080)])
