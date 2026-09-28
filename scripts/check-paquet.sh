@@ -86,6 +86,12 @@ grep -q '^ Depends: .*libc6' "$essai/control" \
     || rate "le paquet se dit en $(dpkg-deb --field "$paquet" Version), Cargo.toml en $version"
 [ "$(dpkg-deb --field "$paquet" Package)" = "asl" ] \
     || rate "le paquet ne s'appelle pas asl"
+# **LE `control` EST ÉCRIT PAR UN HERE-DOCUMENT NON CITÉ** — il faut bien y
+# substituer la version. Des accents graves y deviennent une COMMANDE, exécutée
+# à la construction, et ce qu'elle imprime (rien, en CI) remplace le texte. Le
+# premier jet de ce paquet a perdu « asl enroll » ainsi.
+grep -qF 'asl enroll' "$essai/control" \
+    || rate "la description a perdu « asl enroll » — une substitution dans le here-document ?"
 conclure "$machine, $version — $(sed -n 's/^ Depends: //p' "$essai/control")"
 
 titre "3. il pose un binaire et sa licence, et RIEN d'autre"

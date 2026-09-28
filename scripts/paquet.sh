@@ -132,7 +132,7 @@ Description: annoncer, resoudre et diagnostiquer un service air-service-locator
  joindre un service, et diagnostiquer la connexion a l'annuaire.
  .
  Le paquet ne pose que le binaire. L'identite de la machine est generee par
- `asl enroll` et vit chez l'utilisateur (~/.config/asl) : ni l'installation ni
+ "asl enroll" et vit chez l'utilisateur (~/.config/asl) : ni l'installation ni
  le retrait du paquet n'y touchent.
 CONTROL
 dit "control — et aucun script de mainteneur"
