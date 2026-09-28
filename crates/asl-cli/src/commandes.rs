@@ -72,7 +72,7 @@ fn patience() -> u64 {
 /// toutes dans la tournée : c'est ainsi qu'un annuaire à double pile est essayé
 /// en IPv6 d'abord sans que personne ait à l'écrire.
 fn reglages(invocation: &Invocation) -> Result<Reglages, Issue> {
-    let racines = racines(invocation)?;
+    avertir_d_asl_roots();
     let cibles = if invocation.annuaires.is_empty() {
         depuis_l_environnement()?
     } else {
@@ -81,7 +81,7 @@ fn reglages(invocation: &Invocation) -> Result<Reglages, Issue> {
     // **SANS RIEN DIRE, LES RACINES EMBARQUÉES** — leurs adresses, leurs
     // identités : aucun résolveur (C20).
     let Some(cibles) = cibles else {
-        return Reglages::nouveaux(racines_embarquees(), racines, PLAFOND_MS)
+        return Reglages::nouveaux(racines_embarquees(), PLAFOND_MS)
             .map_err(|quoi| Issue::Configuration(quoi.to_string()));
     };
 
@@ -89,8 +89,8 @@ fn reglages(invocation: &Invocation) -> Result<Reglages, Issue> {
     for cible in &cibles {
         let nom = invocation.nom.clone().unwrap_or_else(|| cible.hote.clone());
         // **UNE ADRESSE LITTÉRALE NE SE RÉSOUT PAS.** Un nom, si : c'est une
-        // commodité qu'on a écrite, jamais une preuve — l'identité, quand
-        // elle est dite, reste ce qu'on juge.
+        // commodité qu'on a écrite, jamais une preuve — l'identité reste ce
+        // qu'on juge.
         let adresses: Vec<std::net::SocketAddr> = match cible.hote.parse::<std::net::IpAddr>() {
             Ok(ip) => vec![std::net::SocketAddr::new(ip, cible.port)],
             Err(_) => (cible.hote.as_str(), cible.port)
@@ -114,8 +114,7 @@ fn reglages(invocation: &Invocation) -> Result<Reglages, Issue> {
         ));
     }
 
-    Reglages::nouveaux(annuaires, racines, PLAFOND_MS)
-        .map_err(|quoi| Issue::Configuration(quoi.to_string()))
+    Reglages::nouveaux(annuaires, PLAFOND_MS).map_err(|quoi| Issue::Configuration(quoi.to_string()))
 }
 
 /// Fait tourner, au hasard, les adresses qu'un même nom a rendues.
@@ -174,33 +173,22 @@ fn depuis_l_environnement() -> Result<Option<Vec<Cible>>, Issue> {
         .map(Some)
 }
 
-/// Les certificats d'autorité, en PEM.
+/// `ASL_ROOTS` n'est plus lue : on le dit, sans échouer.
 ///
-/// **IL N'Y A PAS DE REPLI SUR LE MAGASIN DU SYSTÈME**, et c'est voulu : les
-/// annuaires racines de ce produit sont signés par SA propre autorité, et se
-/// rabattre silencieusement sur les centaines de racines d'un système ferait
-/// accepter un certificat qu'aucune d'elles n'aurait dû émettre.
-///
-/// **LA RACINE D'`air-desktop-project` EST ÉPINGLÉE DANS CE BINAIRE**, et
-/// c'est ce qui rend `asl` utilisable sans un fichier à aller chercher : sans
-/// `--roots` ni `ASL_ROOTS`, c'est elle qui vaut — la même que celle des
-/// annuaires racines. Un fichier donné la remplace entièrement (un banc, une
-/// autre autorité) : on n'ajoute pas, on choisit.
-fn racines(invocation: &Invocation) -> Result<Vec<u8>, Issue> {
-    let Some(ou) = invocation
-        .racines
-        .clone()
-        .or_else(|| std::env::var("ASL_ROOTS").ok())
-    else {
-        return Ok(RACINE_EPINGLEE.to_vec());
-    };
-    std::fs::read(&ou).map_err(|quoi| Issue::Configuration(format!("{ou} : {quoi}")))
+/// **UN AVERTISSEMENT, ET NON UN REFUS** — à la différence de `--roots`, qu'on
+/// tape : une variable d'environnement traîne dans une unité systemd écrite
+/// il y a des mois, à côté d'un daemon qui joint très bien les racines
+/// embarquées par leur identité. Le faire tomber pour une variable devenue
+/// sans effet serait casser ce qui marche ; se taire laisserait croire
+/// qu'elle compte encore.
+fn avertir_d_asl_roots() {
+    if std::env::var_os("ASL_ROOTS").is_some() {
+        eprintln!(
+            "asl : `ASL_ROOTS` est ignorée — un annuaire se croit par sa clé, plus par une \
+             autorité ; `ASL_DIRECTORY=<hôte:port>=<n-…>`, ou rien pour les racines embarquées"
+        );
+    }
 }
-
-/// La racine d'`air-desktop-project`, en PEM — celle qui a signé les
-/// certificats des annuaires racines. Publique par nature : c'est une clé
-/// publique, et l'épingler est ce que `ca.sh` du serveur annonce.
-const RACINE_EPINGLEE: &[u8] = include_bytes!("../racines/air-desktop-project.pem");
 
 /// Ouvre une connexion, avec la patience d'une personne et non d'un daemon.
 async fn ouvrir(reglages: &Reglages) -> Result<Connexion, Issue> {
@@ -248,15 +236,13 @@ fn restants_sans(reglages: &Reglages, deja: Option<std::net::SocketAddr>) -> Opt
 }
 
 fn ailleurs_que(
-    invocation: &Invocation,
     reglages: &Reglages,
     deja: Option<std::net::SocketAddr>,
 ) -> Result<Option<Reglages>, Issue> {
     let Some(restants) = restants_sans(reglages, deja) else {
         return Ok(None);
     };
-    let racines = racines(invocation)?;
-    Reglages::nouveaux(restants, racines, PLAFOND_MS)
+    Reglages::nouveaux(restants, PLAFOND_MS)
         .map(Some)
         .map_err(|quoi| Issue::Configuration(quoi.to_string()))
 }
@@ -297,7 +283,7 @@ pub async fn enrole(invocation: &Invocation, dossier: &Path, code: &str) -> Sort
         Err(FauteReseau::Statut(CODE_REFUSE)) => {
             let deja = connexion.distante().ok();
             let _ = connexion.fermer().await;
-            let Some(ailleurs) = ailleurs_que(invocation, &reglages, deja)? else {
+            let Some(ailleurs) = ailleurs_que(&reglages, deja)? else {
                 return Err(Issue::CodeInconnu);
             };
             connexion = ouvrir(&ailleurs).await?;
@@ -400,7 +386,7 @@ pub async fn annonce(
             Ok(corps) => corps,
             Err(FauteReseau::Renvoye(corps)) if local.is_none() => {
                 let _ = connexion.fermer().await;
-                local = Some(reglages_du_renvoi(invocation, &corps).await?);
+                local = Some(reglages_du_renvoi(&corps).await?);
                 continue;
             }
             Err(quoi) => return Err(refus_de_l_annuaire(quoi)),
@@ -663,7 +649,7 @@ pub async fn replication(invocation: &Invocation, identite: &Identite) -> Sortie
 
     // La seconde racine, pour conclure. Son échec n'est pas l'échec du verbe :
     // ce qu'on a lu de la première reste vrai, et vaut d'être montré.
-    let second = match ailleurs_que(invocation, &reglages, deja)? {
+    let second = match ailleurs_que(&reglages, deja)? {
         None => None,
         Some(ailleurs) => match joindre_et_lire(&ailleurs, identite).await {
             Ok(corps) => Some(corps),
@@ -772,11 +758,8 @@ pub async fn diagnostic(invocation: &Invocation, dossier: &Path) -> Sortie {
             break;
         };
         let quoi = &reglages.annuaires()[place];
-        // **CE QU'ON CROIT AU BOUT** : l'identité, ou le nom d'hier.
-        let attendu = quoi.identite.map_or_else(
-            || format!("nom exigé : {}", quoi.nom),
-            |identite| format!("identité : {}", identite.texte().as_str()),
-        );
+        // **CE QU'ON CROIT AU BOUT** : l'identité, et rien d'autre.
+        let attendu = format!("identité : {}", quoi.identite.texte().as_str());
         println!(
             "  {}. {:<45} {attendu}   ({})",
             rang.saturating_add(1),
@@ -792,8 +775,8 @@ pub async fn diagnostic(invocation: &Invocation, dossier: &Path) -> Sortie {
     println!();
     let mut connexion = ouvrir(&reglages).await?;
     println!("connexion      établie");
-    // **LA FORME QUI A SERVI** (décision 58) : le jour où plus aucune ligne ne
-    // dit « forme d'hier », les racines peuvent cesser de servir leur chaîne.
+    // **LA FORME QUI A SERVI** (décision 58) : il n'en reste qu'une, et on la
+    // dit quand même — c'est ce qu'on a cru, et un diagnostic le montre.
     match connexion.forme() {
         Some(forme) => println!("confiance      {forme}"),
         None => println!("confiance      inconnue"),
@@ -803,7 +786,7 @@ pub async fn diagnostic(invocation: &Invocation, dossier: &Path) -> Sortie {
             .annuaires()
             .iter()
             .find(|quoi| quoi.adresse == ou)
-            .and_then(|quoi| quoi.identite)
+            .map(|quoi| quoi.identite)
     }) {
         println!("identité jointe {}", identite.texte().as_str());
     }
@@ -890,7 +873,7 @@ pub async fn diagnostic(invocation: &Invocation, dossier: &Path) -> Sortie {
                     // **OÙ CETTE MACHINE S'ANNONCE** (0.28.0) : une racine
                     // renvoie en `421` l'annonce d'une machine dont le
                     // domaine est confié à un annuaire local.
-                    renvoi_de_l_annonce(&mut connexion, &reglages).await;
+                    renvoi_de_l_annonce(&mut connexion).await;
                 }
                 Err(quoi) => {
                     println!("clé            REFUSÉE — {quoi}");
@@ -925,7 +908,7 @@ pub async fn diagnostic(invocation: &Invocation, dossier: &Path) -> Sortie {
 /// été créé. Un refus veut alors dire « pas de renvoi » — et non « pas le
 /// droit d'annoncer », que ce diagnostic ne sait pas trancher et ne prétend
 /// pas trancher.
-async fn renvoi_de_l_annonce(connexion: &mut Connexion, reglages: &Reglages) {
+async fn renvoi_de_l_annonce(connexion: &mut Connexion) {
     let json: (&[u8], &[u8]) = (b"content-type", b"application/json");
     let reponse = match connexion
         .requete(b"POST", b"/v1/annonce", &[json], b"")
@@ -967,7 +950,7 @@ async fn renvoi_de_l_annonce(connexion: &mut Connexion, reglages: &Reglages) {
             Connexion::ouvrir_confiance(
                 membre.adresse,
                 &membre.nom,
-                &confiance_de(membre, reglages.racines()),
+                &confiance_de(membre),
                 &|| etat::hasard::<16>().unwrap_or([0; 16]),
             ),
         )
@@ -978,9 +961,7 @@ async fn renvoi_de_l_annonce(connexion: &mut Connexion, reglages: &Reglages) {
                     || "confiance inconnue".to_owned(),
                     |forme| forme.to_string(),
                 );
-                let qui = membre
-                    .identite
-                    .map_or_else(String::new, |n| format!(", sous {}", n.texte().as_str()));
+                let qui = format!(", sous {}", membre.identite.texte().as_str());
                 println!(
                     "  {:<45} joignable ({forme}{qui})",
                     membre.adresse.to_string()
@@ -1013,7 +994,7 @@ async fn renvoi_de_l_annonce(connexion: &mut Connexion, reglages: &Reglages) {
 /// chercher une panne de réseau là où il y a un droit manquant.
 /// Les réglages qui visent l'annuaire local qu'un `421` désigne : chacun de
 /// ses membres, sous SA propre identité (décision 59).
-async fn reglages_du_renvoi(invocation: &Invocation, corps: &[u8]) -> Result<Reglages, Issue> {
+async fn reglages_du_renvoi(corps: &[u8]) -> Result<Reglages, Issue> {
     let renvoi = asl_client::renvoi::Renvoi::lire(corps).map_err(|quoi| {
         Issue::Injoignable(format!(
             "l'annuaire renvoie ailleurs, mais le renvoi ne se lit pas ({quoi:?})"
@@ -1032,8 +1013,7 @@ async fn reglages_du_renvoi(invocation: &Invocation, corps: &[u8]) -> Result<Reg
         renvoi.annuaire().texte().as_str(),
         membres.len()
     );
-    Reglages::nouveaux(membres, racines(invocation)?, PLAFOND_MS)
-        .map_err(|quoi| Issue::Configuration(quoi.to_string()))
+    Reglages::nouveaux(membres, PLAFOND_MS).map_err(|quoi| Issue::Configuration(quoi.to_string()))
 }
 
 fn refus_de_l_annuaire(quoi: FauteReseau) -> Issue {
@@ -1096,25 +1076,21 @@ mod tests {
 
         let une: SocketAddr = "192.0.2.1:6630".parse().unwrap();
         let autre: SocketAddr = "192.0.2.2:6630".parse().unwrap();
+        let identite = asl_id::Identifiant::depuis_entropie(asl_id::Genre::Annuaire, [0x6E; 16]);
         let nomme = |adresse| Annuaire {
             adresse,
             nom: "annuaire.example".to_owned(),
-            identite: None,
+            identite,
         };
-        let racines = super::RACINE_EPINGLEE.to_vec();
-        let deux = Reglages::nouveaux(
-            vec![nomme(une), nomme(autre)],
-            racines.clone(),
-            super::PLAFOND_MS,
-        )
-        .expect("deux adresses, une configuration valable");
+        let deux = Reglages::nouveaux(vec![nomme(une), nomme(autre)], super::PLAFOND_MS)
+            .expect("deux adresses, une configuration valable");
 
         let restants = super::restants_sans(&deux, Some(une)).expect("il en reste une");
         let adresses: Vec<SocketAddr> = restants.iter().map(|a| a.adresse).collect();
         assert_eq!(adresses, vec![autre], "l'adresse essayée doit disparaître");
 
         // Une seule adresse : il n'y a pas d'ailleurs, et c'est le cas d'un banc.
-        let seule = Reglages::nouveaux(vec![nomme(une)], racines, super::PLAFOND_MS)
+        let seule = Reglages::nouveaux(vec![nomme(une)], super::PLAFOND_MS)
             .expect("une adresse suffit à une configuration");
         assert!(
             super::restants_sans(&seule, Some(une)).is_none(),

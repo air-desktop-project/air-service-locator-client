@@ -205,8 +205,9 @@ pub struct Connexion {
 impl Connexion {
     /// Ouvre une connexion à cet annuaire, et mène la poignée de main au bout.
     ///
-    /// `nom` est le nom exigé du certificat, et il sert aussi d'`:authority`.
-    /// `racines` porte les certificats d'autorité en PEM.
+    /// `identite` est le `n-…` qu'on doit trouver au bout : la clé de son
+    /// certificat doit s'y déduire (`protocole.md` §0). `nom` ne va que dans
+    /// `:authority` ; il n'est jamais vérifié ni résolu (C20).
     ///
     /// # L'ALÉA VIENT DU NOYAU, ET IL EN FAUT
     ///
@@ -221,19 +222,17 @@ impl Connexion {
     pub async fn ouvrir(
         annuaire: SocketAddr,
         nom: &str,
-        racines: &[u8],
+        identite: Identifiant,
         alea: &(dyn Fn() -> [u8; 16] + Sync),
     ) -> Result<Self, Faute> {
-        Self::ouvrir_confiance(annuaire, nom, &Confiance::par_autorite(racines), alea).await
+        Self::ouvrir_confiance(annuaire, nom, &Confiance::par_identites(&[identite]), alea).await
     }
 
     /// Ouvre une connexion à cet annuaire sous cette [`Confiance`] : les
-    /// identités qu'on attend au bout, et — le temps de la bascule —
-    /// l'autorité d'hier (`protocole.md` §0, décision 58).
+    /// identités qu'on accepte de trouver au bout (`protocole.md` §0).
     ///
-    /// `nom` va dans `:authority` ; il n'est vérifié que par la forme d'hier.
-    /// Sans autorité, la poignée de main ne vise que l'adresse, et c'est
-    /// l'identité qu'on juge.
+    /// `nom` ne va que dans `:authority`. La poignée de main ne vise que
+    /// l'adresse, et c'est l'identité qu'on juge.
     ///
     /// # Errors
     ///
@@ -245,7 +244,7 @@ impl Connexion {
         alea: &(dyn Fn() -> [u8; 16] + Sync),
     ) -> Result<Self, Faute> {
         let (config, retenue) = confiance::configuration(confiance)?;
-        let serveur = confiance::nom_de_serveur(confiance, nom, annuaire)?;
+        let serveur = confiance::nom_de_serveur(annuaire);
 
         // **UNE SOCKET DE LA MÊME FAMILLE QUE LA CIBLE.** Se lier en IPv4 pour
         // joindre une adresse IPv6 échoue au premier envoi, et le message du
@@ -287,9 +286,8 @@ impl Connexion {
         Ok(connexion)
     }
 
-    /// La forme de confiance qui a servi : l'identité par la clé, ou
-    /// l'autorité d'hier (décision 58). `None` avant la poignée de main — ce
-    /// qu'une connexion ouverte n'est jamais.
+    /// La forme de confiance qui a servi : l'identité par la clé. `None`
+    /// avant la poignée de main — ce qu'une connexion ouverte n'est jamais.
     #[must_use]
     pub fn forme(&self) -> Option<Forme> {
         self.forme.lock().ok().and_then(|place| *place)

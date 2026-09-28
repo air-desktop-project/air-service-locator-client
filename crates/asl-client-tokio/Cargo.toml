@@ -39,8 +39,9 @@ asl-api.workspace = true
 #
 # `ams-quic-client` n'est PAS une bibliothèque cliente — c'est le harnais
 # d'essai d'`air-mail-server`, et c'est à ce titre qu'il est ici : il sait
-# fabriquer un certificat de banc avec `openssl`, ce que rien dans ce dépôt ne
-# sait faire.
+# fabriquer une chaîne sous une autorité avec `openssl` — la forme d'hier, et un
+# essai éprouve qu'elle est refusée. Le banc, lui, ne sert plus que des
+# certificats d'identité, fabriqués par `asl-cle`.
 ams-proto-http.workspace = true
 ams-quic-client.workspace = true
 asl-cle.workspace = true

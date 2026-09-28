@@ -5,9 +5,9 @@
 //! La politique — un seul saut, un retour qui se paie — est éprouvée dans
 //! `asl-client` (`tests/renvoi.rs`), sans attendre une seconde. Ici, on
 //! éprouve qu'elle est **obéie** : qu'une racine qui répond `421` fait
-//! s'annoncer le daemon chez l'annuaire local qu'elle désigne, sous la
-//! confiance TLS que le porteur a donnée (`--roots`), et qu'un membre mort de
-//! la paire ne retient pas l'autre.
+//! s'annoncer le daemon chez l'annuaire local qu'elle désigne, sous
+//! l'identité que le `421` nomme (décision 53), et qu'un membre mort de la
+//! paire ne retient pas l'autre.
 //!
 //! **Le banc est celui des autres essais** : une vraie poignée de main, une
 //! sémantique feinte. Ce qu'il permet de prouver est l'enchaînement du
@@ -37,25 +37,20 @@ fn identite() -> Identite {
     Identite::nouvelle(machine, [0x42; 32]).expect("une identité d'essai")
 }
 
-fn annuaire(adresse: std::net::SocketAddr) -> Annuaire {
+fn annuaire(adresse: std::net::SocketAddr, identite: Identifiant) -> Annuaire {
     Annuaire {
         adresse,
         nom: "localhost".to_owned(),
-        identite: None,
+        identite,
     }
 }
 
-/// L'annuaire local que la racine désigne.
-fn local() -> Identifiant {
-    Identifiant::depuis_entropie(Genre::Annuaire, [0x6C; 16])
-}
-
-/// Le corps d'un `421`, tel que la racine l'écrit.
-fn renvoi(ports: &[u16]) -> Vec<u8> {
+/// Le corps d'un `421`, tel que la racine l'écrit : il nomme `local`.
+fn renvoi(local: Identifiant, ports: &[u16]) -> Vec<u8> {
     let adresses: Vec<String> = ports.iter().map(|p| format!("\"localhost:{p}\"")).collect();
     format!(
         r#"{{"annuaire":"{}","adresses":[{}]}}"#,
-        local().texte().as_str(),
+        local.texte().as_str(),
         adresses.join(",")
     )
     .into_bytes()
@@ -115,18 +110,10 @@ impl ams_h3::Service for Compteur {
     }
 }
 
-/// Les deux autorités, comme `--roots` les porte : celle des racines, puis
-/// celle que le propriétaire a frappée pour son annuaire local (décision 50).
-fn deux_autorites(racines: &[u8], proprietaire: &[u8]) -> Vec<u8> {
-    let mut les_deux = racines.to_vec();
-    les_deux.extend_from_slice(proprietaire);
-    les_deux
-}
-
 #[tokio::test]
 async fn une_racine_qui_renvoie_fait_s_annoncer_chez_l_annuaire_local() {
-    let (_a, autorite_racine, cert_r, cle_r) = materiel("racine-421");
-    let (_b, autorite_locale, cert_l, cle_l) = materiel("local-421");
+    let (id_racine, cert_r, cle_r) = materiel("racine-421");
+    let (id_local, cert_l, cle_l) = materiel("local-421");
     let chez_lui = Arc::new(AtomicUsize::new(0));
     let (local_ecoute, tache_l) = lever(
         cert_l,
@@ -141,18 +128,14 @@ async fn une_racine_qui_renvoie_fait_s_annoncer_chez_l_annuaire_local() {
         cert_r,
         cle_r,
         Renvoyeur {
-            corps: renvoi(&[local_ecoute.port()]),
+            corps: renvoi(id_local, &[local_ecoute.port()]),
             annonces: Arc::clone(&a_la_racine),
         },
     )
     .await;
 
-    let reglages = Reglages::nouveaux(
-        vec![annuaire(racine)],
-        deux_autorites(&autorite_racine, &autorite_locale),
-        PLAFOND_MS,
-    )
-    .expect("la configuration est bonne");
+    let reglages = Reglages::nouveaux(vec![annuaire(racine, id_racine)], PLAFOND_MS)
+        .expect("la configuration est bonne");
     let attache = Attache::annoncer(reglages, identite(), vec![b"{}".to_vec()], alea());
 
     assert!(
@@ -174,7 +157,7 @@ async fn une_racine_qui_renvoie_fait_s_annoncer_chez_l_annuaire_local() {
     );
     assert_eq!(
         attache.annuaire_local().as_deref(),
-        Some(local().texte().as_str())
+        Some(id_local.texte().as_str())
     );
 
     tokio::time::timeout(Duration::from_secs(5), attache.retirer())
@@ -186,8 +169,8 @@ async fn une_racine_qui_renvoie_fait_s_annoncer_chez_l_annuaire_local() {
 
 #[tokio::test]
 async fn un_membre_mort_de_la_paire_ne_retient_pas_l_autre() {
-    let (_a, autorite_racine, cert_r, cle_r) = materiel("racine-paire");
-    let (_b, autorite_locale, cert_l, cle_l) = materiel("local-paire");
+    let (id_racine, cert_r, cle_r) = materiel("racine-paire");
+    let (id_local, cert_l, cle_l) = materiel("local-paire");
     let mort = adresse_morte().await;
     let chez_b = Arc::new(AtomicUsize::new(0));
     let (membre_b, tache_l) = lever(
@@ -203,18 +186,14 @@ async fn un_membre_mort_de_la_paire_ne_retient_pas_l_autre() {
         cle_r,
         Renvoyeur {
             // Le membre A (mort) d'abord : c'est lui qu'on essaiera en premier.
-            corps: renvoi(&[mort.port(), membre_b.port()]),
+            corps: renvoi(id_local, &[mort.port(), membre_b.port()]),
             annonces: Arc::new(AtomicUsize::new(0)),
         },
     )
     .await;
 
-    let reglages = Reglages::nouveaux(
-        vec![annuaire(racine)],
-        deux_autorites(&autorite_racine, &autorite_locale),
-        PLAFOND_MS,
-    )
-    .expect("la configuration est bonne");
+    let reglages = Reglages::nouveaux(vec![annuaire(racine, id_racine)], PLAFOND_MS)
+        .expect("la configuration est bonne");
     let depart = Instant::now();
     let attache = Attache::annoncer(reglages, identite(), vec![b"{}".to_vec()], alea());
     assert!(
@@ -240,20 +219,21 @@ async fn un_membre_mort_de_la_paire_ne_retient_pas_l_autre() {
 
 #[tokio::test]
 async fn un_annuaire_local_injoignable_ne_fait_ni_attache_ni_abandon_ni_boucle() {
-    let (_a, autorite, cert_r, cle_r) = materiel("racine-muet");
+    let (id_racine, cert_r, cle_r) = materiel("racine-muet");
+    let (id_local, _, _) = materiel("local-muet");
     let mort = adresse_morte().await;
     let a_la_racine = Arc::new(AtomicUsize::new(0));
     let (racine, tache_r) = lever(
         cert_r,
         cle_r,
         Renvoyeur {
-            corps: renvoi(&[mort.port()]),
+            corps: renvoi(id_local, &[mort.port()]),
             annonces: Arc::clone(&a_la_racine),
         },
     )
     .await;
 
-    let reglages = Reglages::nouveaux(vec![annuaire(racine)], autorite, PLAFOND_MS)
+    let reglages = Reglages::nouveaux(vec![annuaire(racine, id_racine)], PLAFOND_MS)
         .expect("la configuration est bonne");
     let attache = Attache::annoncer(reglages, identite(), vec![b"{}".to_vec()], alea());
 
@@ -282,12 +262,14 @@ async fn un_annuaire_local_injoignable_ne_fait_ni_attache_ni_abandon_ni_boucle()
 }
 
 #[tokio::test]
-async fn un_annuaire_local_hors_de_la_confiance_du_porteur_n_est_pas_cru() {
-    // **LA CONFIANCE N'EST PAS RELÂCHÉE PAR LE RENVOI** : la racine dit où
-    // aller, pas qui croire. Sans l'autorité du propriétaire dans `--roots`,
-    // l'annuaire local ne se fait pas accepter, quoi que la racine ait dit.
-    let (_a, autorite_racine, cert_r, cle_r) = materiel("racine-confiance");
-    let (_b, _autorite_etrangere, cert_l, cle_l) = materiel("local-etranger");
+async fn un_annuaire_local_qui_n_a_pas_la_cle_nommee_n_est_pas_cru() {
+    // **LA CONFIANCE N'EST PAS RELÂCHÉE PAR LE RENVOI** : le `421` nomme un
+    // `n-…`, et c'est cette clé qu'on doit trouver au bout de l'adresse. Un
+    // annuaire qui en présente une autre ne se fait pas accepter, quoi que la
+    // racine ait dit de l'endroit où aller.
+    let (id_racine, cert_r, cle_r) = materiel("racine-confiance");
+    let (id_nomme, _, _) = materiel("local-nomme");
+    let (_id_etranger, cert_l, cle_l) = materiel("local-etranger");
     let chez_lui = Arc::new(AtomicUsize::new(0));
     let (local_ecoute, tache_l) = lever(
         cert_l,
@@ -301,19 +283,22 @@ async fn un_annuaire_local_hors_de_la_confiance_du_porteur_n_est_pas_cru() {
         cert_r,
         cle_r,
         Renvoyeur {
-            corps: renvoi(&[local_ecoute.port()]),
+            corps: renvoi(id_nomme, &[local_ecoute.port()]),
             annonces: Arc::new(AtomicUsize::new(0)),
         },
     )
     .await;
 
-    let reglages = Reglages::nouveaux(vec![annuaire(racine)], autorite_racine, PLAFOND_MS)
+    let reglages = Reglages::nouveaux(vec![annuaire(racine, id_racine)], PLAFOND_MS)
         .expect("la configuration est bonne");
     let attache = Attache::annoncer(reglages, identite(), vec![b"{}".to_vec()], alea());
     assert!(jusqu_a(10_000, || attache.etat().renvois >= 1).await);
     tokio::time::sleep(Duration::from_millis(1_500)).await;
     let etat = attache.etat();
-    assert!(!etat.attachee, "un certificat hors de --roots a été cru");
+    assert!(
+        !etat.attachee,
+        "une clé que le renvoi ne nomme pas a été crue"
+    );
     assert!(!etat.abandonnee);
     assert_eq!(
         chez_lui.load(Ordering::Relaxed),
@@ -330,7 +315,7 @@ async fn un_annuaire_local_hors_de_la_confiance_du_porteur_n_est_pas_cru() {
 
 #[tokio::test]
 async fn un_renvoi_illisible_est_un_refus_et_non_une_direction() {
-    let (_a, autorite, cert_r, cle_r) = materiel("racine-illisible");
+    let (id_racine, cert_r, cle_r) = materiel("racine-illisible");
     let (racine, tache_r) = lever(
         cert_r,
         cle_r,
@@ -340,7 +325,7 @@ async fn un_renvoi_illisible_est_un_refus_et_non_une_direction() {
         },
     )
     .await;
-    let reglages = Reglages::nouveaux(vec![annuaire(racine)], autorite, PLAFOND_MS)
+    let reglages = Reglages::nouveaux(vec![annuaire(racine, id_racine)], PLAFOND_MS)
         .expect("la configuration est bonne");
     let attache = Attache::annoncer(reglages, identite(), vec![b"{}".to_vec()], alea());
     tokio::time::sleep(Duration::from_millis(1_500)).await;

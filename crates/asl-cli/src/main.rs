@@ -182,25 +182,20 @@ COMMANDS
                                       what is not.
 
 OPTIONS
-    --directory <host:port>[=<n-…>]
-                             Repeatable. With `=n-…`, the directory must
-                             present THAT identity's key — no authority, no
-                             name. A name resolving to several addresses
-                             yields them all; IPv6 is tried first.
-                             Default: ASL_DIRECTORY, comma-separated; else the
-                             two root directories embedded in this binary, by
-                             their addresses and keys — no DNS.
-    --roots <file.pem>       Yesterday's certificate authority, still trusted
-                             during the switch to identities. There is NO
-                             fallback to the system store. Default: ASL_ROOTS;
-                             else the air-desktop-project root CA, pinned in
-                             this binary.
+    --directory <host:port>=<n-…>
+                             Repeatable. The directory must present THAT
+                             identity's key — no authority, no name; `asl
+                             roots` gives the roots' own. A name resolving to
+                             several addresses yields them all; IPv6 is tried
+                             first. Default: ASL_DIRECTORY, comma-separated;
+                             else the two root directories embedded in this
+                             binary, by their addresses and keys — no DNS.
     --state <dir>            Where this machine's identity lives.
                              Default: ASL_STATE, then $XDG_CONFIG_HOME/asl,
                              then ~/.config/asl (on macOS, the Service Locator
                              app's identity when that one is empty).
-    --name <name>            The name required of the certificate, when it
-                             differs from the host.
+    --name <name>            The name sent as `:authority`, when it differs
+                             from the host. It proves nothing.
     --help                   This.
     --version                Version and commit, then exit.
 
@@ -213,7 +208,8 @@ EXIT CODES
     0 done   1 usage   2 configuration   3 refused by the directory   4 unreachable
 
 EXAMPLES
-    asl --directory nitrogen.example:6630 --roots /etc/asl/ca.pem enroll 4K9M2-P7R1T
+    asl enroll 4K9M2-P7R1T
+    asl --directory '[2001:db8::1]:6630=n-0PWT8HZD80QMSPPDZ5CQXXYHQC' diagnose
     asl announce depot tcp:8080 udp:9000
     asl where m-7F3A9C2E5B1D4068ABCDEFGHJK depot
     asl where depot

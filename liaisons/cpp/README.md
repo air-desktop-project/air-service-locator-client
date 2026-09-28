@@ -9,12 +9,12 @@ port fixe.
 asl::Client client;
 if (asl::Client::ouvrir(client) != asl::Faute::Ok) { /* … */ }
 
-if (auto f = client.ajouter_annuaire("203.0.113.7:6630", "nitrogen.example");
+// L'adresse, et l'identité qu'on doit trouver au bout (`asl roots`).
+if (auto f = client.ajouter_annuaire("203.0.113.7:6630", "n-0PWT8HZD80QMSPPDZ5CQXXYHQC");
     f != asl::Faute::Ok) {
     std::fprintf(stderr, "%s\n", asl::message(f));
     return 1;
 }
-(void)client.poser_racines(pem);
 (void)client.poser_identite(identite);
 
 if (auto f = client.annoncer("depot", {{asl::Protocole::Tcp, 8080}});

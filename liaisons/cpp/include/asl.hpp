@@ -82,7 +82,8 @@ enum class Faute : std::int32_t {
     Ok = ASL_OK,
     /// Une adresse illisible, un port nul, une graine de mauvaise taille.
     Argument = ASL_ARGUMENT,
-    /// Il manque un annuaire ou une racine. **Réessayer ne réparerait rien.**
+    /// Il manque un annuaire, ou il a été posé d'une façon qui ne se croit plus.
+    /// **Réessayer ne réparerait rien.**
     Configuration = ASL_CONFIGURATION,
     /// Personne n'a répondu.
     Injoignable = ASL_INJOIGNABLE,
@@ -388,45 +389,30 @@ public:
 
     // ── La configuration ────────────────────────────────────────────────────
 
-    /// Ajoute un annuaire à essayer. **Répétable, et l'ordre compte.**
+    /// Ajoute un annuaire à essayer, par son identité. **Répétable, et l'ordre
+    /// compte.**
     ///
     /// `adresse` est LITTÉRALE — `"203.0.113.7:6630"` ou `"[2001:db8::1]:6630"` —,
     /// jamais un nom d'hôte : **la résolution appartient à l'appelant**, qui a
     /// déjà un résolveur et sa politique de cache.
     ///
-    /// `nom` est celui qu'on EXIGE du certificat. Il n'est pas déduit de
-    /// l'adresse : le déduire reviendrait à faire confiance à qui répond à cette
-    /// adresse.
+    /// `n` est l'identité `n-…` qu'on doit trouver au bout : la clé du
+    /// certificat que l'annuaire présente doit s'y déduire, et rien d'autre ne
+    /// le fait croire — ni autorité, ni nom (décision 58).
     ///
     /// L'IPv6 est essayé d'abord quel que soit l'ordre des appels.
     [[nodiscard]] Faute ajouter_annuaire(const std::string& adresse,
-                                         const std::string& nom) noexcept {
+                                         const std::string& n) noexcept {
         if (brut_ == nullptr) {
             return Faute::Argument;
         }
         std::string a;
-        std::string n;
-        if (!interne::chaine(adresse, a) || !interne::chaine(nom, n)) {
+        std::string identite;
+        if (!interne::chaine(adresse, a) || !interne::chaine(n, identite)) {
             return Faute::Argument;
         }
-        return static_cast<Faute>(asl_client_annuaire(brut_, a.c_str(), n.c_str()));
-    }
-
-    /// Pose les certificats d'autorité, en PEM.
-    ///
-    /// **IL N'Y A PAS DE REPLI SUR LE MAGASIN DU SYSTÈME** : les annuaires sont
-    /// signés par LEUR autorité, et se rabattre en silence sur les centaines de
-    /// racines d'un système ferait accepter un certificat qu'aucune n'aurait émis.
-    [[nodiscard]] Faute poser_racines(const std::uint8_t* pem, std::size_t taille) noexcept {
-        if (brut_ == nullptr) {
-            return Faute::Argument;
-        }
-        return static_cast<Faute>(asl_client_racines(brut_, pem, taille));
-    }
-
-    /// La même chose, depuis ce qu'on vient de lire dans un fichier.
-    [[nodiscard]] Faute poser_racines(const std::string& pem) noexcept {
-        return poser_racines(reinterpret_cast<const std::uint8_t*>(pem.data()), pem.size());
+        return static_cast<Faute>(
+            asl_client_annuaire_identifie(brut_, a.c_str(), identite.c_str()));
     }
 
     /// Installe l'identité de cette machine.

@@ -46,21 +46,19 @@ const RETRAIT_MS: u64 = 2_000;
 pub struct Annuaire {
     /// Où le joindre.
     pub adresse: SocketAddr,
-    /// Le nom qu'on exige de son certificat, et qu'on met dans `:authority`.
+    /// Le nom qu'on met dans `:authority`.
     ///
-    /// **IL N'EST PAS DÉDUIT DE L'ADRESSE**, et il ne peut pas l'être : c'est
-    /// lui qui est vérifié. Le déduire d'une adresse reviendrait à faire
-    /// confiance à qui répond à cette adresse, ce qui est exactement ce que le
-    /// certificat existe pour éviter.
-    ///
-    /// **Sous la forme nouvelle, il ne va que dans `:authority`** : on ne
-    /// vise que l'adresse, et c'est l'[identité](Self::identite) qu'on juge.
+    /// **IL NE PROUVE RIEN** (C20) : on ne vise que l'adresse, et c'est
+    /// l'[identité](Self::identite) qu'on juge. Il n'est ni vérifié ni résolu
+    /// ici.
     pub nom: String,
     /// L'identité `n-…` qu'on doit trouver au bout (`protocole.md` §0) :
-    /// sa clé est ce que le certificat présenté doit porter. `None` : la
-    /// forme d'hier seule — une chaîne signée par l'autorité des
-    /// [racines](Reglages::racines), au [nom](Self::nom) exigé.
-    pub identite: Option<Identifiant>,
+    /// sa clé est ce que le certificat présenté doit porter.
+    ///
+    /// **ELLE N'EST PLUS FACULTATIVE** (décision 58, étape 5) : l'autorité
+    /// d'hier est retirée, et un annuaire sans identité attendue ne serait
+    /// cru par rien.
+    pub identite: Identifiant,
 }
 
 /// Ce qu'il faut savoir pour joindre le service, quelle que soit la machine.
@@ -69,7 +67,6 @@ pub struct Reglages {
     annuaires: Vec<Annuaire>,
     /// Les mêmes adresses, à plat : c'est ce que la tournée parcourt.
     adresses: Vec<SocketAddr>,
-    racines: Vec<u8>,
     reprise: Reprise,
 }
 
@@ -89,11 +86,7 @@ impl Reglages {
     /// # Errors
     ///
     /// [`Faute::SansAnnuaire`], [`Faute::PlafondNul`].
-    pub fn nouveaux(
-        annuaires: Vec<Annuaire>,
-        racines: Vec<u8>,
-        plafond_ms: u64,
-    ) -> Result<Self, Faute> {
+    pub fn nouveaux(annuaires: Vec<Annuaire>, plafond_ms: u64) -> Result<Self, Faute> {
         if annuaires.is_empty() {
             return Err(Faute::SansAnnuaire);
         }
@@ -102,7 +95,6 @@ impl Reglages {
         Ok(Self {
             annuaires,
             adresses,
-            racines,
             reprise,
         })
     }
@@ -111,17 +103,6 @@ impl Reglages {
     #[must_use]
     pub fn annuaires(&self) -> &[Annuaire] {
         &self.annuaires
-    }
-
-    /// L'autorité d'hier (`--roots`), en PEM — vide si l'on ne croit que
-    /// des identités.
-    ///
-    /// **LE TEMPS DE LA BASCULE SEULEMENT** (décision 58) : un annuaire qui
-    /// ne sert encore que sa chaîne est cru par elle ; un annuaire qui sert
-    /// son identité est cru par sa clé, avec ou sans elle.
-    #[must_use]
-    pub fn racines(&self) -> &[u8] {
-        &self.racines
     }
 }
 
@@ -165,15 +146,7 @@ async fn un_pas(
         return Pas::Impossible(Faute::SansAnnuaire);
     };
     let cible = reglages.annuaires.get(etape.place);
-    essayer(
-        cible,
-        etape.attendre_ms,
-        &reglages.racines,
-        alea,
-        arret,
-        true,
-    )
-    .await
+    essayer(cible, etape.attendre_ms, alea, arret, true).await
 }
 
 /// Un pas de la tournée d'une attache, qui peut avoir été renvoyée vers un
@@ -197,15 +170,7 @@ async fn un_pas_aiguille(
         Cote::Racines => (reglages.annuaires.get(etape.place), true),
         Cote::Local => (local.get(etape.place), false),
     };
-    essayer(
-        cible,
-        etape.attendre_ms,
-        &reglages.racines,
-        alea,
-        arret,
-        racine,
-    )
-    .await
+    essayer(cible, etape.attendre_ms, alea, arret, racine).await
 }
 
 /// Attendre, puis ouvrir une connexion vers cet annuaire.
@@ -218,7 +183,6 @@ async fn un_pas_aiguille(
 async fn essayer(
     cible: Option<&Annuaire>,
     attendre_ms: u64,
-    racines: &[u8],
     alea: &(dyn Fn() -> [u8; 16] + Sync),
     arret: Option<&AtomicBool>,
     configure: bool,
@@ -234,33 +198,33 @@ async fn essayer(
     let Some(cible) = cible else {
         return Pas::Ratee;
     };
-    let confiance = confiance_de(cible, racines);
+    let confiance = confiance_de(cible);
     match Connexion::ouvrir_confiance(cible.adresse, &cible.nom, &confiance, alea).await {
         Ok(connexion) => Pas::Ouverte(Box::new(connexion)),
-        // **UNE RACINE ILLISIBLE NE DEVIENT PAS LISIBLE EN RÉESSAYANT.** Une
-        // faute de configuration réessayée à l'infini est une panne muette : le
-        // porteur voit un daemon qui « cherche », alors qu'il ne trouvera jamais.
+        // **UNE CONFIGURATION TLS QUI NE SE CONSTRUIT PAS NE SE CONSTRUIRA PAS
+        // EN RÉESSAYANT.** Une faute de configuration réessayée à l'infini est
+        // une panne muette : le porteur voit un daemon qui « cherche », alors
+        // qu'il ne trouvera jamais. Depuis que l'autorité d'hier est retirée,
+        // il n'y a plus de PEM à mal lire : il ne reste que ce que `rustls`
+        // refuserait de monter.
         Err(Faute::Tls(quoi)) if configure => Pas::Impossible(Faute::Tls(quoi)),
         Err(_) => Pas::Ratee,
     }
 }
 
-/// Ce qu'on croit au bout de cet annuaire : son identité s'il en a une, et
-/// l'autorité d'hier tant qu'elle est configurée (décision 58).
+/// Ce qu'on croit au bout de cet annuaire : son identité, et rien d'autre
+/// (décision 58, étape 5).
 #[must_use]
-pub fn confiance_de(annuaire: &Annuaire, racines: &[u8]) -> Confiance {
-    let identites: Vec<Identifiant> = annuaire.identite.into_iter().collect();
-    Confiance::par_identites(&identites).avec_autorite(racines)
+pub fn confiance_de(annuaire: &Annuaire) -> Confiance {
+    Confiance::par_identites(&[annuaire.identite])
 }
 
 /// Les annuaires qu'un renvoi désigne, résolus.
 ///
 /// **L'IDENTITÉ ATTENDUE EST CELLE QUE LE RENVOI NOMME** (`protocole.md`
 /// §0, décision 53) : le `421` dit l'annuaire local `n-…`, et c'est sa clé
-/// qu'on doit trouver au bout — l'autorité du propriétaire de la décision 50
-/// n'a plus à être dans `--roots`. L'hôte de chaque locateur ne va que dans
-/// `:authority` (et dans le SNI d'un annuaire local d'hier qui ne servirait
-/// qu'une chaîne, le temps de la bascule). Un locateur littéral est gardé tel
+/// qu'on doit trouver au bout. L'hôte de chaque locateur ne va que dans
+/// `:authority`. Un locateur littéral est gardé tel
 /// quel ; un nom — une commodité, jamais une preuve (C20) — est résolu, et
 /// **toutes** ses adresses sont gardées.
 ///
@@ -285,7 +249,7 @@ pub async fn membres_du_renvoi(renvoi: &Renvoi<'_>) -> Vec<Annuaire> {
             trouves.push(Annuaire {
                 adresse: SocketAddr::new(ip, port),
                 nom: hote.to_owned(),
-                identite: Some(identite),
+                identite,
             });
             continue;
         }
@@ -294,7 +258,7 @@ pub async fn membres_du_renvoi(renvoi: &Renvoi<'_>) -> Vec<Annuaire> {
                 trouves.push(Annuaire {
                     adresse,
                     nom: hote.to_owned(),
-                    identite: Some(identite),
+                    identite,
                 });
             }
         }
@@ -319,8 +283,9 @@ pub async fn membres_du_renvoi(renvoi: &Renvoi<'_>) -> Vec<Annuaire> {
 ///
 /// # Errors
 ///
-/// Seulement ce que réessayer ne réparerait pas : [`Faute::Tls`] pour une racine
-/// qu'on ne sait pas lire, [`Faute::SansAnnuaire`] pour une liste vide.
+/// Seulement ce que réessayer ne réparerait pas : [`Faute::Tls`] pour une
+/// configuration TLS qui ne se monte pas, [`Faute::SansAnnuaire`] pour une
+/// liste vide.
 pub async fn joindre(
     reglages: &Reglages,
     alea: &(dyn Fn() -> [u8; 16] + Sync),
@@ -358,8 +323,8 @@ pub struct Etat {
     pub ruptures: u64,
     /// La tâche a renoncé, et ne réessaiera pas.
     ///
-    /// **ELLE NE RENONCE QUE SUR UNE FAUTE DE CONFIGURATION** — une racine
-    /// illisible, une liste vide. Jamais sur une panne de réseau, quelle qu'en
+    /// **ELLE NE RENONCE QUE SUR UNE FAUTE DE CONFIGURATION** — une
+    /// configuration TLS qui ne se monte pas, une liste vide. Jamais sur une panne de réseau, quelle qu'en
     /// soit la durée.
     pub abandonnee: bool,
     /// Combien de poussées de verdict sont arrivées depuis le départ.

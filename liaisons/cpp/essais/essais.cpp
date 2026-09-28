@@ -20,6 +20,12 @@
 // pour ses propres essais. Trente lignes de macro font le même travail, et le
 // compilateur du porteur n'a rien à télécharger.
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -53,6 +59,9 @@ void rapporter(bool tenu, const char* quoi, const char* fichier, int ligne) {
 // divergerait. Si `asl-id` change de forme, cet essai le dira.
 const char* const kMachine = "m-0H248H248H248H248H248H248H";
 
+// Une identité d'annuaire VALIDE, recopiée pour la même raison.
+const char* const kAnnuaire = "n-0PWT8HZD80QMSPPDZ5CQXXYHQC";
+
 asl::Identite identite_d_essai() {
     asl::Identite identite;
     identite.machine = kMachine;
@@ -62,17 +71,14 @@ asl::Identite identite_d_essai() {
     return identite;
 }
 
-/// Un client dont la racine est illisible : de quoi atteindre `Configuration`.
-asl::Faute client_configure(asl::Client& client, bool avec_identite) {
+/// Un client qui vise cet annuaire — par défaut, un port où rien n'écoute —,
+/// sous son identité.
+asl::Faute client_configure(asl::Client& client, bool avec_identite,
+                            const std::string& ou = "127.0.0.1:1") {
     if (auto faute = asl::Client::ouvrir(client); faute != asl::Faute::Ok) {
         return faute;
     }
-    if (auto faute = client.ajouter_annuaire("127.0.0.1:1", "localhost");
-        faute != asl::Faute::Ok) {
-        return faute;
-    }
-    const std::string pas_un_pem = "pas un PEM";
-    if (auto faute = client.poser_racines(pas_un_pem); faute != asl::Faute::Ok) {
+    if (auto faute = client.ajouter_annuaire(ou, kAnnuaire); faute != asl::Faute::Ok) {
         return faute;
     }
     if (avec_identite) {
@@ -142,8 +148,7 @@ void un_client_par_defaut_refuse_au_lieu_de_dereferencer_le_neant() {
     // comme `delete nullptr`.
     asl::Client vide;
     VERIFIE(!vide.ouvert());
-    VERIFIE(vide.ajouter_annuaire("127.0.0.1:1", "localhost") == asl::Faute::Argument);
-    VERIFIE(vide.poser_racines(std::string("x")) == asl::Faute::Argument);
+    VERIFIE(vide.ajouter_annuaire("127.0.0.1:1", kAnnuaire) == asl::Faute::Argument);
     VERIFIE(vide.poser_identite(identite_d_essai()) == asl::Faute::Argument);
     VERIFIE(vide.annoncer("depot", {{asl::Protocole::Tcp, 8080}}) == asl::Faute::Argument);
 
@@ -175,14 +180,15 @@ void une_adresse_illisible_est_refusee() {
         "",
     };
     for (const char* mauvaise : mauvaises) {
-        VERIFIE(client.ajouter_annuaire(mauvaise, "localhost") == asl::Faute::Argument);
+        VERIFIE(client.ajouter_annuaire(mauvaise, kAnnuaire) == asl::Faute::Argument);
     }
 
+    VERIFIE(client.ajouter_annuaire("203.0.113.7:6630", kAnnuaire) == asl::Faute::Ok);
+    VERIFIE(client.ajouter_annuaire("[2001:db8::1]:6630", kAnnuaire) == asl::Faute::Ok);
+    // **LA FORME D'HIER EST RETIRÉE** (décision 58, étape 5) : un nom de
+    // certificat ne dit pas quelle clé croire, et une identité vide non plus.
     VERIFIE(client.ajouter_annuaire("203.0.113.7:6630", "nitrogen.example") ==
-            asl::Faute::Ok);
-    VERIFIE(client.ajouter_annuaire("[2001:db8::1]:6630", "nitrogen.example") ==
-            asl::Faute::Ok);
-    // Un nom vide ne vérifie aucun certificat.
+            asl::Faute::Argument);
     VERIFIE(client.ajouter_annuaire("203.0.113.7:6630", "") == asl::Faute::Argument);
 }
 
@@ -195,7 +201,7 @@ void un_nul_au_milieu_d_une_chaine_est_refuse() {
     std::string tricherie = "127.0.0.1:1";
     tricherie.push_back('\0');
     tricherie += "et la suite";
-    VERIFIE(client.ajouter_annuaire(tricherie, "localhost") == asl::Faute::Argument);
+    VERIFIE(client.ajouter_annuaire(tricherie, kAnnuaire) == asl::Faute::Argument);
 
     std::string service = "depot";
     service.push_back('\0');
@@ -227,36 +233,36 @@ void un_client_n_annonce_qu_une_fois() {
 
 void le_fil_natif_tourne_sans_que_personne_l_attende() {
     // **C'EST L'ESSAI QUI COMPTE LE PLUS.** `annoncer` a rendu la main et
-    // l'appelant est parti ; si le fil natif ne tournait pas, `abandonnee` ne
-    // passerait jamais à vrai — et tout compilerait.
-    asl::Client client;
-    VERIFIE(client_configure(client, true) == asl::Faute::Ok);
-    VERIFIE(client.annoncer("depot", {{asl::Protocole::Tcp, 8080}}) == asl::Faute::Ok);
+    // l'appelant est parti ; si le fil natif ne tournait pas, le pair MUET ne
+    // recevrait jamais le premier paquet de la poignée de main — et tout
+    // compilerait. (Que l'identité survive à l'annonce est une affaire du côté
+    // Rust : `asl-client-ffi/tests/abi.rs` la tient, sur un banc.)
+    const int muet = ::socket(AF_INET, SOCK_DGRAM, 0);
+    VERIFIE(muet >= 0);
+    sockaddr_in ici{};
+    ici.sin_family = AF_INET;
+    ici.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    ici.sin_port = 0;
+    VERIFIE(::bind(muet, reinterpret_cast<sockaddr*>(&ici), sizeof ici) == 0);
+    socklen_t taille = sizeof ici;
+    VERIFIE(::getsockname(muet, reinterpret_cast<sockaddr*>(&ici), &taille) == 0);
+    const std::string ou = "127.0.0.1:" + std::to_string(ntohs(ici.sin_port));
 
-    asl::Etat etat;
-    for (int tour = 0; tour < 250; ++tour) {
+    {
+        asl::Client client;
+        VERIFIE(client_configure(client, true, ou) == asl::Faute::Ok);
+        VERIFIE(client.annoncer("depot", {{asl::Protocole::Tcp, 8080}}) == asl::Faute::Ok);
+
+        pollfd attente{muet, POLLIN, 0};
+        VERIFIE(::poll(&attente, 1, 5000) == 1);
+        char paquet[2048];
+        VERIFIE(::recv(muet, paquet, sizeof paquet, 0) > 0);
+
+        asl::Etat etat;
         VERIFIE(client.etat(etat) == asl::Faute::Ok);
-        if (etat.abandonnee) {
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        VERIFIE(!etat.attachee);
     }
-    VERIFIE(etat.abandonnee);
-    VERIFIE(!etat.attachee);
-    VERIFIE(etat.attaches == 0);
-}
-
-void l_identite_survit_a_l_annonce() {
-    // L'annonce CONSOMME une identité côté Rust ; si le client la perdait, `ou`
-    // répondrait « aucune identité » à un daemon qui vient de s'annoncer.
-    asl::Client client;
-    VERIFIE(client_configure(client, true) == asl::Faute::Ok);
-    VERIFIE(client.annoncer("depot", {{asl::Protocole::Tcp, 8080}}) == asl::Faute::Ok);
-
-    std::vector<asl::Candidat> candidats;
-    const asl::Faute issue = client.ou(kMachine, "depot", candidats);
-    VERIFIE(issue != asl::Faute::PasDIdentite);
-    VERIFIE(issue == asl::Faute::Configuration);
+    ::close(muet);
 }
 
 // ── LA DURÉE DE VIE ────────────────────────────────────────────────────────
@@ -402,7 +408,6 @@ int main() {
     une_annonce_sans_point_n_annonce_rien();
     un_client_n_annonce_qu_une_fois();
     le_fil_natif_tourne_sans_que_personne_l_attende();
-    l_identite_survit_a_l_annonce();
     un_client_deplace_laisse_l_original_vide();
     une_affectation_par_deplacement_ferme_ce_qu_elle_remplace();
     un_candidat_v6_porte_ses_crochets();

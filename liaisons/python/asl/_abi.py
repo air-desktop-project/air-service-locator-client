@@ -244,13 +244,6 @@ def _declarer(lib: ctypes.CDLL) -> ctypes.CDLL:
     lib.asl_client_annuaire_identifie.argtypes = [opaque, ctypes.c_char_p, ctypes.c_char_p]
     lib.asl_client_annuaire_identifie.restype = i32
 
-    lib.asl_client_racines.argtypes = [
-        opaque,
-        ctypes.POINTER(ctypes.c_uint8),
-        ctypes.c_size_t,
-    ]
-    lib.asl_client_racines.restype = i32
-
     lib.asl_client_identite.argtypes = [
         opaque,
         ctypes.c_char_p,
@@ -315,9 +308,6 @@ def _declarer(lib: ctypes.CDLL) -> ctypes.CDLL:
 
     lib.asl_appareil_annuaire_identifie.argtypes = [opaque, ctypes.c_char_p, ctypes.c_char_p]
     lib.asl_appareil_annuaire_identifie.restype = i32
-
-    lib.asl_appareil_racines.argtypes = [opaque, u8p, ctypes.c_size_t]
-    lib.asl_appareil_racines.restype = i32
 
     lib.asl_appareil_cle.argtypes = [opaque, u8p, signataire, ctypes.c_void_p]
     lib.asl_appareil_cle.restype = i32

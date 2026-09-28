@@ -8,15 +8,15 @@
 //! l'application.
 //!
 //!     cargo run -p asl-client-ffi --example appareil -- \
-//!         192.168.1.102:6630 speedy racine.pem
+//!         192.168.1.102:6630 n-…
 
 use core::ffi::{c_char, c_void};
 use std::ffi::{CStr, CString};
 
 use asl_client_ffi::appareil::{
-    ASL_PLATEFORME_AUCUNE, ASL_SIGNATURE_OCTETS, asl_appareil_annuaire, asl_appareil_cle,
+    ASL_PLATEFORME_AUCUNE, ASL_SIGNATURE_OCTETS, asl_appareil_annuaire_identifie, asl_appareil_cle,
     asl_appareil_connecter, asl_appareil_creer_compte, asl_appareil_identifiant,
-    asl_appareil_libere, asl_appareil_neuf, asl_appareil_racines, asl_appareil_requete,
+    asl_appareil_libere, asl_appareil_neuf, asl_appareil_requete,
 };
 use asl_client_ffi::{ASL_IDENTIFIANT_OCTETS, ASL_OK, asl_faute_texte};
 
@@ -52,11 +52,10 @@ fn texte(code: i32) -> String {
 
 fn main() {
     let arguments: Vec<String> = std::env::args().collect();
-    let [_, adresse, nom, racines] = arguments.as_slice() else {
-        eprintln!("usage : appareil <adresse:port> <nom du certificat> <racines.pem>");
+    let [_, adresse, n] = arguments.as_slice() else {
+        eprintln!("usage : appareil <adresse:port> <n-… attendu>");
         std::process::exit(2);
     };
-    let pem = std::fs::read(racines).expect("le fichier de racines se lit");
 
     let mut entropie = [0_u8; 32];
     for (place, octet) in entropie.iter_mut().enumerate() {
@@ -72,16 +71,12 @@ fn main() {
 
     let mut appareil = core::ptr::null_mut();
     let adresse = CString::new(adresse.as_str()).unwrap();
-    let nom = CString::new(nom.as_str()).unwrap();
+    let n = CString::new(n.as_str()).unwrap();
     // SAFETY : chaque pointeur est valide pour la durée de l'appel.
     unsafe {
         assert_eq!(asl_appareil_neuf(&raw mut appareil), ASL_OK);
         assert_eq!(
-            asl_appareil_annuaire(appareil, adresse.as_ptr(), nom.as_ptr()),
-            ASL_OK
-        );
-        assert_eq!(
-            asl_appareil_racines(appareil, pem.as_ptr(), pem.len()),
+            asl_appareil_annuaire_identifie(appareil, adresse.as_ptr(), n.as_ptr()),
             ASL_OK
         );
         assert_eq!(

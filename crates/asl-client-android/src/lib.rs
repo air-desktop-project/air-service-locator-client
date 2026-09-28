@@ -35,8 +35,7 @@ use asl_client_ffi::appareil::{
     asl_appareil_identifiant, asl_appareil_identite, asl_appareil_liaison, asl_appareil_libere,
     asl_appareil_message_pour_attestation, asl_appareil_message_pour_attestation_de_cle,
     asl_appareil_neuf, asl_appareil_nouvelle, asl_appareil_nouvelles_ouvrir,
-    asl_appareil_nouvelles_recues, asl_appareil_racines, asl_appareil_rejoindre_atteste,
-    asl_appareil_requete,
+    asl_appareil_nouvelles_recues, asl_appareil_rejoindre_atteste, asl_appareil_requete,
 };
 use asl_client_ffi::{ASL_ARGUMENT, ASL_IDENTIFIANT_OCTETS, ASL_INTERNE, ASL_OK, asl_faute_texte};
 use jni::JNIEnv;
@@ -275,6 +274,10 @@ pub extern "system" fn Java_org_airdesktop_servicelocator_reseau_Natif_libere(
 }
 
 /// `external fun annuaire(h: Long, adresse: String, nom: String): Int`
+///
+/// Un annuaire par son nom : **ce qui ne se croit plus** (décision 58, étape
+/// 5) — `asl_appareil_annuaire` rend toujours `ASL_CONFIGURATION`, et
+/// `annuaireIdentifie` le remplace. Gardé tant qu'une app le déclare.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_airdesktop_servicelocator_reseau_Natif_annuaire(
     mut env: JNIEnv,
@@ -315,24 +318,6 @@ pub extern "system" fn Java_org_airdesktop_servicelocator_reseau_Natif_annuaireI
     };
     // SAFETY : deux chaînes C valides, un handle vivant.
     unsafe { asl_appareil_annuaire_identifie(handle.appareil, locateur.as_ptr(), n.as_ptr()) }
-}
-
-/// `external fun racines(h: Long, pem: ByteArray): Int`
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_airdesktop_servicelocator_reseau_Natif_racines(
-    env: JNIEnv,
-    _classe: JClass,
-    brut: jlong,
-    pem: JByteArray,
-) -> jint {
-    let Some(handle) = handle(brut) else {
-        return ASL_ARGUMENT;
-    };
-    let Some(pem) = lire_octets(&env, &pem) else {
-        return ASL_ARGUMENT;
-    };
-    // SAFETY : `pem` vise `pem.len()` octets lisibles.
-    unsafe { asl_appareil_racines(handle.appareil, pem.as_ptr(), pem.len()) }
 }
 
 /// `external fun cle(h: Long, cle: ByteArray, signataire: Signataire): Int`

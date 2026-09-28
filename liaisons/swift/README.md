@@ -7,8 +7,8 @@ port fixe.
 import Asl
 
 let client = try Client(
-    annuaires: [("203.0.113.7:6630", "nitrogen.example")],
-    racines: pem,
+    // L'adresse, et l'identité qu'on doit trouver au bout (`asl roots`).
+    annuaires: [("203.0.113.7:6630", "n-0PWT8HZD80QMSPPDZ5CQXXYHQC")],
     identite: identite)
 
 try client.annoncer(service: "depot", points: [try Point(.tcp, 8080)])
@@ -84,7 +84,7 @@ Qui veut un `Result` l'obtient en une ligne : `Result { try client.etat() }`.
 | | |
 |---|---|
 | `.argument` | Une adresse illisible, un port nul, une graine de mauvaise taille. |
-| `.configuration` | Il manque un annuaire ou une racine. **Réessayer ne réparerait rien.** |
+| `.configuration` | Il manque un annuaire, ou il a été posé par un nom, ce qui ne se croit plus. **Réessayer ne réparerait rien.** |
 | `.injoignable` | Personne n'a répondu. Un câble débranché. |
 | `.refuse` | L'annuaire a compris, et il a dit non. Un droit manquant. |
 | `.pasDIdentite` | Cette machine n'est pas enrôlée. |

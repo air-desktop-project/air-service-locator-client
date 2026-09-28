@@ -37,11 +37,11 @@ fn identite() -> Identite {
     Identite::nouvelle(machine, [0x42; 32]).expect("une identité d'essai")
 }
 
-fn annuaire(adresse: std::net::SocketAddr) -> Annuaire {
+fn annuaire(adresse: std::net::SocketAddr, identite: Identifiant) -> Annuaire {
     Annuaire {
         adresse,
         nom: "localhost".to_owned(),
-        identite: None,
+        identite,
     }
 }
 
@@ -69,13 +69,15 @@ async fn un_401_sur_une_racine_n_est_pas_definitif() {
     // rappellerait `tournee.reussite()` sur une connexion seulement ouverte
     // réessaierait le refusant à l'infini, et le daemon ne s'attacherait jamais
     // — la panne serait muette, puisque la socket, elle, s'ouvre.
-    let (_atelier, autorite, cert, cle) = materiel("401-pas-definitif");
+    let (identite_attendue, cert, cle) = materiel("401-pas-definitif");
     let (refusant, tache_une) = lever(cert.clone(), cle.clone(), SansCetteMachine).await;
     let (accueillant, tache_deux) = lever(cert, cle, FauxAnnuaire).await;
 
     let reglages = Reglages::nouveaux(
-        vec![annuaire(refusant), annuaire(accueillant)],
-        autorite,
+        vec![
+            annuaire(refusant, identite_attendue),
+            annuaire(accueillant, identite_attendue),
+        ],
         PLAFOND_MS,
     )
     .expect("la configuration est bonne");

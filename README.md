@@ -72,9 +72,19 @@ et c'est la copie qu'on oublie qui finit par diverger.
 générique. Un `String` rendu à Python serait un bloc alloué par l'allocateur de
 Rust que l'appelant tenterait de libérer avec le sien.
 
-**Le retrait d'une signature est une rupture majeure**, pour cinq écosystèmes
-qui ne se mettent pas à jour au même rythme. Un ajout est libre ; c'est le
-retrait qui casse.
+**Le retrait d'une signature est une rupture**, pour cinq écosystèmes qui ne
+se mettent pas à jour au même rythme. Un ajout est libre ; c'est le retrait qui
+casse — un cran majeur à partir de 1.0, un cran **mineur** tant qu'on est en
+0.x (semver §4), et il se dit ici, dans `abi.txt` et dans la PR.
+
+**Le seul retrait à ce jour : 0.19.0, la fin de la bascule** (décision 58,
+étape 5). `asl_client_racines` et `asl_appareil_racines` — l'autorité PEM de
+la forme d'hier — ne sont plus exportés, ni `Natif.racines` côté JNI, ni
+`poser_racines`/`poserRacines`/`racines:` dans les cinq liaisons, dont
+`ajouter_annuaire` prend désormais l'identité `n-…` au lieu d'un nom de
+certificat. `asl_client_annuaire` et `asl_appareil_annuaire` restent exportés
+pour qui les lie encore, mais rendent toujours `ASL_CONFIGURATION` : un
+annuaire posé par son nom ne se croit plus.
 
 ### Pas une ligne de C
 
@@ -136,12 +146,13 @@ si cette clé se déduit en l'identifiant attendu, sans autorité ni nom.
 `asl roots` demande la liste à une racine et la vérifie : une seule clé qui ne
 donne pas son `n-…` la refuse entière.
 
-**Le temps de la bascule** (décision 58), la racine d'`air-desktop-project`
-reste épinglée (`crates/asl-cli/racines/air-desktop-project.pem`) et la chaîne
-qu'elle signe est crue AUSSI ; `asl diagnose` dit la forme qui a servi.
-`--directory <hôte:port>=<n-…>` vise un annuaire par son identité ;
-`--directory <hôte:port>` seul, la forme d'hier, sous `--roots`/`ASL_ROOTS`.
-Il n'y a toujours aucun repli sur le magasin du système.
+**La bascule est finie** (décision 58, étape 5 ; 0.19.0) : depuis le
+2026-09-28, les racines ne servent plus que leur certificat d'identité, et le
+client ne croit plus que lui. La chaîne d'autorité et sa racine épinglée sont
+retirées ; `--directory <hôte:port>=<n-…>` vise un annuaire par son identité,
+et c'est la seule forme — un `hôte:port` seul est refusé, et le refus dit
+quoi écrire. `--roots` n'existe plus et le dit ; `ASL_ROOTS` est ignorée, avec
+un avertissement. Aucun repli sur le magasin du système, ni sur rien d'autre.
 
 **La grammaire d'`asl` est en anglais** — commandes, options, variables
 d'environnement, `--help` — parce que c'est la langue d'un terminal, quel que

@@ -49,7 +49,6 @@ ams-h3.workspace = true
 ams-proto-http.workspace = true
 ams-proto-quic.workspace = true
 ams-quic.workspace = true
-ams-quic-client.workspace = true
 ams-quic-tls.workspace = true
 ams-tls.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "sync", "time"] }

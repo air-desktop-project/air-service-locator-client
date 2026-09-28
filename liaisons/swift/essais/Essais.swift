@@ -64,12 +64,45 @@ func identiteDEssai() throws -> Identite {
   try Identite(machine: machineDEssai, graine: (0..<32).map { UInt8($0) })
 }
 
-/// Un client dont la racine est illisible : de quoi atteindre `.configuration`.
-func clientConfigure(avecIdentite: Bool) throws -> Client {
+/// Une identité d'annuaire VALIDE, recopiée pour la même raison.
+let annuaireDEssai = "n-0PWT8HZD80QMSPPDZ5CQXXYHQC"
+
+/// Un client qui vise cet annuaire — par défaut, un port où rien n'écoute —,
+/// sous son identité.
+func clientConfigure(avecIdentite: Bool, ou: String = "127.0.0.1:1") throws -> Client {
   try Client(
-    annuaires: [("127.0.0.1:1", "localhost")],
-    racines: Array("pas un PEM".utf8),
+    annuaires: [(ou, annuaireDEssai)],
     identite: avecIdentite ? try identiteDEssai() : nil)
+}
+
+/// Une socket UDP sur la boucle locale, qui ne répondra jamais : son
+/// descripteur et son port.
+func unPairMuet() -> (Int32, UInt16)? {
+  #if canImport(Glibc)
+    let type = Int32(SOCK_DGRAM.rawValue)
+  #else
+    let type = SOCK_DGRAM
+  #endif
+  let fd = socket(AF_INET, type, 0)
+  guard fd >= 0 else { return nil }
+  var ici = sockaddr_in()
+  ici.sin_family = sa_family_t(AF_INET)
+  ici.sin_addr.s_addr = inet_addr("127.0.0.1")
+  ici.sin_port = 0
+  #if canImport(Darwin)
+    ici.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+  #endif
+  var taille = socklen_t(MemoryLayout<sockaddr_in>.size)
+  let lie = withUnsafeMutablePointer(to: &ici) { pointeur in
+    pointeur.withMemoryRebound(to: sockaddr.self, capacity: 1) { adresse in
+      bind(fd, adresse, taille) == 0 && getsockname(fd, adresse, &taille) == 0
+    }
+  }
+  guard lie else {
+    close(fd)
+    return nil
+  }
+  return (fd, UInt16(bigEndian: ici.sin_port))
 }
 
 /// Rend la faute levée, ou `nil` si rien ne l'a été.
@@ -131,16 +164,22 @@ func uneAdresseIllisibleEstRefusee() {
     "2001:db8::1:6630",  // sans crochets, c'est ambigu
     "",
   ] {
-    let faute = fauteDe { _ = try Client(annuaires: [(mauvaise, "localhost")]) }
+    let faute = fauteDe { _ = try Client(annuaires: [(mauvaise, annuaireDEssai)]) }
     verifieEgal(faute, .argument, "« \(mauvaise) » doit être refusée")
   }
   let bonnes = fauteDe {
     _ = try Client(annuaires: [
-      ("203.0.113.7:6630", "nitrogen.example"),
-      ("[2001:db8::1]:6630", "nitrogen.example"),
+      ("203.0.113.7:6630", annuaireDEssai),
+      ("[2001:db8::1]:6630", annuaireDEssai),
     ])
   }
   verifie(bonnes == nil, "les deux familles sont acceptées")
+  // **LA FORME D'HIER EST RETIRÉE** (décision 58, étape 5) : un nom de
+  // certificat ne dit pas quelle clé croire.
+  let nomme = fauteDe {
+    _ = try Client(annuaires: [("203.0.113.7:6630", "nitrogen.example")])
+  }
+  verifieEgal(nomme, .argument, "un nom à la place de l'identité")
 }
 
 func unNulAuMilieuDUneChaineEstRefuse() throws {
@@ -148,7 +187,7 @@ func unNulAuMilieuDUneChaineEstRefuse() throws {
   // que celui qu'on croit lui avoir donné.
   let client = try Client()
   let tricherie = "127.0.0.1:1\u{0}et la suite"
-  let faute = fauteDe { try client.ajouterAnnuaire(tricherie, nom: "localhost") }
+  let faute = fauteDe { try client.ajouterAnnuaire(tricherie, n: annuaireDEssai) }
   verifieEgal(faute, .argument, "un NUL doit être refusé")
 }
 
@@ -201,30 +240,25 @@ func unClientNAnnonceQuUneFois() throws {
 
 func leFilNatifTourneSansQuePersonneLAttende() throws {
   // **C'EST L'ESSAI QUI COMPTE LE PLUS.** `annoncer` a rendu la main et
-  // l'appelant est parti ; si le fil natif ne tournait pas, `abandonnee` ne
-  // passerait jamais à vrai — et tout compilerait.
-  let client = try clientConfigure(avecIdentite: true)
-  try client.annoncer(service: "depot", points: [try Point(.tcp, 8080)])
-
-  var etat = try client.etat()
-  for _ in 0..<250 {
-    etat = try client.etat()
-    if etat.abandonnee { break }
-    usleep(20_000)
+  // l'appelant est parti ; si le fil natif ne tournait pas, le pair MUET ne
+  // recevrait jamais le premier paquet de la poignée de main — et tout
+  // compilerait. (Que l'identité survive à l'annonce est une affaire du côté
+  // Rust : `asl-client-ffi/tests/abi.rs` la tient, sur un banc.)
+  guard let (muet, port) = unPairMuet() else {
+    verifie(false, "une socket sur la boucle locale")
+    return
   }
-  verifie(etat.abandonnee, "le fil natif n'a pas tourné")
-  verifie(!etat.attachee, "et rien n'est attaché")
-  verifieEgal(etat.attaches, 0, "une racine illisible n'attache rien")
-}
-
-func lIdentiteSurvitALAnnonce() throws {
-  // L'annonce CONSOMME une identité côté Rust ; si le client la perdait, `ou`
-  // répondrait « aucune identité » à un daemon qui vient de s'annoncer.
-  let client = try clientConfigure(avecIdentite: true)
+  defer { close(muet) }
+  let client = try clientConfigure(avecIdentite: true, ou: "127.0.0.1:\(port)")
   try client.annoncer(service: "depot", points: [try Point(.tcp, 8080)])
-  let faute = fauteDe { _ = try client.ou(machine: machineDEssai, service: "depot") }
-  verifie(faute != .pasDIdentite, "l'annonce a emporté l'identité")
-  verifieEgal(faute, .configuration, "la racine reste illisible")
+
+  var attente = pollfd(fd: muet, events: Int16(POLLIN), revents: 0)
+  verifieEgal(poll(&attente, 1, 5_000), 1, "le fil natif n'a pas tourné")
+  var paquet = [UInt8](repeating: 0, count: 2_048)
+  let lus = paquet.withUnsafeMutableBytes { recv(muet, $0.baseAddress, $0.count, 0) }
+  verifie(lus > 0, "le premier paquet est arrivé")
+  verifie(!(try client.etat()).attachee, "et rien n'est attaché")
+  client.fermer()
 }
 
 // ── LA DURÉE DE VIE ────────────────────────────────────────────────────────
@@ -259,7 +293,7 @@ func unClientFermeLeveAuLieuDeDereferencerLeNeant() throws {
   client.fermer()
   verifieEgal(fauteDe { _ = try client.etat() }, .ferme, "l'état")
   verifieEgal(
-    fauteDe { try client.ajouterAnnuaire("127.0.0.1:1", nom: "x") }, .ferme, "un annuaire")
+    fauteDe { try client.ajouterAnnuaire("127.0.0.1:1", n: annuaireDEssai) }, .ferme, "un annuaire")
   verifieEgal(fauteDe { _ = try client.ou(machine: machineDEssai, service: "d") }, .ferme, "où")
   verifieEgal(fauteDe { _ = try client.enroler(code: "4K9M2P7R1T") }, .ferme, "l'enrôlement")
   // **ET NON `nil`** : un client fermé n'est pas un client qui attend son premier
@@ -355,7 +389,6 @@ struct Essais {
     try uneAnnonceSansPointNAnnonceRien()
     try unClientNAnnonceQuUneFois()
     try leFilNatifTourneSansQuePersonneLAttende()
-    try lIdentiteSurvitALAnnonce()
     try arcLibereALaSortieDePortee()
     try fermerDeuxFoisNeFaitRienLaSeconde()
     try unClientFermeLeveAuLieuDeDereferencerLeNeant()
