@@ -11,10 +11,10 @@ use std::ptr;
 use asl_client_ffi::appareil::{
     ASL_ADRESSE_OCTETS, ASL_ATTESTATION_MAX, ASL_CLE_APPAREIL_OCTETS, ASL_DEFI_OCTETS,
     ASL_MESSAGE_MAX, ASL_PLATEFORME_ANDROID, ASL_PLATEFORME_APPLE, ASL_PLATEFORME_AUCUNE,
-    ASL_SIGNATURE_OCTETS, AslAppareil, asl_appareil_annuaire, asl_appareil_annuaire_identifie,
-    asl_appareil_cle, asl_appareil_connecter, asl_appareil_creer_compte, asl_appareil_deconnecter,
-    asl_appareil_defi, asl_appareil_distante, asl_appareil_identifiant, asl_appareil_identite,
-    asl_appareil_liaison, asl_appareil_libere, asl_appareil_message_pour_attestation,
+    ASL_SIGNATURE_OCTETS, AslAppareil, asl_appareil_annuaire_identifie, asl_appareil_cle,
+    asl_appareil_connecter, asl_appareil_creer_compte, asl_appareil_deconnecter, asl_appareil_defi,
+    asl_appareil_distante, asl_appareil_identifiant, asl_appareil_identite, asl_appareil_liaison,
+    asl_appareil_libere, asl_appareil_message_pour_attestation,
     asl_appareil_message_pour_attestation_de_cle, asl_appareil_neuf, asl_appareil_nouvelle,
     asl_appareil_nouvelles_ouvrir, asl_appareil_nouvelles_recues, asl_appareil_rejoindre_atteste,
     asl_appareil_requete,
@@ -79,10 +79,6 @@ fn les_constantes_sont_celles_de_l_en_tete() {
 fn les_pointeurs_nuls_rendent_argument_et_ne_tuent_personne() {
     unsafe {
         assert_eq!(asl_appareil_neuf(ptr::null_mut()), ASL_ARGUMENT);
-        assert_eq!(
-            asl_appareil_annuaire(ptr::null_mut(), c"[::1]:6630".as_ptr(), c"x".as_ptr()),
-            ASL_ARGUMENT
-        );
         assert_eq!(
             asl_appareil_annuaire_identifie(
                 ptr::null_mut(),
@@ -476,13 +472,6 @@ fn un_annuaire_par_son_identite_se_pose_sans_nom_ni_autorite() {
 fn se_connecter_sans_annuaire_est_une_configuration_et_sans_reponse_une_injoignabilite() {
     let brut = appareil();
     unsafe {
-        assert_eq!(asl_appareil_connecter(brut), ASL_CONFIGURATION);
-        // **UN ANNUAIRE PAR SON NOM NE SE CROIT PLUS** (décision 58, étape
-        // 5) : le symbole refuse à la pose, et rien n'est posé.
-        assert_eq!(
-            asl_appareil_annuaire(brut, c"127.0.0.1:9".as_ptr(), c"localhost".as_ptr()),
-            ASL_CONFIGURATION
-        );
         assert_eq!(asl_appareil_connecter(brut), ASL_CONFIGURATION);
         asl_appareil_libere(brut);
     }

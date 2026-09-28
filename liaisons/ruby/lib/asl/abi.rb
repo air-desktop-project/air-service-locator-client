@@ -188,8 +188,6 @@ module Asl
                     Fiddle::TYPE_VOID],
       asl_faute_texte: [[Fiddle::TYPE_INT32_T], Fiddle::TYPE_VOIDP],
       asl_client_neuf: [[Fiddle::TYPE_VOIDP], Fiddle::TYPE_INT32_T],
-      asl_client_annuaire: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP],
-                           Fiddle::TYPE_INT32_T],
       asl_client_annuaire_identifie: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP,
                                        Fiddle::TYPE_VOIDP],
                                       Fiddle::TYPE_INT32_T],
@@ -210,8 +208,6 @@ module Asl
                              Fiddle::TYPE_INT32_T],
       # ── La voie mobile, déclarée sans être enveloppée (voir les constantes).
       asl_appareil_neuf: [[Fiddle::TYPE_VOIDP], Fiddle::TYPE_INT32_T],
-      asl_appareil_annuaire: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP],
-                              Fiddle::TYPE_INT32_T],
       asl_appareil_annuaire_identifie: [[Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP,
                                          Fiddle::TYPE_VOIDP],
                                         Fiddle::TYPE_INT32_T],

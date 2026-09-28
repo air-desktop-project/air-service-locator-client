@@ -169,16 +169,8 @@ const char *asl_faute_texte(int32_t code);
  * pas empêcher un daemon de démarrer. Se libère par asl_client_libere. */
 int32_t asl_client_neuf(asl_client **sortie);
 
-/* Un annuaire par son NOM — CE QUI NE SE CROIT PLUS : rend toujours
- * ASL_CONFIGURATION (ASL_ARGUMENT pour un client nul).
- *
- * Un annuaire posé ainsi n'était cru que par la forme d'hier, une chaîne
- * signée par l'autorité que posait asl_client_racines. Cette forme est retirée
- * (décision 58, étape 5 ; 0.19.0), et asl_client_racines avec elle. Le symbole
- * reste tant que des applications le lient ; asl_client_annuaire_identifie le
- * remplace.
- */
-int32_t asl_client_annuaire(asl_client *client, const char *adresse, const char *nom);
+/* asl_client_annuaire, par NOM — RETIRÉE en 0.20.0 : voir
+ * asl_client_annuaire_identifie. */
 
 /* Ajoute un annuaire par son IDENTITÉ (décisions 58 et 59). Répétable, et
  * c'est la seule façon d'en poser un : un locateur — une adresse LITTÉRALE,
@@ -346,10 +338,8 @@ typedef int32_t (*asl_signataire)(void *contexte, const uint8_t *message,
 /* Crée un appareil. N'ouvre aucune connexion. Se libère par asl_appareil_libere. */
 int32_t asl_appareil_neuf(asl_appareil **sortie);
 
-/* Un annuaire par son NOM, comme asl_client_annuaire : CE QUI NE SE CROIT
- * PLUS — rend toujours ASL_CONFIGURATION. asl_appareil_racines est retirée
- * (0.19.0) ; asl_appareil_annuaire_identifie remplace les deux. */
-int32_t asl_appareil_annuaire(asl_appareil *appareil, const char *adresse, const char *nom);
+/* asl_appareil_annuaire, par NOM — RETIRÉE en 0.20.0 : voir
+ * asl_appareil_annuaire_identifie. */
 
 /* Un annuaire par son IDENTITÉ (décision 58) : un locateur — une adresse
  * littérale, "[2001:db8::1]:6630" ou "192.0.2.1:6630" — et l'identifiant

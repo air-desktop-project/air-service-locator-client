@@ -33,9 +33,9 @@ use asl_client_ffi::{
     ASL_JOIGNABLE, ASL_NAT_INDETERMINE, ASL_NAT_NON, ASL_NAT_OUI, ASL_NON_CONNECTE, ASL_NON_SONDE,
     ASL_OK, ASL_PAS_D_IDENTITE, ASL_PAS_DE_POUSSEE, ASL_REFLEXIF, ASL_REFUSE,
     ASL_SIGNATURE_REFUSEE, ASL_TAMPON_TROP_PETIT, ASL_TCP, ASL_TROP_D_ESSAIS, ASL_UDP, AslCandidat,
-    AslClient, AslEtat, AslPoint, asl_annoncer, asl_client_annuaire, asl_client_annuaire_identifie,
-    asl_client_identite, asl_client_libere, asl_client_neuf, asl_derniere_poussee, asl_enroler,
-    asl_etat, asl_faute_texte, asl_ou, asl_poussees_recues, asl_version,
+    AslClient, AslEtat, AslPoint, asl_annoncer, asl_client_annuaire_identifie, asl_client_identite,
+    asl_client_libere, asl_client_neuf, asl_derniere_poussee, asl_enroler, asl_etat,
+    asl_faute_texte, asl_ou, asl_poussees_recues, asl_version,
 };
 use asl_id::{Genre, Identifiant};
 
@@ -122,10 +122,6 @@ fn un_pointeur_nul_rend_un_code_et_n_emporte_pas_le_processus() {
     // sanction naturelle serait de tuer son application.
     let vide = c"";
     assert_eq!(unsafe { asl_client_neuf(ptr::null_mut()) }, ASL_ARGUMENT);
-    assert_eq!(
-        unsafe { asl_client_annuaire(ptr::null_mut(), vide.as_ptr(), vide.as_ptr()) },
-        ASL_ARGUMENT
-    );
     assert_eq!(
         unsafe { asl_client_annuaire_identifie(ptr::null_mut(), vide.as_ptr(), vide.as_ptr()) },
         ASL_ARGUMENT
@@ -222,26 +218,6 @@ fn un_annuaire_se_pose_par_une_adresse_litterale_et_jamais_par_un_nom() {
             asl_client_annuaire_identifie(client, c"203.0.113.7:6630".as_ptr(), machine.as_ptr())
         },
         ASL_ARGUMENT
-    );
-    unsafe { asl_client_libere(client) };
-}
-
-#[test]
-fn un_annuaire_par_son_nom_ne_se_croit_plus() {
-    // **LA FORME D'HIER EST RETIRÉE** (décision 58, étape 5) : le symbole
-    // reste, pour qui le lie encore, et il refuse tout de suite — une
-    // configuration, pas un argument : ce qui est écrit est bien formé, c'est
-    // la façon qui n'existe plus.
-    let client = client();
-    assert_eq!(
-        unsafe {
-            asl_client_annuaire(
-                client,
-                c"203.0.113.7:6630".as_ptr(),
-                c"nitrogen.example".as_ptr(),
-            )
-        },
-        ASL_CONFIGURATION
     );
     unsafe { asl_client_libere(client) };
 }

@@ -19,7 +19,9 @@ asl_faute_texte
 
 # ── LA CONSTRUCTION ─────────────────────────────────────────────────────────
 asl_client_neuf
-asl_client_annuaire
+# `asl_client_annuaire` — RETIRÉE en 0.20.0 : un annuaire par son NOM ne se
+# croyait plus depuis 0.19.0 et rendait toujours ASL_CONFIGURATION ;
+# `asl_client_annuaire_identifie` la remplace.
 asl_client_annuaire_identifie
 # `asl_client_racines` — RETIRÉE en 0.19.0 (décision 58, étape 5) : la forme
 # d'hier, une chaîne sous une autorité PEM, n'est plus crue. En 0.x, un
@@ -43,7 +45,7 @@ asl_derniere_poussee
 # sa clé vit dans son matériel et se signe par RAPPEL, et ses requêtes sont
 # celles d'un écran, servies sur une connexion tenue.
 asl_appareil_neuf
-asl_appareil_annuaire
+# `asl_appareil_annuaire` — RETIRÉE en 0.20.0, pour la même raison.
 asl_appareil_annuaire_identifie
 # `asl_appareil_racines` — RETIRÉE en 0.19.0, pour la même raison.
 asl_appareil_cle

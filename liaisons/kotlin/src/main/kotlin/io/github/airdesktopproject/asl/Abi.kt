@@ -167,7 +167,6 @@ internal object Abi {
         "asl_version" to FunctionDescriptor.ofVoid(ADRESSE, ADRESSE, ADRESSE),
         "asl_faute_texte" to FunctionDescriptor.of(ADRESSE, ENTIER),
         "asl_client_neuf" to FunctionDescriptor.of(ENTIER, ADRESSE),
-        "asl_client_annuaire" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE, ADRESSE),
         "asl_client_annuaire_identifie" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE, ADRESSE),
         "asl_client_identite" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE, ADRESSE),
         "asl_client_libere" to FunctionDescriptor.ofVoid(ADRESSE),
@@ -183,7 +182,6 @@ internal object Abi {
         ),
         // ── La voie mobile, déclarée sans être enveloppée (voir les constantes).
         "asl_appareil_neuf" to FunctionDescriptor.of(ENTIER, ADRESSE),
-        "asl_appareil_annuaire" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE, ADRESSE),
         "asl_appareil_annuaire_identifie" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE, ADRESSE),
         "asl_appareil_cle" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE, ADRESSE, ADRESSE),
         "asl_appareil_identite" to FunctionDescriptor.of(ENTIER, ADRESSE, ADRESSE),
