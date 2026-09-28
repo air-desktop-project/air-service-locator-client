@@ -303,33 +303,6 @@ pub unsafe extern "C" fn asl_appareil_neuf(sortie: *mut *mut AslAppareil) -> i32
     })
 }
 
-/// Ajoute un annuaire par son NOM — **ce qui ne se croit plus** : rend
-/// toujours [`ASL_CONFIGURATION`], comme `asl_client_annuaire`.
-///
-/// # RETIRÉE EN SUBSTANCE (décision 58, étape 5)
-///
-/// Un annuaire posé ainsi n'était cru que par la forme d'hier, l'autorité
-/// que posait `asl_appareil_racines` (retirée). **Le symbole reste** tant
-/// qu'une application le lie ; il refuse tout de suite, plutôt que de laisser
-/// la poignée de main échouer sans dire pourquoi.
-/// [`asl_appareil_annuaire_identifie`] le remplace.
-///
-/// # Safety
-///
-/// `appareil` vient de [`asl_appareil_neuf`], ou est nul.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn asl_appareil_annuaire(
-    appareil: *mut AslAppareil,
-    _adresse: *const c_char,
-    _nom: *const c_char,
-) -> i32 {
-    if appareil.is_null() {
-        ASL_ARGUMENT
-    } else {
-        ASL_CONFIGURATION
-    }
-}
-
 /// Ajoute un annuaire **par son identité** (`protocole.md` §0, décision 58) :
 /// un locateur — une adresse littérale, `[2001:db8::1]:6630` ou
 /// `192.0.2.1:6630` — et l'identifiant `n-…` qu'on doit trouver au bout.

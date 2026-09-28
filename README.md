@@ -77,14 +77,16 @@ se mettent pas à jour au même rythme. Un ajout est libre ; c'est le retrait qu
 casse — un cran majeur à partir de 1.0, un cran **mineur** tant qu'on est en
 0.x (semver §4), et il se dit ici, dans `abi.txt` et dans la PR.
 
-**Le seul retrait à ce jour : 0.19.0, la fin de la bascule** (décision 58,
+**Deux retraits à ce jour.** D'abord **0.19.0, la fin de la bascule** (décision 58,
 étape 5). `asl_client_racines` et `asl_appareil_racines` — l'autorité PEM de
 la forme d'hier — ne sont plus exportés, ni `Natif.racines` côté JNI, ni
 `poser_racines`/`poserRacines`/`racines:` dans les cinq liaisons, dont
 `ajouter_annuaire` prend désormais l'identité `n-…` au lieu d'un nom de
-certificat. `asl_client_annuaire` et `asl_appareil_annuaire` restent exportés
-pour qui les lie encore, mais rendent toujours `ASL_CONFIGURATION` : un
-annuaire posé par son nom ne se croit plus.
+certificat. Puis **0.20.0** : `asl_client_annuaire` et `asl_appareil_annuaire`
+— un annuaire posé par son NOM, qui ne se croyait plus depuis 0.19.0 et
+rendait toujours `ASL_CONFIGURATION` — ne sont plus exportés, ni
+`Natif.annuaire` côté JNI ; `asl_client_annuaire_identifie` et
+`asl_appareil_annuaire_identifie` les remplacent.
 
 ### Pas une ligne de C
 
