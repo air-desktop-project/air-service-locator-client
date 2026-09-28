@@ -38,6 +38,11 @@
 #      barrière qui éprouve l'installation plutôt que le code.
 #  13. `check-format`    — EN DERNIER (voir ci-dessus).
 #
+# Puis, hors du tableau parce qu'ils sont LENTS : les essais, le smoke-fuzz, la
+# couverture, et `check-paquet` — qui construit en `release`, ce que rien
+# d'autre ne fait, et éprouve le paquet Debian d'`asl`. Sans `dpkg-dev`, il
+# s'abstient en le disant.
+#
 # **`check-abi` A ÉTÉ ÉCRIT AVANT LA PREMIÈRE FONCTION EXPORTÉE, et c'était un
 # choix.** Une barrière ajoutée après coup se découvre cassée le jour où l'on en
 # a besoin — et le registre `abi.txt` devait exister AVANT la première fonction,
@@ -121,13 +126,22 @@ else
 fi
 echo
 
+echo "═══ scripts/check-paquet.sh"
+if ./scripts/check-paquet.sh; then
+    echo "─── scripts/check-paquet.sh : OK"
+else
+    echo "─── scripts/check-paquet.sh : ÉCHEC"
+    echecs+=("scripts/check-paquet.sh")
+fi
+echo
+
 if [ "${#echecs[@]}" -gt 0 ]; then
     echo "ÉCHEC : ${#echecs[@]} barrière(s) refusent :"
     printf '  %s\n' "${echecs[@]}"
     exit 1
 fi
 
-echo "OK : les ${#barrieres[@]} barrières, le fuzz, la couverture et les essais passent."
+echo "OK : les ${#barrieres[@]} barrières, le fuzz, la couverture, le paquet et les essais passent."
 echo
 echo "Le DCO ne fait PAS partie de ce lot : il juge des messages de commit, donc"
 echo "il se lance APRÈS avoir committé — scripts/check-dco.sh."
