@@ -133,6 +133,44 @@ quelle suite d'événements :
 vient de tomber réessaient à la même seconde et le remettent à terre à l'instant
 où il se relève.
 
+## Installer asl sur Linux
+
+**Par un paquet Debian, pas par une copie de binaire** : `dpkg` sait alors ce
+qui est posé, le retire proprement, et refuse un paquet d'une autre
+architecture que la machine. La cible est Ubuntu, comme pour l'annuaire.
+
+Le paquet `asl` existe en **`amd64` et en `arm64`** — un PC ou un Raspberry Pi.
+La CI construit les deux, chacun sur sa propre architecture, les éprouve avec
+`scripts/check-paquet.sh`, et les publie en artefacts `asl-amd64-deb` et
+`asl-arm64-deb`. Une machine sans Rust reçoit donc `asl` sans rien construire :
+
+```sh
+# le dernier run vert de main (ou celui d'une PR : --branch <branche>)
+run=$(gh run list -R air-desktop-project/air-service-locator-client \
+      --workflow ci --branch main --status success --limit 1 \
+      --json databaseId --jq '.[0].databaseId')
+gh run download "$run" -R air-desktop-project/air-service-locator-client \
+    -n asl-arm64-deb -D deb-arm64
+sudo apt install ./deb-arm64/asl_<version>_arm64.deb
+```
+
+`apt install ./…` et non `dpkg -i` : il installe aussi les dépendances que
+`dpkg-shlibdeps` a lues dans le binaire (la libc, `libgcc-s1`), au lieu de
+laisser le paquet à moitié configuré. Un artefact de GitHub **expire au bout
+de 90 jours** : passé ce délai, relancez le run, ou construisez sur une machine
+de la même architecture :
+
+```sh
+scripts/paquet.sh                    # asl_<version>_<architecture>.deb
+```
+
+**Le paquet ne pose que `/usr/bin/asl` et sa licence**, et n'a aucun script
+de mainteneur : ni service, ni compte système, rien qui s'exécute en root à
+l'installation. L'identité de la machine est générée par `asl enroll` et vit
+chez l'utilisateur (`$XDG_CONFIG_HOME/asl`, sinon `~/.config/asl`, ou
+`--state`) : ni l'installation ni le retrait du paquet n'y touchent — `apt
+purge asl` ne révoque rien et n'efface aucune clé.
+
 ## Ce que le porteur doit poser sur une machine
 
 **Une paire de clés Ed25519 que la bibliothèque génère ELLE-MÊME**, et dont la
