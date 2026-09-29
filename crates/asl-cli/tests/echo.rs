@@ -582,6 +582,9 @@ struct ReglageIgd {
     permanent_seulement: bool,
     /// Tant de `718 ConflictInMappingEntry` avant d'accepter.
     conflits: u32,
+    /// Le délai avant de répondre au `M-SEARCH` : une vraie box le tire au
+    /// hasard jusqu'à `MX` secondes.
+    retard_ssdp: Duration,
 }
 
 /// Une fausse box sur la boucle locale : un répondeur SSDP en unicast, et un
@@ -625,6 +628,8 @@ impl FauxIgd {
         let actions: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
 
         let compte = Arc::clone(&recherches);
+        let retard = reglage.retard_ssdp;
+        let udp = Arc::new(udp);
         let repondeur = tokio::spawn(async move {
             let mut tampon = [0_u8; 2_048];
             while let Ok((lus, source)) = udp.recv_from(&mut tampon).await {
@@ -646,7 +651,11 @@ impl FauxIgd {
                     "HTTP/1.1 200 OK\r\nCACHE-CONTROL: max-age=120\r\nST: {cible}\r\n\
                      USN: uuid:faux::{cible}\r\nEXT:\r\nLOCATION: http://127.0.0.1:{port_http}/rootDesc.xml\r\n\r\n"
                 );
-                let _ = udp.send_to(reponse.as_bytes(), source).await;
+                let udp = Arc::clone(&udp);
+                tokio::spawn(async move {
+                    tokio::time::sleep(retard).await;
+                    let _ = udp.send_to(reponse.as_bytes(), source).await;
+                });
             }
         });
 
@@ -970,6 +979,7 @@ async fn le_permanent_seulement_si_la_box_l_exige_et_un_conflit_fait_tirer_un_po
         externe: "127.0.0.1",
         permanent_seulement: true,
         conflits: 1,
+        ..ReglageIgd::default()
     })
     .await;
     let ssdp = vers_la_fausse_box(&igd);
@@ -1175,4 +1185,53 @@ async fn asl_echo_upnp_se_lit_strictement() {
         "{}",
         texte(&sortie.stderr)
     );
+}
+
+/// **LA RÉCEPTION IPv4 DE LA RECHERCHE** — non-régression de 0.24.1, où,
+/// sur un Mac derrière une Livebox, aucune réponse n'arrivait plus sur la
+/// socket IPv4 de recherche. Une box sur `127.0.0.1` (`ASL_ECHO_SSDP`) qui
+/// répond après 1,2 s — comme une vraie, qui tire son délai jusqu'à `MX` —
+/// doit être entendue : sa description lue, la redirection demandée et
+/// obtenue, et rien de dit sur une passerelle absente.
+#[tokio::test(flavor = "multi_thread")]
+async fn la_reponse_ssdp_ipv4_est_recue_meme_tardive() {
+    let igd = FauxIgd::lever(ReglageIgd {
+        externe: "127.0.0.1",
+        retard_ssdp: Duration::from_millis(1_200),
+        ..ReglageIgd::default()
+    })
+    .await;
+    let ssdp = vers_la_fausse_box(&igd);
+    let decor = Decor::lever_avec(
+        "echo-upnp-reception-v4",
+        Vec::new(),
+        Some("0.44.0"),
+        &["echo", "--verbose"],
+        &[("ASL_ECHO_UPNP", "1"), ("ASL_ECHO_SSDP", &ssdp)],
+    )
+    .await;
+    let port = decor.port;
+    let actions = Arc::clone(&igd.actions);
+    attendre("la redirection demandée après la réponse SSDP", || {
+        actions
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(action, _)| action == "AddPortMapping")
+    })
+    .await;
+    assert!(
+        *igd.recherches.lock().unwrap() >= 1,
+        "le M-SEARCH est arrivé"
+    );
+    let (code, dit) = decor.arreter();
+    assert_eq!(code, Some(0), "{dit}");
+    assert!(
+        dit.contains(&format!(
+            "redirection UPnP : udp {port} → box 127.0.0.1:{port}, bail 1 h"
+        )),
+        "{dit}"
+    );
+    assert!(!dit.contains("pas de passerelle UPnP"), "{dit}");
+    assert!(!dit.contains("écartée"), "{dit}");
 }

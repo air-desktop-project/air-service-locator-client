@@ -25,10 +25,6 @@ asl-echo.workspace = true
 # autres n'ouvre rien sur la box.
 asl-upnp.workspace = true
 
-# `IPV6_MULTICAST_IF` pour le `M-SEARCH` IPv6 de la passerelle — voir
-# `passerelle::interfaces_du_lien`. Déjà dans le graphe, par tokio.
-socket2.workspace = true
-
 # `signal` EN PLUS, ET SEULEMENT ICI. `asl announce` tient l'annonce au premier
 # plan, et Ctrl-C doit la retirer PROPREMENT — sinon l'annuaire donne une adresse
 # morte pendant une minute. La bibliothèque, elle, ne demande pas cette feature :

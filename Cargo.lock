@@ -168,7 +168,7 @@ dependencies = [
 
 [[package]]
 name = "asl-cli"
-version = "0.24.1"
+version = "0.24.2"
 dependencies = [
  "ams-h3",
  "ams-proto-http",
@@ -184,13 +184,12 @@ dependencies = [
  "asl-id",
  "asl-proto",
  "asl-upnp",
- "socket2",
  "tokio",
 ]
 
 [[package]]
 name = "asl-client"
-version = "0.24.1"
+version = "0.24.2"
 dependencies = [
  "asl-api",
  "asl-cle",
@@ -202,7 +201,7 @@ dependencies = [
 
 [[package]]
 name = "asl-client-android"
-version = "0.24.1"
+version = "0.24.2"
 dependencies = [
  "asl-client-ffi",
  "jni",
@@ -210,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "asl-client-ffi"
-version = "0.24.1"
+version = "0.24.2"
 dependencies = [
  "ams-h3",
  "ams-proto-http",
@@ -230,7 +229,7 @@ dependencies = [
 
 [[package]]
 name = "asl-client-tokio"
-version = "0.24.1"
+version = "0.24.2"
 dependencies = [
  "ams-h3",
  "ams-proto-h3",
@@ -284,7 +283,7 @@ dependencies = [
 
 [[package]]
 name = "asl-upnp"
-version = "0.24.1"
+version = "0.24.2"
 
 [[package]]
 name = "autocfg"
