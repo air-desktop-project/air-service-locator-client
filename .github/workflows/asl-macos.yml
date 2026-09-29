@@ -97,7 +97,7 @@ jobs:
       # de `passerelle` — dont un envoi réel, vers un groupe d'expérience que
       # personne n'écoute — ne disent donc quelque chose de ce port qu'ICI.
       - name: Essais de la passerelle (macOS)
-        run: cargo test --locked -p asl-cli --bin asl passerelle::
+        run: cargo test --locked -p asl-cli --bin asl "passerelle::"
 
       - uses: actions/upload-artifact@v4
         with:
