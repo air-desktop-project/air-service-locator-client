@@ -41,6 +41,7 @@ use std::process::ExitCode;
 
 mod arguments;
 mod commandes;
+mod domaines;
 mod etat;
 mod rendu;
 
@@ -61,6 +62,10 @@ pub enum Issue {
     /// seule issue que `replication.md` §6 nomme : après la seconde tentative,
     /// le refus n'est plus « peut-être pas encore arrivé », il est définitif.
     CodeInconnu,
+    /// L'annuaire a dit non, ou n'a rien trouvé — et l'on sait dire pourquoi
+    /// mieux qu'un code nu : un alias que personne ne porte, une machine sans
+    /// la capacité `lecture`, un domaine hors de vos droits.
+    RefusDit(String),
     /// Personne n'a répondu.
     Injoignable(String),
 }
@@ -74,7 +79,7 @@ impl Issue {
         match self {
             Self::Usage(_) => 1,
             Self::Configuration(_) => 2,
-            Self::Refuse(_) | Self::CodeInconnu => 3,
+            Self::Refuse(_) | Self::CodeInconnu | Self::RefusDit(_) => 3,
             Self::Injoignable(_) => 4,
         }
     }
@@ -82,7 +87,10 @@ impl Issue {
     /// Ce qu'on en dit sur `stderr`.
     pub(crate) fn dire(&self) -> String {
         match self {
-            Self::Usage(quoi) | Self::Configuration(quoi) | Self::Injoignable(quoi) => quoi.clone(),
+            Self::Usage(quoi)
+            | Self::Configuration(quoi)
+            | Self::Injoignable(quoi)
+            | Self::RefusDit(quoi) => quoi.clone(),
             // **CHAQUE CODE EST TRADUIT**, parce qu'un nombre nu envoie chercher
             // dans une spécification que personne n'a sous la main.
             Self::Refuse(401) => "401 — la clé de cette machine n'a pas été acceptée.\n\
@@ -173,6 +181,24 @@ COMMANDS
                                       be named only to confirm it is this one:
                                       a device never leaves its account.
 
+    domains                           The domains your account may see: yours,
+                                      and those where one of your groups holds
+                                      a right — each with its alias, where it
+                                      is hosted, your rights, and the root
+                                      domain named as such. Needs the `lecture`
+                                      capability on this machine.
+
+    domain <d-…|alias> [--where]      One domain: its alias, owner, host, your
+                                      rights, and every machine filed in it —
+                                      with, for each of YOUR machines, its
+                                      services. A machine of another account
+                                      shows none: the directory serves them to
+                                      their owner only. An alias is
+                                      case-sensitive; one borne by several
+                                      domains is refused, listing them.
+                                      --where also resolves each service
+                                      listed, as `asl where` would.
+
     replication                       The state of the link between the two
                                       root directories. Reaches BOTH — one
                                       alone concludes nothing — and says, for
@@ -230,6 +256,9 @@ EXAMPLES
     asl machines u-5884A5EE7THEKHBQ3BT0VPGJKN
     asl machines
     asl enrolled
+    asl domains
+    asl domain 'Maison' --where
+    asl domain d-7Q2H4K9M2P7R1T8X3V5W6Y0Z1A
     asl replication"
     );
 }
@@ -306,6 +335,14 @@ async fn conduire(invocation: &Invocation) -> Sortie {
         // Elle lit la fiche entière elle-même : le compte qu'elle porte est
         // ce qui permet de refuser un compte étranger avant de rien joindre.
         Commande::Enroles { compte } => commandes::enroles(invocation, &dossier, *compte).await,
+        Commande::Domaines => {
+            let identite = identite(&dossier)?;
+            commandes::domaines(invocation, &identite).await
+        }
+        Commande::Domaine { cible, ou } => {
+            let identite = identite(&dossier)?;
+            commandes::domaine(invocation, &identite, cible, *ou).await
+        }
         Commande::Replication => {
             let identite = identite(&dossier)?;
             commandes::replication(invocation, &identite).await

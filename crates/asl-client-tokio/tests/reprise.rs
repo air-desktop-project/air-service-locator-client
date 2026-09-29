@@ -596,6 +596,80 @@ async fn l_etat_de_la_replication_se_lit_sur_la_voie_machine() {
     tache.abort();
 }
 
+// ── LES DOMAINES, LUS DEPUIS UNE MACHINE (serveur 0.39.0) ──────────────────
+
+#[tokio::test]
+async fn un_domaine_se_trouve_par_son_alias_puis_se_lit_avec_ses_machines() {
+    // **LE CHEMIN D'`asl domain <alias>`**, requête par requête : la
+    // recherche (l'alias pourcent-encodé — le banc ne répond qu'à
+    // l'écriture exacte), le détail, puis les services d'une machine à soi
+    // et ceux d'une machine d'autrui, que l'annuaire rend vides.
+    let (identite_attendue, cert, cle) = materiel("domaines");
+    let (adresse, tache) = lever(cert, cle, FauxAnnuaire).await;
+
+    let mut connexion = Connexion::ouvrir(adresse, "localhost", identite_attendue, &|| [0x36; 16])
+        .await
+        .expect("la poignée de main");
+
+    let visibles = connexion.domaines().await.expect("la liste");
+    assert_eq!(visibles.len(), 1);
+    assert_eq!(visibles[0].domaine, banc::domaine());
+    assert_eq!(visibles[0].alias.as_deref(), Some("Maison été"));
+
+    // Deux domaines portent « Maison été » : l'alias n'est pas unique.
+    let trouves = connexion
+        .domaines_par_alias("Maison été")
+        .await
+        .expect("la recherche");
+    assert_eq!(trouves.len(), 2, "{trouves:?}");
+    assert_eq!(trouves[1].domaine, banc::domaine_homonyme());
+    // La casse compte : « maison été » ne trouve rien.
+    assert!(
+        connexion
+            .domaines_par_alias("maison été")
+            .await
+            .expect("la recherche")
+            .is_empty()
+    );
+
+    let detail = connexion.domaine(banc::domaine()).await.expect("le détail");
+    assert_eq!(detail.machines.len(), 2);
+    assert_eq!(detail.machines[0].machine, banc::machine());
+    assert_eq!(detail.machines[1].proprietaire, banc::autre_compte());
+    assert_eq!(detail.machines[1].alias.as_deref(), Some("La cave"));
+
+    let services = connexion
+        .services_de_machine(banc::machine())
+        .await
+        .expect("mes services");
+    assert_eq!(services.len(), 2);
+    assert_eq!(services[0].nom, "depot");
+    let asl_client_tokio::domaines::EtatDeService::Annonce(annonce) = &services[0].etat else {
+        panic!("un service annoncé : {:?}", services[0].etat);
+    };
+    // L'objet d'annonce est gardé intact : il se relit en `Reponse`.
+    let mut tampons = asl_proto::cadrage::TamponsReponse::nouveaux();
+    asl_proto::Reponse::decoder(annonce, &mut tampons).expect("l'annonce se relit");
+    assert!(
+        connexion
+            .services_de_machine(banc::machine_d_autrui())
+            .await
+            .expect("une liste")
+            .is_empty(),
+        "la machine d'un autre compte : rien"
+    );
+
+    // Un domaine inconnu : `404`, que l'annuaire ne distingue pas d'un refus.
+    let inconnu = Identifiant::depuis_entropie(Genre::Domaine, [0x77; 16]);
+    assert!(matches!(
+        connexion.domaine(inconnu).await,
+        Err(Faute::Statut(404))
+    ));
+
+    let _ = connexion.fermer().await;
+    tache.abort();
+}
+
 // ── LE MAINTIEN, ET D'OÙ VIENT SA CADENCE ───────────────────────────────────
 
 #[tokio::test]

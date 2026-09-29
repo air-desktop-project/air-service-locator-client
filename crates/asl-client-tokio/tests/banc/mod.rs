@@ -123,7 +123,9 @@ impl ams_h3::Service for FauxAnnuaire {
                     appareil(2).texte().as_str()
                 ))
             } else {
-                None
+                // Les domaines (serveur 0.39.0) : une liste, une recherche
+                // par alias, un détail, les services d'une machine.
+                domaines_du_banc(chemin)
             };
             if let Some(corps) = corps {
                 let place = sortie.get_mut(..corps.len()).unwrap_or_default();
@@ -465,4 +467,83 @@ fn reponse_d_annonce() -> Vec<u8> {
     let ecrit = reponse.encoder(&mut tampon).expect("elle s'encode");
     tampon.truncate(ecrit);
     tampon
+}
+
+/// Le domaine du banc, « Maison été », que ce compte possède.
+pub fn domaine() -> asl_id::Identifiant {
+    asl_id::Identifiant::depuis_entropie(asl_id::Genre::Domaine, [0x44; 16])
+}
+
+/// Un second domaine qui porte le même alias, chez un autre compte.
+pub fn domaine_homonyme() -> asl_id::Identifiant {
+    asl_id::Identifiant::depuis_entropie(asl_id::Genre::Domaine, [0x45; 16])
+}
+
+/// Un autre compte, qui a rangé sa machine dans le domaine du banc.
+pub fn autre_compte() -> asl_id::Identifiant {
+    asl_id::Identifiant::depuis_entropie(asl_id::Genre::Utilisateur, [0x56; 16])
+}
+
+/// Sa machine.
+pub fn machine_d_autrui() -> asl_id::Identifiant {
+    asl_id::Identifiant::depuis_entropie(asl_id::Genre::Machine, [0x4F; 16])
+}
+
+/// Ce que le faux annuaire rend pour les verbes des domaines — **dans la
+/// forme exacte que le serveur 0.39.0 écrit** (`asl_api::domaine`,
+/// `asl_api::corps::ServiceRendu`) —, ou rien pour un autre chemin.
+fn domaines_du_banc(chemin: &[u8]) -> Option<String> {
+    let d = domaine().texte();
+    let u = proprietaire().texte();
+    let m = machine().texte();
+    let objet = format!(
+        r#"{{"domaine":"{}","proprietaire":"{}","alias":"Maison été","heberge_par":"racines","droits":["administrer","rattacher","voir","localiser"]"#,
+        d.as_str(),
+        u.as_str()
+    );
+    if chemin == b"/v1/domaines" {
+        return Some(format!("[{objet}}}]"));
+    }
+    // L'alias arrive pourcent-encodé ; deux domaines le portent.
+    if chemin == b"/v1/domaines?alias=Maison%20%C3%A9t%C3%A9" {
+        return Some(format!(
+            r#"[{{"domaine":"{}","autorite":"racines"}},{{"domaine":"{}","autorite":"racines"}}]"#,
+            d.as_str(),
+            domaine_homonyme().texte().as_str()
+        ));
+    }
+    if chemin.starts_with(b"/v1/domaines?alias=") {
+        return Some("[]".to_owned());
+    }
+    if chemin == format!("/v1/domaines/{}", d.as_str()).as_bytes() {
+        return Some(format!(
+            concat!(
+                r#"{},"groupes":[],"machines":[{{"machine":"{}","proprietaire":"{}","nom":"grenier"}},"#,
+                r#"{{"machine":"{}","proprietaire":"{}","nom":"cave","alias":"La cave"}}]}}"#
+            ),
+            objet,
+            m.as_str(),
+            u.as_str(),
+            machine_d_autrui().texte().as_str(),
+            autre_compte().texte().as_str()
+        ));
+    }
+    if chemin == format!("/v1/machines/{}/services", m.as_str()).as_bytes() {
+        let annonce = String::from_utf8(reponse_d_annonce()).expect("de l'UTF-8");
+        return Some(format!(
+            r#"[{{"service":"{}","nom":"depot","etat":"annonce","annonce":{annonce}}},{{"service":"{}","nom":"nas","etat":"parti","volontaire":null}}]"#,
+            asl_id::Identifiant::depuis_entropie(asl_id::Genre::Service, [0x2B; 16])
+                .texte()
+                .as_str(),
+            asl_id::Identifiant::depuis_entropie(asl_id::Genre::Service, [0x2C; 16])
+                .texte()
+                .as_str()
+        ));
+    }
+    // **LA MACHINE D'UN AUTRE : `[]`**, comme le vrai annuaire le rend à
+    // qui n'en est pas le propriétaire.
+    if chemin.starts_with(b"/v1/machines/") && chemin.ends_with(b"/services") {
+        return Some("[]".to_owned());
+    }
+    None
 }

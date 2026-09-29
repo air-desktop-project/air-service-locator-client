@@ -113,6 +113,8 @@ fn l_aide_repond_quand_rien_n_est_configure() {
             "machines [u-…]",
             "enrolled [u-…]",
             "replication",
+            "domains",
+            "domain <d-…|alias> [--where]",
             "identity",
             "diagnose",
         ] {
@@ -502,4 +504,55 @@ fn le_diagnostic_dit_d_ou_vient_chaque_locateur_et_ignore_un_cache_corrompu() {
     assert!(dit.contains("ILLISIBLE, ignoré"), "{dit}");
     assert!(!dit.contains("appris)"), "{dit}");
     assert!(dit.contains("2001:41d0:20a:900::1dd4"), "{dit}");
+}
+
+// ── `asl domains`, `asl domain` (serveur 0.39.0) ─────────────────────────────
+
+#[test]
+fn domain_sans_domaine_ou_avec_une_option_inconnue_est_une_faute_d_usage() {
+    // Code 1, et rien n'est joint : l'annuaire visé ne répond pas.
+    for ligne in [
+        &["domain"][..],
+        &["domain", "--where"][..],
+        &["domain", "Maison", "--verbose"][..],
+        &["domain", "Maison", "Grenier"][..],
+        &["domains", "Maison"][..],
+    ] {
+        let mut complete = vec!["--directory", MUET];
+        complete.extend_from_slice(ligne);
+        let sortie = asl(&complete);
+        assert_eq!(
+            code(&sortie),
+            Some(1),
+            "{ligne:?} : {}",
+            texte(&sortie.stderr)
+        );
+    }
+}
+
+#[test]
+fn domains_et_domain_lisent_l_identite_avant_toute_connexion() {
+    // Sur la voie machine : sans identité, code 2, tout de suite.
+    let bac = Bac::neuf("domaines-sans-identite");
+    for ligne in [&["domains"][..], &["domain", "Maison", "--where"][..]] {
+        let depart = std::time::Instant::now();
+        let mut complete = vec![
+            "--state",
+            bac.chemin().to_str().expect("un chemin UTF-8"),
+            "--directory",
+            MUET,
+        ];
+        complete.extend_from_slice(ligne);
+        let sortie = asl(&complete);
+        assert_eq!(
+            code(&sortie),
+            Some(2),
+            "{ligne:?} : {}",
+            texte(&sortie.stderr)
+        );
+        assert!(
+            depart.elapsed() < std::time::Duration::from_secs(2),
+            "{ligne:?}"
+        );
+    }
 }

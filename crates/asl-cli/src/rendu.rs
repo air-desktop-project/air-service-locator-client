@@ -116,7 +116,7 @@ pub fn reponse(corps: &[u8]) -> Result<String, String> {
 /// **CELUI QU'UNE SONDE A MESURÉ PASSE AVANT CELUI QU'ON DÉDUIT** : quand
 /// l'annuaire a constaté qu'un point était joignable, il dit PAR OÙ, et cette
 /// adresse-là vaut mieux que celle qu'on recomposerait.
-fn candidats(lue: &Reponse<'_>) -> Vec<Candidat> {
+pub(crate) fn candidats(lue: &Reponse<'_>) -> Vec<Candidat> {
     lue.joignabilite
         .iter()
         .map(|entree| match entree.verdict {
@@ -154,7 +154,7 @@ fn point(quoi: PointEcoute) -> String {
 }
 
 /// Une adresse et un port, avec les crochets qu'IPv6 demande.
-fn point_ecrit(quoi: &Candidat) -> String {
+pub(crate) fn point_ecrit(quoi: &Candidat) -> String {
     match quoi.adresse {
         core::net::IpAddr::V6(adresse) => format!("[{adresse}]:{}", quoi.port.valeur()),
         core::net::IpAddr::V4(adresse) => format!("{adresse}:{}", quoi.port.valeur()),
