@@ -113,6 +113,8 @@ fn l_aide_repond_quand_rien_n_est_configure() {
             "machines [u-…]",
             "enrolled [u-…]",
             "replication",
+            "echo ",
+            "ping <m-…|name|alias>",
             "domains",
             "domain <d-…|alias> [--where]",
             "identity",

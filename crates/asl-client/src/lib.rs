@@ -75,7 +75,8 @@
 //! TOURS et non entre les annuaires ; [`Identite`], ce qu'une machine détient et
 //! ce qu'elle en fait ; [`Enrolement`], comment elle acquiert tout cela ; et
 //! [`renvoi`], ce qu'un daemon fait d'un `421` qui l'envoie vers un annuaire
-//! local ; et [`appareil`], ce qu'un TÉLÉPHONE compose — lui ne signe pas ici, sa clé vit
+//! local ; [`echo`], ce que `asl echo` décide d'un datagramme et ce que
+//! `asl ping` conclut d'une réponse ; et [`appareil`], ce qu'un TÉLÉPHONE compose — lui ne signe pas ici, sa clé vit
 //! dans son matériel, et ce module ne fait que lui dire quoi signer.
 //!
 //! **Pas écrit** : le transport. Tant que la pile QUIC n'est pas câblée, cette
@@ -89,6 +90,7 @@
 use asl_cle::{ClePublique, CleSecrete, CodeEnrolement, Defi, LiaisonDeCanal, Signature};
 
 pub mod appareil;
+pub mod echo;
 pub mod racines;
 pub mod renvoi;
 
@@ -620,5 +622,27 @@ impl Identite {
         adresses_locales: &'a [IpAddr],
     ) -> Result<Annonce<'a>, Faute> {
         Annonce::nouvelle(self.machine, service, points, adresses_locales).map_err(Faute::Protocole)
+    }
+
+    /// Signe la sonde d'`asl ping` : ce défi, et ce jeton.
+    ///
+    /// **C'EST CE QUI FAIT QUE LE JETON N'EST PAS PORTEUR** (C10) : il nomme la
+    /// clé de cette machine, et l'écho exige que la sonde soit signée par
+    /// elle. Intercepté, il ne sert à rien sans la moitié privée — qui ne
+    /// quitte pas ce disque.
+    #[must_use]
+    pub fn sonder(&self, defi: asl_echo::DefiEcho, jeton: asl_echo::Jeton) -> asl_echo::SondeJeton {
+        asl_echo::SondeJeton::signer(defi, jeton, &self.secrete)
+    }
+
+    /// Signe la réponse de l'écho à une sonde acceptée, pour la source d'où
+    /// elle est venue — voir [`echo::Repondeur`].
+    #[must_use]
+    pub fn repondre_a_l_echo(
+        &self,
+        sonde: &asl_echo::SondeAcceptee,
+        source: SocketAddr,
+    ) -> asl_echo::Reponse {
+        sonde.repondre(source, &self.secrete)
     }
 }

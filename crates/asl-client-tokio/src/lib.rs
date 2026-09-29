@@ -26,12 +26,14 @@
 
 #![forbid(unsafe_code)]
 
-use std::net::SocketAddr;
+use std::collections::VecDeque;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ams_proto_quic::{ConnectionId, StreamId};
 use ams_quic_tls::Connection as ConnexionQuic;
-use asl_cle::{Defi, LiaisonDeCanal};
+use asl_cle::{ClePublique, Defi, LiaisonDeCanal};
 use asl_client::Identite;
 use asl_id::Identifiant;
 use tokio::net::UdpSocket;
@@ -46,7 +48,8 @@ mod reponse;
 
 pub use appareil::{CompteCree, NOUVELLE_MAX, Nouvelle, Tenue};
 pub use attache::{
-    Annuaire, Attache, Etat, Reglages, cadence_du_bail, confiance_de, joindre, membres_du_renvoi,
+    Annuaire, Attache, Etat, Reglages, cadence_du_bail, confiance_de, joindre, joindre_sur,
+    membres_du_renvoi,
 };
 pub use confiance::{Confiance, Forme};
 pub use pont::Pont;
@@ -134,6 +137,86 @@ pub const REPONSE_MS: u64 = 10_000;
 /// Ce qu'un datagramme peut faire.
 const DATAGRAMME_MAX: usize = 1_500;
 
+/// Combien de datagrammes d'écho attendent, au plus, que le porteur les lise
+/// ([`Connexion::echos`]).
+///
+/// **UNE BORNE, PARCE QUE CE QUI ARRIVE LÀ VIENT DE N'IMPORTE QUI** : la
+/// socket partagée n'est pas connectée, et un inconnu peut y verser ce qu'il
+/// veut. Au-delà, les nouveaux sont jetés — le porteur les aurait de toute
+/// façon tus, puisque l'écho borne son débit à cinquante par seconde, et une
+/// file ne se vide qu'entre deux lectures d'une demi-seconde au plus.
+pub const ECHOS_EN_ATTENTE_MAX: usize = 64;
+
+/// Comment une connexion tient sa socket.
+#[derive(Debug)]
+enum Voie {
+    /// La socket est à elle, **connectée** à l'annuaire : le noyau jette tout
+    /// datagramme d'une autre source. C'est le cas ordinaire.
+    Connectee,
+    /// La socket est **partagée avec l'écho** (`protocole.md` §3 quater,
+    /// décision 90 ; E2) : non connectée, elle reçoit de partout, et chaque
+    /// datagramme est TRIÉ à l'arrivée — voir [`trier`].
+    Partagee {
+        /// L'annuaire, tel qu'on l'a visé.
+        distante: SocketAddr,
+        /// La même adresse, telle qu'on l'écrit sur CETTE socket — une IPv4
+        /// enfouie quand la socket est à double pile.
+        envoi: SocketAddr,
+        /// Les datagrammes d'écho arrivés, pas encore lus.
+        echos: VecDeque<(Vec<u8>, SocketAddr)>,
+    },
+}
+
+/// Ce qu'un datagramme arrivé sur une socket partagée est.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tri {
+    /// De l'écho : son premier octet est de `0x04` à `0x0F`, d'où qu'il
+    /// vienne.
+    Echo,
+    /// Du QUIC de l'annuaire.
+    Quic,
+    /// Ni l'un ni l'autre : du QUIC d'ailleurs, ou rien du tout. Jeté — c'est
+    /// ce que le noyau faisait d'une socket connectée.
+    Ailleurs,
+}
+
+/// Trie un datagramme **au premier octet**, puis à la source.
+///
+/// Un paquet QUIC v1 a toujours le bit `0x40` du premier octet posé (RFC 9000
+/// §17 ; RFC 9443 §2) ; l'écho commence par un octet de `0x04` à `0x0F`, une
+/// plage que ni QUIC, ni STUN, ni DTLS, ni RTP n'emploient (RFC 7983 §7).
+/// **Un seul octet décide**, sans ambiguïté — `asl_echo::est_de_l_echo`, la
+/// règle écrite une fois pour le serveur et le client.
+///
+/// Le reste n'est cru QUIC que s'il vient de l'annuaire : une socket non
+/// connectée n'a plus le noyau pour faire ce tri-là, il se fait ici. Les deux
+/// adresses sont comparées sous leur forme canonique — une socket à double
+/// pile rend une IPv4 enfouie là où l'on avait visé une IPv4.
+fn trier(datagramme: &[u8], source: SocketAddr, distante: SocketAddr) -> Tri {
+    match datagramme.first() {
+        Some(premier) if asl_echo::est_de_l_echo(*premier) => Tri::Echo,
+        Some(_) if canonique(source) == canonique(distante) => Tri::Quic,
+        _ => Tri::Ailleurs,
+    }
+}
+
+/// Une adresse sous sa forme canonique : une IPv4 enfouie redevient une IPv4.
+fn canonique(adresse: SocketAddr) -> SocketAddr {
+    SocketAddr::new(adresse.ip().to_canonical(), adresse.port())
+}
+
+/// L'adresse telle qu'on l'écrit sur une socket IPv6 : **une IPv4 s'y
+/// enfouit** (`::ffff:a.b.c.d`), sans quoi le noyau refuse l'envoi. Sur une
+/// socket IPv4, elle reste telle quelle.
+fn pour_la_socket(socket_v6: bool, cible: SocketAddr) -> SocketAddr {
+    match cible.ip() {
+        IpAddr::V4(v4) if socket_v6 => {
+            SocketAddr::new(IpAddr::V6(v4.to_ipv6_mapped()), cible.port())
+        }
+        _ => cible,
+    }
+}
+
 /// L'inactivité qu'on annonce à l'annuaire, en microsecondes.
 ///
 /// **ELLE VIENT DU SERVEUR, ET CELLE-CI N'EST QU'UN PLAFOND.** `modele.md` §4.1 :
@@ -163,7 +246,12 @@ fn maintenant() -> u64 {
 /// Deux daemons qui partageraient une connexion partageraient donc leurs droits.
 #[derive(Debug)]
 pub struct Connexion {
-    socket: UdpSocket,
+    /// La socket — **partagée** quand elle est aussi celle de l'écho
+    /// ([`Connexion::ouvrir_sur`]) : elle survit alors à la connexion, et la
+    /// suivante s'ouvre dessus, sur le même port.
+    socket: Arc<UdpSocket>,
+    /// Connectée à l'annuaire, ou partagée avec l'écho.
+    voie: Voie,
     /// La connexion QUIC, **derrière une boîte**.
     ///
     /// # CENT TRENTE-SIX KIBIOCTETS, ET C'EST MESURÉ
@@ -248,9 +336,6 @@ impl Connexion {
         confiance: &Confiance,
         alea: &(dyn Fn() -> [u8; 16] + Sync),
     ) -> Result<Self, Faute> {
-        let (config, retenue) = confiance::configuration(confiance)?;
-        let serveur = confiance::nom_de_serveur(annuaire);
-
         // **UNE SOCKET DE LA MÊME FAMILLE QUE LA CIBLE.** Se lier en IPv4 pour
         // joindre une adresse IPv6 échoue au premier envoi, et le message du
         // noyau ne dit pas pourquoi.
@@ -260,6 +345,72 @@ impl Connexion {
         };
         let socket = UdpSocket::bind(local).await.map_err(Faute::Socket)?;
         socket.connect(annuaire).await.map_err(Faute::Socket)?;
+        Self::etablir(
+            Arc::new(socket),
+            Voie::Connectee,
+            annuaire,
+            nom,
+            confiance,
+            alea,
+        )
+        .await
+    }
+
+    /// Ouvre une connexion à cet annuaire **sur cette socket**, sans la
+    /// connecter : c'est la socket de l'écho, et le bail doit partir d'elle
+    /// (`protocole.md` §3 quater, décision 90 ; E2).
+    ///
+    /// # POURQUOI LA MÊME SOCKET
+    ///
+    /// Derrière un NAT, le mapping ouvert par le bail est celui de la socket
+    /// d'où le bail part, et le keepalive le tient ouvert : l'écho qui écoute
+    /// sur cette socket-là devient joignable à l'adresse que l'annuaire
+    /// observe, sans redirection de port. Une socket à part n'aurait aucun
+    /// mapping, et personne pour le tenir.
+    ///
+    /// # CE QUE LE PORTEUR DOIT FAIRE, ET CE QU'IL RÉCUPÈRE
+    ///
+    /// La socket n'étant pas connectée, elle reçoit de partout. Chaque
+    /// datagramme est trié au premier octet : le QUIC de l'annuaire va à la
+    /// connexion, **l'écho est mis de côté** et rendu par
+    /// [`Connexion::echos`], le reste est jeté. La connexion ne décide rien de
+    /// ce que l'écho reçoit ; c'est au porteur de répondre, par
+    /// [`Connexion::envoyer_a`].
+    ///
+    /// La socket est à la connexion ET au porteur : **elle survit à la
+    /// connexion**, et la suivante s'ouvre dessus — le port reste le même
+    /// d'une reconnexion à l'autre.
+    ///
+    /// # Errors
+    ///
+    /// Celles d'[`Self::ouvrir`].
+    pub async fn ouvrir_sur(
+        socket: Arc<UdpSocket>,
+        annuaire: SocketAddr,
+        nom: &str,
+        confiance: &Confiance,
+        alea: &(dyn Fn() -> [u8; 16] + Sync),
+    ) -> Result<Self, Faute> {
+        let socket_v6 = socket.local_addr().map_err(Faute::Socket)?.is_ipv6();
+        let voie = Voie::Partagee {
+            distante: annuaire,
+            envoi: pour_la_socket(socket_v6, annuaire),
+            echos: VecDeque::new(),
+        };
+        Self::etablir(socket, voie, annuaire, nom, confiance, alea).await
+    }
+
+    /// Monte la connexion QUIC sur cette socket, puis mène la poignée de main.
+    async fn etablir(
+        socket: Arc<UdpSocket>,
+        voie: Voie,
+        annuaire: SocketAddr,
+        nom: &str,
+        confiance: &Confiance,
+        alea: &(dyn Fn() -> [u8; 16] + Sync),
+    ) -> Result<Self, Faute> {
+        let (config, retenue) = confiance::configuration(confiance)?;
+        let serveur = confiance::nom_de_serveur(annuaire);
 
         let graine = alea();
         let notre = ConnectionId::new(graine.get(..8).unwrap_or_default())
@@ -274,6 +425,7 @@ impl Connexion {
 
         let mut connexion = Self {
             socket,
+            voie,
             quic,
             h3: ams_h3::Http3Client::new(),
             // **UNE VALEUR DE PASSAGE, REMPLACÉE AVANT TOUT USAGE.** La vraie
@@ -295,7 +447,26 @@ impl Connexion {
     /// avant la poignée de main — ce qu'une connexion ouverte n'est jamais.
     #[must_use]
     pub fn forme(&self) -> Option<Forme> {
-        self.forme.lock().ok().and_then(|place| *place)
+        self.forme
+            .lock()
+            .ok()
+            .and_then(|place| place.map(|(forme, _)| forme))
+    }
+
+    /// La clé d'identité de l'annuaire au bout, **telle que la poignée de
+    /// main l'a jugée** : celle dont se déduit le `n-…` qu'on attendait.
+    /// `None` avant la poignée de main — ce qu'une connexion ouverte n'est
+    /// jamais.
+    ///
+    /// C'est sous elle que l'écho vérifie la sonde de l'annuaire qui tient son
+    /// bail (décision 91 ; E4) — y compris celle d'un annuaire local qu'aucun
+    /// binaire n'embarque.
+    #[must_use]
+    pub fn cle_distante(&self) -> Option<ClePublique> {
+        self.forme
+            .lock()
+            .ok()
+            .and_then(|place| place.map(|(_, cle)| cle))
     }
 
     /// La liaison de canal de cette connexion.
@@ -339,10 +510,12 @@ impl Connexion {
             if ecrit == 0 {
                 return Ok(());
             }
-            self.socket
-                .send(place.get(..ecrit).unwrap_or_default())
-                .await
-                .map_err(Faute::Socket)?;
+            let datagramme = place.get(..ecrit).unwrap_or_default();
+            match &self.voie {
+                Voie::Connectee => self.socket.send(datagramme).await,
+                Voie::Partagee { envoi, .. } => self.socket.send_to(datagramme, *envoi).await,
+            }
+            .map_err(Faute::Socket)?;
         }
     }
 
@@ -353,9 +526,28 @@ impl Connexion {
     async fn recevoir(&mut self, attente_ms: u64) -> Result<(), Faute> {
         let mut recu = [0_u8; DATAGRAMME_MAX];
         let attente = tokio::time::Duration::from_millis(attente_ms);
-        match tokio::time::timeout(attente, self.socket.recv(&mut recu)).await {
-            Ok(Ok(lus)) => {
+        match tokio::time::timeout(attente, self.socket.recv_from(&mut recu)).await {
+            Ok(Ok((lus, source))) => {
                 let mut datagramme = recu.get_mut(..lus).unwrap_or_default().to_vec();
+                // **SUR UNE SOCKET PARTAGÉE, LE TRI D'ABORD** : l'écho est mis
+                // de côté pour le porteur, ce qui ne vient pas de l'annuaire
+                // est jeté. Une socket connectée n'a rien à trier — le noyau
+                // l'a fait.
+                if let Voie::Partagee {
+                    distante, echos, ..
+                } = &mut self.voie
+                {
+                    match trier(&datagramme, source, *distante) {
+                        Tri::Quic => {}
+                        Tri::Echo => {
+                            if echos.len() < ECHOS_EN_ATTENTE_MAX {
+                                echos.push_back((datagramme, source));
+                            }
+                            return Ok(());
+                        }
+                        Tri::Ailleurs => return Ok(()),
+                    }
+                }
                 self.quic
                     .on_datagram(&mut datagramme, maintenant())
                     .map_err(Faute::Quic)?;
@@ -567,7 +759,47 @@ impl Connexion {
     ///
     /// [`Faute::Socket`] si la socket ne sait plus dire à qui elle parle.
     pub fn distante(&self) -> Result<SocketAddr, Faute> {
-        self.socket.peer_addr().map_err(Faute::Socket)
+        match &self.voie {
+            Voie::Connectee => self.socket.peer_addr().map_err(Faute::Socket),
+            Voie::Partagee { distante, .. } => Ok(*distante),
+        }
+    }
+
+    /// Les datagrammes d'écho arrivés sur la socket partagée depuis le
+    /// dernier appel, chacun avec sa source — **dans l'ordre d'arrivée**, au
+    /// plus [`ECHOS_EN_ATTENTE_MAX`].
+    ///
+    /// Ils arrivent pendant que la connexion lit — [`Connexion::entretenir`],
+    /// [`Connexion::requete`] — et attendent ici. **Rien n'est décidé
+    /// d'eux** : c'est au porteur de les juger, et de répondre ou de se taire.
+    /// Toujours vide sur une connexion qui n'a pas été ouverte par
+    /// [`Connexion::ouvrir_sur`].
+    pub fn echos(&mut self) -> Vec<(Vec<u8>, SocketAddr)> {
+        match &mut self.voie {
+            Voie::Connectee => Vec::new(),
+            Voie::Partagee { echos, .. } => echos.drain(..).collect(),
+        }
+    }
+
+    /// Envoie ce datagramme à cette adresse, **depuis la socket partagée** —
+    /// la réponse de l'écho part d'où la sonde est arrivée.
+    ///
+    /// # Errors
+    ///
+    /// [`Faute::Socket`] — y compris sur une connexion à socket connectée,
+    /// qui n'envoie qu'à son annuaire.
+    pub async fn envoyer_a(&self, octets: &[u8], destination: SocketAddr) -> Result<(), Faute> {
+        if matches!(self.voie, Voie::Connectee) {
+            return Err(Faute::Socket(std::io::Error::other(
+                "cette connexion n'a pas de socket partagée",
+            )));
+        }
+        let socket_v6 = self.socket.local_addr().map_err(Faute::Socket)?.is_ipv6();
+        self.socket
+            .send_to(octets, pour_la_socket(socket_v6, destination))
+            .await
+            .map_err(Faute::Socket)?;
+        Ok(())
     }
 
     /// La connexion est-elle encore là ?
@@ -976,6 +1208,44 @@ impl Connexion {
         reponse.exige(200)?;
         Ok(reponse.corps)
     }
+
+    /// Demande un jeton pour sonder l'écho de cette machine —
+    /// `POST /v1/echo/jetons` (`protocole.md` §3 quater, décision 91 ;
+    /// serveur 0.42.0).
+    ///
+    /// **SUR LA VOIE MACHINE, AUX RACINES** : la connexion doit avoir prouvé
+    /// la clé d'une machine qui porte `lecture`, et le jeton est lié à CETTE
+    /// clé — la requête ne la dit pas, la connexion la porte. Il ne sert donc
+    /// qu'à qui signe la sonde de la même clé.
+    ///
+    /// Le jeton rendu est **bien formé, pas encore cru** : c'est l'écho qui le
+    /// croit. Le sondeur, lui, y lit la clé de la cible que la racine a signée,
+    /// et c'est contre elle qu'il vérifie la réponse.
+    ///
+    /// # Errors
+    ///
+    /// Celles de [`Connexion::requete`], plus [`Faute::Statut`] — **`404` pour
+    /// « pas de machine », « pas d'écho annoncé » ET « pas le droit »**, que
+    /// la racine ne distingue pas (C9) ; `429` au-delà du débit ; `421` chez
+    /// un annuaire local — et [`Faute::Illisible`].
+    pub async fn jeton_d_echo(&mut self, machine: Identifiant) -> Result<asl_echo::Jeton, Faute> {
+        let mut corps = [0_u8; 64];
+        let ecrit = asl_api::echo::DemandeDeJeton { machine }
+            .encoder(&mut corps)
+            .map_err(|_| Faute::Illisible)?;
+        let reponse = self
+            .requete(
+                b"POST",
+                b"/v1/echo/jetons",
+                &[(b"content-type", b"application/json")],
+                corps.get(..ecrit).unwrap_or_default(),
+            )
+            .await?;
+        reponse.exige(200)?;
+        asl_api::echo::JetonRendu::decoder(&reponse.corps)
+            .map(|rendu| rendu.jeton)
+            .map_err(|_| Faute::Illisible)
+    }
 }
 
 /// Ce qu'un enrôlement rend : la machine, et son propriétaire si l'annuaire
@@ -1016,4 +1286,58 @@ pub fn encoder(annonce: &asl_proto::Annonce<'_>) -> Result<Vec<u8>, Faute> {
     let combien = annonce.encoder(&mut sortie).map_err(|_| Faute::Illisible)?;
     sortie.truncate(combien);
     Ok(sortie)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Tri, canonique, pour_la_socket, trier};
+    use std::net::SocketAddr;
+
+    fn adresse(texte: &str) -> SocketAddr {
+        texte.parse().expect("une adresse")
+    }
+
+    /// **UN SEUL OCTET DÉCIDE** : l'écho d'où qu'il vienne, le QUIC de
+    /// l'annuaire seul, le reste jeté — ce que le noyau faisait d'une socket
+    /// connectée.
+    #[test]
+    fn le_tri_se_fait_au_premier_octet_puis_a_la_source() {
+        let annuaire = adresse("192.0.2.1:6630");
+        let inconnu = adresse("198.51.100.9:40000");
+        // Un paquet QUIC long (0xC0…) et court (0x40…), de l'annuaire.
+        assert_eq!(trier(&[0xC3, 0], annuaire, annuaire), Tri::Quic);
+        assert_eq!(trier(&[0x41], annuaire, annuaire), Tri::Quic);
+        // Le même, d'ailleurs : jeté.
+        assert_eq!(trier(&[0xC3, 0], inconnu, annuaire), Tri::Ailleurs);
+        // L'écho, de toute source — y compris l'annuaire, qui sonde depuis
+        // une autre socket mais pourrait venir de la même adresse.
+        for premier in 0x04..=0x0F {
+            assert_eq!(
+                trier(&[premier, 1], inconnu, annuaire),
+                Tri::Echo,
+                "{premier:#x}"
+            );
+            assert_eq!(trier(&[premier], annuaire, annuaire), Tri::Echo);
+        }
+        // Hors de la plage de l'écho, et pas de l'annuaire : jeté.
+        assert_eq!(trier(&[0x03], inconnu, annuaire), Tri::Ailleurs);
+        assert_eq!(trier(&[0x10], inconnu, annuaire), Tri::Ailleurs);
+        // Vide : rien.
+        assert_eq!(trier(&[], annuaire, annuaire), Tri::Ailleurs);
+        // **UNE IPv4 ENFOUIE EST L'ANNUAIRE** qu'on avait visé en IPv4 : c'est
+        // ce qu'une socket à double pile rend.
+        let enfouie = adresse("[::ffff:192.0.2.1]:6630");
+        assert_eq!(trier(&[0xC3], enfouie, annuaire), Tri::Quic);
+        assert_eq!(canonique(enfouie), annuaire);
+        assert_ne!(canonique(adresse("[::ffff:192.0.2.1]:6631")), annuaire);
+    }
+
+    #[test]
+    fn une_ipv4_s_enfouit_sur_une_socket_ipv6_et_seulement_la() {
+        let v4 = adresse("192.0.2.1:6630");
+        let v6 = adresse("[2001:db8::1]:6630");
+        assert_eq!(pour_la_socket(true, v4), adresse("[::ffff:192.0.2.1]:6630"));
+        assert_eq!(pour_la_socket(false, v4), v4);
+        assert_eq!(pour_la_socket(true, v6), v6);
+    }
 }

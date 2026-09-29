@@ -19,6 +19,7 @@ asl-client-tokio.workspace = true
 asl-cle.workspace = true
 asl-id.workspace = true
 asl-proto.workspace = true
+asl-echo.workspace = true
 
 # `signal` EN PLUS, ET SEULEMENT ICI. `asl announce` tient l'annonce au premier
 # plan, et Ctrl-C doit la retirer PROPREMENT — sinon l'annuaire donne une adresse
@@ -31,6 +32,20 @@ tokio = { workspace = true, features = ["signal"] }
 # et n'a ni sous-commandes imbriquées ni complétion ; en tirer une centaine de
 # crates dans le verrou d'un dépôt dont `check-sans-c.sh` inspecte le graphe
 # construit à chaque passage ne se paierait pas. Voir `src/arguments.rs`.
+
+[dev-dependencies]
+# **LE BANC D'`asl-client-tokio`, PARTAGÉ ET NON RECOPIÉ**, pour `tests/echo.rs` :
+# `asl echo` et `asl ping` de bout en bout, deux processus contre un annuaire
+# de banc qui tient leurs deux connexions et signe un vrai jeton. Ce sont les
+# dépendances du banc, rien de plus — et aucune n'entre dans le binaire.
+ams-h3.workspace = true
+ams-proto-http.workspace = true
+ams-proto-quic.workspace = true
+ams-quic.workspace = true
+ams-quic-tls.workspace = true
+ams-tls.workspace = true
+asl-api.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
 
 [lints]
 workspace = true

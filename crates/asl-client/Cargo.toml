@@ -15,6 +15,7 @@ asl-proto.workspace = true
 asl-cle.workspace = true
 asl-api.workspace = true
 asl-racines.workspace = true
+asl-echo.workspace = true
 
 [lints]
 workspace = true

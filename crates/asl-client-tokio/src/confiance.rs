@@ -29,6 +29,7 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
+use asl_cle::ClePublique;
 use asl_client::racines::identite_attendue;
 use asl_id::Identifiant;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -80,8 +81,16 @@ impl core::fmt::Display for Forme {
     }
 }
 
-/// Où la poignée de main dépose la forme qu'elle a crue.
-pub(crate) type Retenue = Arc<Mutex<Option<Forme>>>;
+/// Ce que la poignée de main a cru : la forme, et **la clé** du certificat
+/// reconnu.
+///
+/// # POURQUOI LA CLÉ EST GARDÉE
+///
+/// L'écho croit la sonde de l'annuaire qui tient son bail (décision 91 ; E4),
+/// et la vérifie sous SA clé d'identité — celle que la poignée de main vient
+/// de juger. Un annuaire local joint par un `421` n'est pas dans le binaire :
+/// c'est ici, et nulle part ailleurs, qu'on apprend sa clé.
+pub(crate) type Retenue = Arc<Mutex<Option<(Forme, ClePublique)>>>;
 
 /// Monte la configuration TLS cliente pour cette confiance.
 ///
@@ -132,9 +141,9 @@ struct Verificateur {
 }
 
 impl Verificateur {
-    fn retenir(&self, forme: Forme) {
+    fn retenir(&self, forme: Forme, cle: ClePublique) {
         if let Ok(mut place) = self.retenue.lock() {
-            *place = Some(forme);
+            *place = Some((forme, cle));
         }
     }
 }
@@ -151,8 +160,10 @@ impl ServerCertVerifier for Verificateur {
         // **UN SEUL MAILLON, ET SA CLÉ EST L'IDENTITÉ.** Une chaîne de deux
         // n'est pas un certificat d'identité, même si sa tête en porte un.
         let maillons = intermediaires.len().saturating_add(1);
-        if identite_attendue(maillons, certificat, &self.identites).is_some() {
-            self.retenir(Forme::Identite);
+        if identite_attendue(maillons, certificat, &self.identites).is_some()
+            && let Ok(cle) = asl_cle::cle_du_certificat(certificat)
+        {
+            self.retenir(Forme::Identite, cle);
             return Ok(ServerCertVerified::assertion());
         }
         Err(rustls::Error::InvalidCertificate(
@@ -243,7 +254,7 @@ mod tests {
         assert!(juger(&verificateur, std::slice::from_ref(&certificat)));
         assert_eq!(
             *retenue.lock().expect("pas empoisonné"),
-            Some(Forme::Identite)
+            Some((Forme::Identite, nous.publique()))
         );
 
         let (verificateur, retenue) = monter(&[&autre]);

@@ -24,7 +24,7 @@ use crate::{Issue, Sortie};
 /// du bail que l'annuaire accorde (`modele.md` §4.1), mais il faut bien une
 /// valeur avant d'avoir parlé à qui que ce soit. Le bon delta se mesure derrière
 /// des NAT réels, et il ne l'est pas encore.
-const PLAFOND_MS: u64 = 15_000;
+pub(crate) const PLAFOND_MS: u64 = 15_000;
 
 /// Ce que l'annuaire répond à un code d'enrôlement qu'il ne veut pas.
 ///
@@ -51,7 +51,7 @@ const PATIENCE_S: u64 = 20;
 /// et ne peuvent pas se permettre vingt secondes par sonde. Une valeur illisible
 /// ou nulle est ignorée plutôt que refusée : un diagnostic qui refuserait de
 /// démarrer à cause de sa propre horloge serait le comble.
-fn patience() -> u64 {
+pub(crate) fn patience() -> u64 {
     std::env::var("ASL_TIMEOUT")
         .ok()
         .and_then(|texte| texte.parse::<u64>().ok())
@@ -73,7 +73,7 @@ fn patience() -> u64 {
 /// **UN NOM QUI REND PLUSIEURS ADRESSES LES REND TOUTES**, et elles entrent
 /// toutes dans la tournée : c'est ainsi qu'un annuaire à double pile est essayé
 /// en IPv6 d'abord sans que personne ait à l'écrire.
-fn reglages(invocation: &Invocation) -> Result<Reglages, Issue> {
+pub(crate) fn reglages(invocation: &Invocation) -> Result<Reglages, Issue> {
     avertir_d_asl_roots();
     let cibles = if invocation.annuaires.is_empty() {
         depuis_l_environnement()?
@@ -280,7 +280,7 @@ async fn relire_les_racines(
 }
 
 /// Ouvre une connexion, puis relit la liste des racines s'il est temps.
-async fn ouvrir_et_relire(
+pub(crate) async fn ouvrir_et_relire(
     invocation: &Invocation,
     reglages: &Reglages,
 ) -> Result<Connexion, Issue> {
@@ -1457,7 +1457,7 @@ async fn renvoi_de_l_annonce(connexion: &mut Connexion) {
 /// chercher une panne de réseau là où il y a un droit manquant.
 /// Les réglages qui visent l'annuaire local qu'un `421` désigne : chacun de
 /// ses membres, sous SA propre identité (décision 59).
-async fn reglages_du_renvoi(corps: &[u8]) -> Result<Reglages, Issue> {
+pub(crate) async fn reglages_du_renvoi(corps: &[u8]) -> Result<Reglages, Issue> {
     let renvoi = asl_client::renvoi::Renvoi::lire(corps).map_err(|quoi| {
         Issue::Injoignable(format!(
             "l'annuaire renvoie ailleurs, mais le renvoi ne se lit pas ({quoi:?})"
@@ -1479,7 +1479,7 @@ async fn reglages_du_renvoi(corps: &[u8]) -> Result<Reglages, Issue> {
     Reglages::nouveaux(membres, PLAFOND_MS).map_err(|quoi| Issue::Configuration(quoi.to_string()))
 }
 
-fn refus_de_l_annuaire(quoi: FauteReseau) -> Issue {
+pub(crate) fn refus_de_l_annuaire(quoi: FauteReseau) -> Issue {
     match quoi {
         FauteReseau::Statut(code) => Issue::Refuse(code),
         autre => Issue::Injoignable(autre.to_string()),
@@ -1492,7 +1492,7 @@ fn refus_de_l_annuaire(quoi: FauteReseau) -> Issue {
 /// la boucle d'entretien le lit à chaque réveil. C'est exactement ce que fait
 /// `asl_client_tokio::Attache`, et cela coûte une demi-seconde de latence au
 /// pire — sur un retrait manuel, personne ne la mesure.
-fn ecouter_ctrl_c() -> Arc<AtomicBool> {
+pub(crate) fn ecouter_ctrl_c() -> Arc<AtomicBool> {
     let arret = Arc::new(AtomicBool::new(false));
     let sien = Arc::clone(&arret);
     tokio::spawn(async move {

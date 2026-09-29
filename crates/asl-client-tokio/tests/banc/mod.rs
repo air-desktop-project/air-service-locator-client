@@ -409,15 +409,21 @@ pub fn identite_de(cle: &asl_cle::CleSecrete) -> asl_id::Identifiant {
 /// fin de la bascule (décision 58, étape 5), un annuaire ne sert que son
 /// certificat d'identité, et le banc fait de même.
 pub fn materiel(nom: &str) -> (asl_id::Identifiant, Vec<u8>, Vec<u8>) {
+    let cle = cle_de_banc(nom);
+    let (cert, secrete) = materiel_d_identite(&cle);
+    (identite_de(&cle), cert, secrete)
+}
+
+/// La clé d'identité du banc de ce nom — celle que [`materiel`] sert : de
+/// quoi signer ce qu'un annuaire signe (un jeton, une sonde d'écho).
+pub fn cle_de_banc(nom: &str) -> asl_cle::CleSecrete {
     let mut graine = [0_u8; 32];
     // La longueur d'abord, pour que « a » et « aa » ne se confondent pas.
     graine[0] = u8::try_from(nom.len()).unwrap_or(u8::MAX);
     for (place, octet) in graine.iter_mut().skip(1).zip(nom.bytes().cycle()) {
         *place = octet;
     }
-    let cle = asl_cle::CleSecrete::depuis_entropie(graine);
-    let (cert, secrete) = materiel_d_identite(&cle);
-    (identite_de(&cle), cert, secrete)
+    asl_cle::CleSecrete::depuis_entropie(graine)
 }
 
 /// Une adresse où plus rien n'écoute.
@@ -607,4 +613,340 @@ fn domaines_du_banc(chemin: &[u8]) -> Option<String> {
         return Some("[]".to_owned());
     }
     None
+}
+
+// ── L'écho : un banc à plusieurs connexions, et un annuaire qui s'en souvient ─
+
+/// Lève un annuaire de banc qui tient **plusieurs connexions à la fois** —
+/// une par pair —, chacune avec sa copie du service.
+///
+/// # POURQUOI UN SECOND BANC
+///
+/// [`lever`] n'en tient qu'une, ce qui suffit à tout ce qui précède. L'écho
+/// en demande deux en même temps : `asl echo` tient son bail, et `asl ping`
+/// ouvre la sienne pour résoudre l'écho et demander un jeton. Le service est
+/// CLONÉ par connexion ; ce qu'elles partagent, il le porte derrière un
+/// `Arc` (voir [`AnnuaireDEcho`]).
+///
+/// Les délais de chaque connexion échoient à chaque réveil, et ce qu'ils
+/// produisent part — un keepalive, une retransmission —, faute de quoi un
+/// bail tenu une minute mourrait du silence du banc.
+pub async fn lever_a_plusieurs<S>(
+    chaine: Vec<u8>,
+    cle: Vec<u8>,
+    service: S,
+) -> (SocketAddr, tokio::task::JoinHandle<()>)
+where
+    S: ams_h3::Service + Clone + Send + 'static,
+{
+    let (adresse, tache, _) = lever_a_plusieurs_qui_pousse(chaine, cle, service).await;
+    (adresse, tache)
+}
+
+/// Le même, avec de quoi **pousser un verdict** quand l'essai le décide — à
+/// chaque connexion qui tient le flux des poussées (`GET /v1/poussees`),
+/// c'est-à-dire à l'écho, et à lui seul.
+pub async fn lever_a_plusieurs_qui_pousse<S>(
+    chaine: Vec<u8>,
+    cle: Vec<u8>,
+    service: S,
+) -> (
+    SocketAddr,
+    tokio::task::JoinHandle<()>,
+    tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+)
+where
+    S: ams_h3::Service + Clone + Send + 'static,
+{
+    let (voie, mut a_pousser) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let socket = UdpSocket::bind("127.0.0.1:0").await.expect("une socket");
+    let adresse = socket.local_addr().expect("une adresse");
+
+    let tache = tokio::spawn(async move {
+        let mut config = ams_tls::quic_server_config(&chaine, &cle).expect("la paire est bonne");
+        config.alpn_protocols = ams_tls::alpn_h3();
+        let config = Arc::new(config);
+
+        let mut connexions: Vec<(SocketAddr, ams_quic_tls::Connection, ams_h3::Http3, S)> =
+            Vec::new();
+        let mut recu = vec![0_u8; 1_500];
+        let mut place = vec![0_u8; 1_500];
+        let mut rang: u8 = 0;
+
+        loop {
+            let attente = tokio::time::Duration::from_millis(50);
+            let arrivee = tokio::time::timeout(attente, socket.recv_from(&mut recu)).await;
+            if let Ok(Ok((lus, pair))) = arrivee {
+                let mut datagramme = recu.get(..lus).unwrap_or_default().to_vec();
+                // **UN INITIAL D'UN PAIR DÉJÀ ÉTABLI EST UNE CONNEXION
+                // NEUVE** : l'écho rouvre depuis la même socket, donc la même
+                // adresse, et l'ancienne connexion n'a pas fini de s'éteindre.
+                // Un client n'envoie plus d'Initial une fois la poignée de
+                // main faite.
+                let initial = ams_quic::Incoming::read(&datagramme, 0).is_ok_and(|entrant| {
+                    entrant.kind()
+                        == Some(ams_quic::PacketKind::Long(
+                            ams_proto_quic::LongKind::Initial,
+                        ))
+                });
+                if initial {
+                    connexions.retain(|(qui, quic, ..)| *qui != pair || !quic.is_established());
+                }
+                if !connexions.iter().any(|(qui, ..)| *qui == pair) {
+                    let Ok(entrant) = ams_quic::Incoming::read(&datagramme, 0) else {
+                        continue;
+                    };
+                    rang = rang.wrapping_add(1);
+                    let local = ams_proto_quic::ConnectionId::new(&[rang; 8])
+                        .expect("un identifiant qui tient");
+                    let Ok(neuve) = ams_quic_tls::Connection::accept(
+                        Arc::clone(&config),
+                        &entrant,
+                        local,
+                        entrant.source(),
+                        ams_quic_tls::INACTIVITE_US,
+                        maintenant(),
+                    ) else {
+                        continue;
+                    };
+                    connexions.push((pair, neuve, ams_h3::Http3::new(), service.clone()));
+                    let Some((_, quic, ..)) = connexions.last_mut() else {
+                        continue;
+                    };
+                    let _ = quic.on_datagram(&mut datagramme, maintenant());
+                } else if let Some((_, quic, ..)) =
+                    connexions.iter_mut().find(|(qui, ..)| *qui == pair)
+                {
+                    let _ = quic.on_datagram(&mut datagramme, maintenant());
+                }
+                if let Some((_, quic, h3, sien)) =
+                    connexions.iter_mut().find(|(qui, ..)| *qui == pair)
+                {
+                    if quic.is_established() {
+                        let mut pont = asl_client_tokio::Pont(quic);
+                        let _ = h3.on_established(&mut pont);
+                    }
+                    let vivants: Vec<StreamId> = quic.streams_alive().collect();
+                    for flux in vivants {
+                        let mut pont = asl_client_tokio::Pont(quic);
+                        let _ = h3.on_readable(&mut pont, sien, flux);
+                    }
+                }
+            } else {
+                for (_, quic, ..) in &mut connexions {
+                    quic.on_timeout(maintenant());
+                }
+            }
+            // **ON NE VIDE LA VOIE QUE SI QUELQU'UN TIENT LE FLUX** — sans
+            // quoi la poussée serait consommée et jetée avant que l'écho l'ait
+            // demandé.
+            if connexions
+                .iter()
+                .any(|(_, _, h3, _)| !h3.tenus().is_empty())
+            {
+                while let Ok(octets) = a_pousser.try_recv() {
+                    for (_, quic, h3, _) in &mut connexions {
+                        let tenus: Vec<StreamId> = h3.tenus().to_vec();
+                        for flux in tenus {
+                            let mut pont = asl_client_tokio::Pont(quic);
+                            let _ = h3.pousser(&mut pont, flux, &octets);
+                        }
+                    }
+                }
+            }
+            for (pair, quic, ..) in &mut connexions {
+                loop {
+                    match quic.poll_transmit(&mut place, maintenant()) {
+                        Ok(0) | Err(_) => break,
+                        Ok(ecrit) => {
+                            let _ = socket
+                                .send_to(place.get(..ecrit).unwrap_or_default(), *pair)
+                                .await;
+                        }
+                    }
+                }
+            }
+            connexions.retain(|(_, quic, ..)| !quic.is_closed());
+        }
+    });
+    (adresse, tache, voie)
+}
+
+/// Ce qu'un [`AnnuaireDEcho`] sait, partagé entre ses connexions.
+#[derive(Debug, Default)]
+pub struct EtatDEcho {
+    /// Le port de l'écho, appris de son annonce `asl-echo`.
+    pub port: Option<u16>,
+    /// Les jetons délivrés.
+    pub jetons: u32,
+}
+
+/// Un annuaire qui connaît l'écho d'UNE machine, et délivre des jetons pour
+/// la sonder — **dans la forme exacte que le serveur 0.42.0 écrit**
+/// (`asl_api::echo`, `asl_echo::Jeton`).
+///
+/// # CE QU'IL FEINT, ET CE QU'IL NE FEINT PAS
+///
+/// Il ne vérifie rien — ni preuve, ni droit : c'est l'essai qui dit qui a le
+/// droit ([`AnnuaireDEcho::sans_droit`]). **Le jeton, lui, est un vrai
+/// jeton**, signé par la clé d'identité du banc et lié aux clés de l'écho et
+/// du sondeur : c'est lui que l'écho croit ou refuse, et c'est ce qu'on
+/// éprouve.
+#[derive(Clone)]
+pub struct AnnuaireDEcho {
+    /// La clé d'identité du banc — celle qui signe les jetons.
+    pub cle: Arc<asl_cle::CleSecrete>,
+    /// La machine de l'écho, et sa clé.
+    pub echo: (asl_id::Identifiant, asl_cle::ClePublique),
+    /// La machine qui sonde, et sa clé — celle que la connexion aurait prouvée.
+    pub sondeur: (asl_id::Identifiant, asl_cle::ClePublique),
+    /// Le compte des deux.
+    pub compte: asl_id::Identifiant,
+    /// Les machines pour qui le jeton est refusé (`404`, C9).
+    pub sans_droit: Vec<asl_id::Identifiant>,
+    /// Ce que les connexions partagent.
+    pub etat: Arc<std::sync::Mutex<EtatDEcho>>,
+}
+
+impl AnnuaireDEcho {
+    fn repondre<'o>(sortie: &'o mut [u8], code: StatusCode, corps: &[u8]) -> ams_h3::Reponse<'o> {
+        let place = sortie.get_mut(..corps.len()).unwrap_or_default();
+        place.copy_from_slice(corps.get(..place.len()).unwrap_or_default());
+        ams_h3::Reponse::new(code, place)
+    }
+
+    /// La réponse d'annonce de l'écho : un point `udp:<port>`, vu depuis la
+    /// boucle locale, et pas encore sondé — **`en_cours`**, parce qu'un
+    /// `asl-proto` d'avant la sonde par l'écho refuse un verdict mesuré sur
+    /// UDP.
+    fn reponse_d_echo(port: u16) -> Vec<u8> {
+        let service = asl_id::Identifiant::depuis_entropie(asl_id::Genre::Service, [0x3E; 16]);
+        let bail = asl_proto::Bail::nouveau(CADENCE_DU_BANC, CADENCE_DU_BANC * 3).expect("un bail");
+        let port = asl_proto::Port::depuis_u16(port).expect("un port");
+        let vu_depuis = asl_proto::VuDepuis {
+            adresse: core::net::IpAddr::V4(core::net::Ipv4Addr::LOCALHOST),
+            port,
+        };
+        let joignabilite = [asl_proto::Joignabilite {
+            point: asl_proto::PointEcoute::nouveau(asl_proto::Protocole::Udp, port),
+            verdict: asl_proto::Verdict::EnCours,
+        }];
+        let reponse = asl_proto::Reponse::nouvelle(
+            service,
+            bail,
+            vu_depuis,
+            asl_proto::VerdictNat::Non,
+            &joignabilite,
+        )
+        .expect("une réponse valide");
+        let mut tampon = vec![0_u8; asl_proto::cadrage::MESSAGE_MAX];
+        let ecrit = reponse.encoder(&mut tampon).expect("elle s'encode");
+        tampon.truncate(ecrit);
+        tampon
+    }
+}
+
+impl ams_h3::Service for AnnuaireDEcho {
+    fn serve<'o>(
+        &mut self,
+        tete: &ams_proto_http::RequestHead<'_>,
+        corps: &[u8],
+        sortie: &'o mut [u8],
+    ) -> ams_h3::Reponse<'o> {
+        let chemin = tete.path();
+        let (echo, cle_echo) = self.echo;
+        let (sondeur, cle_sondeur) = self.sondeur;
+        match (tete.method(), chemin) {
+            (Method::Get, b"/v1/poussees") => ams_h3::Reponse::new(StatusCode::OK, &[]).tenue(),
+            (Method::Get, b"/v1/defi") => {
+                Self::repondre(sortie, StatusCode::OK, &[0x5A; asl_cle::DEFI_OCTETS])
+            }
+            (Method::Post, b"/v1/defi") => ams_h3::Reponse::new(StatusCode::NO_CONTENT, &[]),
+            (Method::Get, b"/v1/moi") => {
+                let corps = format!(
+                    r#"{{"machine":"{}","proprietaire":"{}"}}"#,
+                    sondeur.texte().as_str(),
+                    self.compte.texte().as_str()
+                );
+                Self::repondre(sortie, StatusCode::OK, corps.as_bytes())
+            }
+            (Method::Get, b"/v1/domaines") => Self::repondre(sortie, StatusCode::OK, b"[]"),
+            // **L'ANNONCE DE L'ÉCHO** : on en retient le port, et l'on rend
+            // un bail comme l'annuaire.
+            (Method::Post, b"/v1/annonce") => {
+                let mut tampons = asl_proto::cadrage::Tampons::nouveaux();
+                let Ok(annonce) = asl_proto::Annonce::decoder(corps, &mut tampons) else {
+                    return ams_h3::Reponse::new(StatusCode::BAD_REQUEST, &[]);
+                };
+                let Some(point) = annonce
+                    .points
+                    .iter()
+                    .find(|point| point.protocole == asl_proto::Protocole::Udp)
+                else {
+                    return ams_h3::Reponse::new(StatusCode::BAD_REQUEST, &[]);
+                };
+                let port = point.port.valeur();
+                if let Ok(mut etat) = self.etat.lock() {
+                    etat.port = Some(port);
+                }
+                Self::repondre(sortie, StatusCode::OK, &Self::reponse_d_echo(port))
+            }
+            (Method::Post, b"/v1/echo/jetons") => {
+                let Ok(demande) = asl_api::echo::DemandeDeJeton::decoder(corps) else {
+                    return ams_h3::Reponse::new(StatusCode::BAD_REQUEST, &[]);
+                };
+                let annonce = self.etat.lock().ok().and_then(|etat| etat.port).is_some();
+                // **LE MÊME `404` POUR LES TROIS** (C9) : pas cette machine,
+                // pas d'écho annoncé, pas le droit.
+                if demande.machine != echo || !annonce || self.sans_droit.contains(&demande.machine)
+                {
+                    return ams_h3::Reponse::new(StatusCode::NOT_FOUND, &[]);
+                }
+                let maintenant_ms = maintenant() / 1_000;
+                let jeton = asl_client::echo::Jeton::emettre(
+                    &self.cle,
+                    echo,
+                    cle_echo,
+                    sondeur,
+                    cle_sondeur,
+                    maintenant_ms,
+                )
+                .expect("les bons genres");
+                if let Ok(mut etat) = self.etat.lock() {
+                    etat.jetons = etat.jetons.saturating_add(1);
+                }
+                let mut texte = [0_u8; asl_api::echo::JETON_RENDU_MAX];
+                let ecrit = asl_api::echo::JetonRendu { jeton }
+                    .encoder(&mut texte)
+                    .expect("il tient");
+                Self::repondre(
+                    sortie,
+                    StatusCode::OK,
+                    texte.get(..ecrit).unwrap_or_default(),
+                )
+            }
+            (Method::Get, _) => {
+                let a_moi = format!("/v1/utilisateurs/{}/machines", self.compte.texte().as_str());
+                let ou_echo = format!("/v1/ou/{}/asl-echo", echo.texte().as_str());
+                if chemin == a_moi.as_bytes() {
+                    let corps = format!(
+                        r#"[{{"machine":"{}","nom":"grenier"}},{{"machine":"{}","nom":"carbon"}}]"#,
+                        echo.texte().as_str(),
+                        sondeur.texte().as_str()
+                    );
+                    return Self::repondre(sortie, StatusCode::OK, corps.as_bytes());
+                }
+                let port = self.etat.lock().ok().and_then(|etat| etat.port);
+                match port {
+                    Some(port)
+                        if chemin == ou_echo.as_bytes() && !self.sans_droit.contains(&echo) =>
+                    {
+                        Self::repondre(sortie, StatusCode::OK, &Self::reponse_d_echo(port))
+                    }
+                    _ => ams_h3::Reponse::new(StatusCode::NOT_FOUND, &[]),
+                }
+            }
+            _ => ams_h3::Reponse::new(StatusCode::NOT_FOUND, &[]),
+        }
+    }
 }

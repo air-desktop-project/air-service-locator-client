@@ -402,6 +402,91 @@ sa ligne ne montre pas d'`écrit`, et la conclusion dit ce qui manque. Ce qui
 prouve l'état reste la voie : `ouverte` ne laisse rien en attente plus d'une
 seconde, `coupée` si.
 
+**L'écho : prouver qu'une machine est joignable, et que c'est bien elle**
+(0.23.0, serveur 0.42.0, `protocole.md` §3 quater, décisions 89 à 93).
+`asl echo` fait répondre cette machine : il lie **une** socket UDP à un port
+tiré **au hasard dans la plage 6631–6639** (le suivant de son ordre tiré si
+celui-là est pris ; toute la plage prise est une faute de configuration,
+« aucun port libre dans 6631–6639 », code 2), annonce `asl-echo` avec un seul point `udp:<port>`, et
+**tient le bail sur cette même socket** — derrière un NAT, le mapping que le
+bail ouvre et que son keepalive garde est celui de la socket où l'écho
+écoute. Il ne répond qu'aux sondes signées, vérifiées hors ligne : celle de
+l'annuaire qui tient son bail (sous la clé que la poignée de main a jugée) ou
+d'une racine embarquée, datée à deux minutes près ; celle d'`asl ping`, munie
+d'un jeton qu'une racine a signé pour la clé de CETTE machine et celle du
+sondeur, et signée par ce dernier. **À tout le reste, le silence** — pas
+d'erreur, pas de refus. Le débit est borné par source **avant** toute
+vérification (cinq par seconde, dix d'avance, une `/64` en IPv6 ; cinquante
+par seconde en tout), un défi ne sert qu'une fois, et la réponse fait 132
+octets pour une requête de 384 : aucune amplification. Il refuse de tourner
+en root, ne rend pas la main, et Ctrl-C ou `SIGTERM` ferment le bail
+proprement. Son journal est sobre : une ligne par preuve rendue, un bilan par
+minute au plus de ce qu'il a tu, et l'horloge qui dérive quand une sonde
+d'annuaire authentique arrive hors de sa fenêtre.
+
+**La plage s'ouvre une fois dans le pare-feu de chaque machine qui fait
+tourner l'écho** (décision du 2026-09-29 : un port éphémère tombait sous la
+politique `drop` du pare-feu, et personne ne peut ouvrir d'avance un port
+qu'il ne connaît pas) :
+
+```sh
+# nft, dans la chaîne input de la table inet filter
+nft add rule inet filter input udp dport 6631-6639 accept
+# ou ufw
+sudo ufw allow proto udp from any to any port 6631:6639
+```
+
+Neuf ports, et non un : plusieurs échos peuvent tourner sur une machine, et
+l'écho reste sans port fixe (décision 89) — il ne répond de toute façon
+qu'aux sondes signées.
+
+```text
+$ asl echo
+écho           m-3GE1R70W3GE1R70W3GE1R70W3G — udp 6634, tiré dans 6631–6639
+               il ne répond qu'aux sondes signées ; aux autres, le silence.
+bail           tenu par n-0PWT8HZD80QMSPPDZ5CQXXYHQC ([2001:41d0:20a:900::1dd4]:6630) — s-1Y7R… annoncé, vu depuis [2a01:e0a:…]:6634
+verdict        udp:6634     joignable      constaté à 1790000000000
+sonde          jeton    m-40G2081040G2081040G2081040 depuis [2a01:cb00:…]:47031 — preuve rendue
+```
+
+`asl ping <m-…|nom|alias>` pose la question « est-ce que je la joins, d'ici,
+maintenant ? » : il résout la cible (un nom ou un alias est cherché parmi les
+machines que ce compte voit ; plusieurs sont listées, aucune n'est choisie),
+résout son `asl-echo` (`GET /v1/ou/{m}/asl-echo`), demande un jeton
+(`POST /v1/echo/jetons`), sonde chaque candidat — IPv6 d'abord, trois envois
+d'une seconde, chacun avec son défi — et **vérifie la réponse contre la clé
+que le jeton porte**, signée par la racine. Il dit toujours d'où la sonde est
+partie et sous quelle adresse l'écho l'a vue :
+
+```text
+$ asl ping grenier
+sonde partie de m-40G2081040G2081040G2081040 (carbon) depuis [2a01:cb00:…]:47031, vue par l'écho comme [2a01:cb00:…]:47031
+  [2a01:e0a:…]:6634  udp  réflexif  joignable d'ici — 18 ms, preuve vérifiée (depuis [2a01:cb00:…]:47031)
+grenier (m-3GE1R70W3GE1R70W3GE1R70W3G) : joignable d'ici, 18 ms, preuve vérifiée
+  — clé de m-3GE1R70W3GE1R70W3GE1R70W3G selon la racine n-0PWT8HZD80QMSPPDZ5CQXXYHQC ; constaté à 12:02:31 UTC
+```
+
+Ses codes de sortie sont ceux de la spécification : `0` joignable d'ici,
+preuve vérifiée ; `1` pas de réponse d'ici (filtré, écho arrêté, ou sonde
+refusée — l'écho se tait dans les trois cas) ; `2` **quelqu'un d'autre répond
+à cette adresse** (une autre clé), ou une réponse illisible ; `3`
+introuvable — pas d'écho annoncé ou pas le droit de le localiser, que la
+racine ne distingue pas (C9) ; `4` annuaire injoignable. `asl ping` ne
+remonte rien : son verdict est celui d'ici.
+
+Dans la bibliothèque, la socket partagée est `Connexion::ouvrir_sur` et
+`asl_client_tokio::joindre_sur` : non connectée, elle est **triée au premier
+octet** — le QUIC de l'annuaire à la connexion, l'écho (`0x04` à `0x0F`)
+mis de côté pour le porteur (`Connexion::echos`, `envoyer_a`), le reste
+jeté. La politique — qui croire, le débit, l'anti-rejeu, le jugement d'une
+réponse — est `asl_client::echo`, sans une entrée-sortie, couverte et
+fuzzée. **Ce qui manque encore, et viendra** : la passerelle UPnP, puis PCP
+et NAT-PMP (décisions 94 à 97) — `--no-upnp` n'existe pas avant elle, pour
+qu'aucune option ne soit acceptée sans effet —, l'unité systemd utilisateur,
+le LaunchAgent du Mac, et l'identité sur macOS dans le conteneur de groupe.
+Et, faute de `getifaddrs` (C4), l'écho n'annonce qu'une adresse locale par
+famille : celle par laquelle la machine sort vers l'annuaire.
+
 **Il n'existe aucun mode anonyme.** Une résolution hors d'une connexion
 authentifiée par une clé n'est pas prévue par le serveur, et un client qui
 coderait un chemin de repli « sans authentification » ouvrirait une porte qui

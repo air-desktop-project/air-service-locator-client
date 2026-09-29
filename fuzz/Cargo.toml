@@ -32,6 +32,23 @@ arbitrary = { version = "1", features = ["derive"] }
 [dependencies.asl-client]
 path = "../crates/asl-client"
 
+# **POUR LA CIBLE DE L'ÉCHO** : composer ce qu'un annuaire signe (une sonde,
+# sous sa clé d'identité) et lire ce que l'écho rend. Tirées du dépôt serveur
+# au MÊME SHA que le workspace (`Cargo.toml`, `[workspace.dependencies]`) —
+# cette crate est hors du workspace et ne peut pas en hériter : les deux
+# lignes avancent ensemble.
+[dependencies.asl-cle]
+git = "https://github.com/air-desktop-project/air-service-locator-server"
+rev = "3f41382"
+
+[dependencies.asl-echo]
+git = "https://github.com/air-desktop-project/air-service-locator-server"
+rev = "3f41382"
+
+[dependencies.asl-id]
+git = "https://github.com/air-desktop-project/air-service-locator-server"
+rev = "3f41382"
+
 [[bin]]
 name = "fuzz_asl_client_reprise"
 path = "fuzz_targets/fuzz_asl_client_reprise.rs"
@@ -44,3 +61,10 @@ name = "fuzz_asl_client_renvoi"
 path = "fuzz_targets/fuzz_asl_client_renvoi.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "fuzz_asl_client_echo"
+path = "fuzz_targets/fuzz_asl_client_echo.rs"
+test = false
+doc = false
+bench = false

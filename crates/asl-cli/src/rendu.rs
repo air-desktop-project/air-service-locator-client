@@ -111,6 +111,26 @@ pub fn reponse(corps: &[u8]) -> Result<String, String> {
     Ok(texte)
 }
 
+/// Ce qu'une poussée de verdict dit (`protocole.md` §1.4) : chaque point, et
+/// son verdict, sur une ligne.
+///
+/// # Erreurs
+///
+/// Rend `Err` avec ce qui n'a pas pu être lu — **y compris un verdict que ce
+/// décodeur ne connaît pas encore** : un `asl-proto` d'avant la sonde par
+/// l'écho refuse un verdict mesuré sur un point UDP.
+pub fn poussee(corps: &[u8]) -> Result<String, String> {
+    let mut tampons = TamponsReponse::nouveaux();
+    let lue = asl_proto::Poussee::decoder(corps, &mut tampons)
+        .map_err(|quoi| format!("la poussée ne se lit pas : {quoi:?}"))?;
+    Ok(lue
+        .joignabilite
+        .iter()
+        .map(verdict)
+        .collect::<Vec<_>>()
+        .join(" ; "))
+}
+
 /// Les candidats qu'un client tirerait de cette réponse.
 ///
 /// **CELUI QU'UNE SONDE A MESURÉ PASSE AVANT CELUI QU'ON DÉDUIT** : quand
@@ -134,7 +154,7 @@ pub(crate) fn candidats(lue: &Reponse<'_>) -> Vec<Candidat> {
 }
 
 /// Un verdict, avec ce qu'il implique.
-fn verdict(entree: &Joignabilite) -> String {
+pub(crate) fn verdict(entree: &Joignabilite) -> String {
     let ou = point(entree.point);
     match entree.verdict {
         Verdict::Joignable { a, .. } => format!("{ou:<12} joignable      constaté à {a}"),
@@ -466,7 +486,9 @@ pub fn machines(corps: &[u8]) -> Result<String, String> {
 /// **LE MÊME LECTEUR QUE LE SERVEUR** (`asl_proto::cadrage`), et non une
 /// recherche de sous-chaîne : le nom est du texte libre, avec ses accents et
 /// ses émoji, et c'est `texte_libre` qui sait le lire.
-fn machine_vue(octets: &[u8]) -> Result<(asl_id::Identifiant, String, Option<String>), String> {
+pub(crate) fn machine_vue(
+    octets: &[u8],
+) -> Result<(asl_id::Identifiant, String, Option<String>), String> {
     let mut lecteur = asl_proto::cadrage::Lecteur::nouveau(octets);
     let faute = |quoi: asl_proto::Erreur| format!("une machine ne se lit pas : {quoi:?}");
     lecteur.attendre(b'{', "un objet").map_err(faute)?;

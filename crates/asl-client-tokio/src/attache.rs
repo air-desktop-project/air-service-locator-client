@@ -27,6 +27,7 @@ use asl_client::renvoi::{Aiguillage, Cote, Renvoi, separer_l_adresse};
 use asl_client::{Identite, Reprise, Tournee};
 
 use asl_id::Identifiant;
+use tokio::net::UdpSocket;
 
 use crate::{Confiance, Connexion, Faute};
 
@@ -136,6 +137,7 @@ async fn un_pas(
     alea: &(dyn Fn() -> [u8; 16] + Sync),
     tournee: &mut Tournee,
     arret: Option<&AtomicBool>,
+    socket: Option<&Arc<UdpSocket>>,
 ) -> Pas {
     if arret.is_some_and(|drapeau| drapeau.load(Ordering::Acquire)) {
         return Pas::Arret;
@@ -146,7 +148,7 @@ async fn un_pas(
         return Pas::Impossible(Faute::SansAnnuaire);
     };
     let cible = reglages.annuaires.get(etape.place);
-    essayer(cible, etape.attendre_ms, alea, arret, true).await
+    essayer(cible, etape.attendre_ms, alea, arret, true, socket).await
 }
 
 /// Un pas de la tournée d'une attache, qui peut avoir été renvoyée vers un
@@ -170,7 +172,7 @@ async fn un_pas_aiguille(
         Cote::Racines => (reglages.annuaires.get(etape.place), true),
         Cote::Local => (local.get(etape.place), false),
     };
-    essayer(cible, etape.attendre_ms, alea, arret, racine).await
+    essayer(cible, etape.attendre_ms, alea, arret, racine, None).await
 }
 
 /// Attendre, puis ouvrir une connexion vers cet annuaire.
@@ -180,12 +182,16 @@ async fn un_pas_aiguille(
 /// une faute de configuration qui arrête l'attache. Un nom de serveur illisible
 /// venu d'un `421` est un échec de ce membre, et la tournée continue — sans
 /// quoi un annuaire local mal déclaré suffirait à faire taire le daemon.
+///
+/// `socket` est celle de l'écho, quand la connexion doit partir d'elle
+/// ([`Connexion::ouvrir_sur`]) ; sinon, chaque essai lie la sienne.
 async fn essayer(
     cible: Option<&Annuaire>,
     attendre_ms: u64,
     alea: &(dyn Fn() -> [u8; 16] + Sync),
     arret: Option<&AtomicBool>,
     configure: bool,
+    socket: Option<&Arc<UdpSocket>>,
 ) -> Pas {
     let parti = || arret.is_some_and(|drapeau| drapeau.load(Ordering::Acquire));
     if attendre_ms > 0 {
@@ -199,7 +205,20 @@ async fn essayer(
         return Pas::Ratee;
     };
     let confiance = confiance_de(cible);
-    match Connexion::ouvrir_confiance(cible.adresse, &cible.nom, &confiance, alea).await {
+    let ouverture = match socket {
+        Some(socket) => {
+            Connexion::ouvrir_sur(
+                Arc::clone(socket),
+                cible.adresse,
+                &cible.nom,
+                &confiance,
+                alea,
+            )
+            .await
+        }
+        None => Connexion::ouvrir_confiance(cible.adresse, &cible.nom, &confiance, alea).await,
+    };
+    match ouverture {
         Ok(connexion) => Pas::Ouverte(Box::new(connexion)),
         // **UNE CONFIGURATION TLS QUI NE SE CONSTRUIT PAS NE SE CONSTRUIRA PAS
         // EN RÉESSAYANT.** Une faute de configuration réessayée à l'infini est
@@ -290,9 +309,35 @@ pub async fn joindre(
     reglages: &Reglages,
     alea: &(dyn Fn() -> [u8; 16] + Sync),
 ) -> Result<Connexion, Faute> {
+    joindre_par(reglages, alea, None).await
+}
+
+/// [`joindre`], **sur la socket de l'écho** : chaque essai s'ouvre sur elle,
+/// sans la connecter ([`Connexion::ouvrir_sur`], décision 90 ; E2).
+///
+/// La même tournée, la même patience infinie ; seule la socket change — et
+/// c'est ce qui garde le port de l'écho d'un annuaire à l'autre.
+///
+/// # Errors
+///
+/// Celles de [`joindre`].
+pub async fn joindre_sur(
+    reglages: &Reglages,
+    socket: &Arc<UdpSocket>,
+    alea: &(dyn Fn() -> [u8; 16] + Sync),
+) -> Result<Connexion, Faute> {
+    joindre_par(reglages, alea, Some(socket)).await
+}
+
+/// La tournée de [`joindre`] et de [`joindre_sur`].
+async fn joindre_par(
+    reglages: &Reglages,
+    alea: &(dyn Fn() -> [u8; 16] + Sync),
+    socket: Option<&Arc<UdpSocket>>,
+) -> Result<Connexion, Faute> {
     let mut tournee = Tournee::nouvelle(reglages.reprise);
     loop {
-        match un_pas(reglages, alea, &mut tournee, None).await {
+        match un_pas(reglages, alea, &mut tournee, None, socket).await {
             Pas::Ouverte(connexion) => return Ok(*connexion),
             Pas::Impossible(quoi) => return Err(quoi),
             // Sans drapeau d'arrêt, `Arret` ne se produit pas ; et s'il se
