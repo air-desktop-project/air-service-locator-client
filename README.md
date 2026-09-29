@@ -561,6 +561,27 @@ annonce        réannoncée avec la passerelle : port externe 6634 (upnp)
 passerelle     redirection retirée : udp 6634
 ```
 
+**Quand la box ne perce pas son pare-feu IPv6, le bail passe en IPv4**
+(0.25.0, décision 106). Derrière une box qui refuse le trou IPv6
+(`AddPinhole` → `606`, la Livebox) ou ne le propose pas, mais redirige en
+IPv4 vers une adresse externe publique, un bail IPv6 ne peut rien annoncer :
+l'annuaire voit l'IPv6, que la box ferme. L'écho ferme alors son bail IPv6 et
+le rouvre **en IPv4, sur la même socket** — liée à `[::]` avec `IPV6_V6ONLY`
+posé à zéro, pour que le port redirigé reste le sien — vers les seules
+adresses IPv4 des annuaires ; la passerelle vérifie que `vu_depuis` est
+l'adresse externe de la box, et annonce la redirection. Il reste en IPv4 tant
+que la redirection tient, et revient en IPv6 sur un trou obtenu, une
+redirection perdue, un double NAT révélé (retenu : on ne rebascule pas vers
+la même box), ou un annuaire muet en IPv4. Un pare-feu IPv6 inactif, ou une
+adresse externe privée ou partagée, garde le bail en IPv6.
+
+```text
+passerelle     redirection UPnP : udp 6634 → box 203.0.113.7:6634, bail 1 h
+bail           le bail passe en IPv4 : la box ne perce pas son pare-feu IPv6, mais redirige udp 6634 (box 203.0.113.7:6634)
+bail           tenu par n-… (192.0.2.1:6630) — s-… annoncé, vu depuis 203.0.113.7:6634
+annonce        réannoncée avec la passerelle : port externe 6634 (upnp)
+```
+
 **Sous macOS, le pare-feu applicatif doit laisser entrer les réponses.** La
 réponse à un `M-SEARCH` vient de l'adresse unicast de la box, alors que la
 requête est partie vers un groupe : pour le pare-feu, c'est une connexion

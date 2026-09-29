@@ -22,16 +22,28 @@
 //!
 //! # CE QU'ELLE DIT À L'ÉCHO
 //!
-//! Un seul fait : le port à annoncer dans `passerelle`, ou rien
-//! ([`Passerelle::accord`]). **Le port seul, jamais l'adresse** : l'annuaire
-//! emploie celle qu'il a observée (décision 97 ; E21). Il n'y en a donc un
-//! que si la redirection vaut pour CETTE adresse :
+//! Deux faits, un [`Accord`] par tour ([`Passerelle::accord`]).
+//!
+//! **Le port à annoncer dans `passerelle`, ou rien.** Le port seul, jamais
+//! l'adresse : l'annuaire emploie celle qu'il a observée (décision 97 ; E21).
+//! Il n'y en a donc un que si la redirection vaut pour CETTE adresse :
 //!
 //! - bail en IPv4 : l'adresse externe de la box **égale** à `vu_depuis` —
 //!   sinon il y a un second NAT au-dessus, la redirection ne suffira pas, et
 //!   on le dit sans rien annoncer (E19) ;
 //! - bail en IPv6 : le trou ouvert pour l'adresse même que l'annuaire voit
 //!   (le port est alors celui de l'écho).
+//!
+//! **La famille où le bail doit se tenir** ([`Voeu`], décision 106). Derrière
+//! une box qui refuse le trou IPv6 mais redirige en IPv4 — la Livebox,
+//! vue en vrai sur trois machines —, un bail IPv6 ne peut rien annoncer :
+//! l'annuaire voit l'IPv6, que la box ferme. La passerelle le dit, et l'écho
+//! rouvre son bail en IPv4 pour que `vu_depuis` soit l'adresse externe de la
+//! box. Puis, bail IPv4 tenu, elle dit quand revenir : un trou obtenu, la
+//! redirection perdue, ou `vu_depuis` qui n'est pas l'adresse de la box — un
+//! double NAT qu'elle retient, pour ne pas rebasculer vers la même adresse.
+//! **Elle ne sait pas si le bail IPv4 a été choisi ou subi** (une machine
+//! sans IPv6) : c'est l'écho qui ne revient que d'une bascule qu'il a faite.
 //!
 //! # CE QU'ELLE NE FAIT PAS
 //!
@@ -102,6 +114,155 @@ pub struct Reglage {
     pub ssdp: Option<Vec<SocketAddr>>,
 }
 
+/// Ce que la passerelle conclut d'un tour, pour l'écho.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Accord {
+    /// Le port à annoncer dans `passerelle`, ou rien.
+    pub port: Option<u16>,
+    /// Où le bail doit se tenir.
+    pub voeu: Voeu,
+}
+
+/// **La famille où le bail de l'écho doit se tenir** (décision 106).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Voeu {
+    /// Rien à changer.
+    Rester,
+    /// **Passer en IPv4** : bail en IPv6, aucun trou obtenu — refusé, ou pas
+    /// de `WANIPv6FirewallControl` —, et la box redirige vers l'écho le port
+    /// externe `port` de son adresse externe `externe`, publique.
+    Ipv4 {
+        /// L'adresse externe que la box dit — celle que l'annuaire devra voir.
+        externe: Ipv4Addr,
+        /// Le port externe redirigé.
+        port: u16,
+    },
+    /// **Revenir en IPv6**, bail tenu en IPv4, pour cette raison.
+    Ipv6(Retour),
+}
+
+/// Pourquoi un bail IPv4 doit revenir en IPv6 — les trois cas de la
+/// décision 106, et eux seuls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Retour {
+    /// La box ouvre désormais un trou IPv6.
+    TrouObtenu,
+    /// La redirection est perdue : refusée au renouvellement, plus de box, ou
+    /// une box qui ne dit plus son adresse externe.
+    RedirectionPerdue,
+    /// L'annuaire nous voit depuis `vu`, et non depuis l'adresse externe de
+    /// la box, `boite` : un second NAT au-dessus d'elle.
+    DoubleNat {
+        /// L'adresse externe que la box dit.
+        boite: Ipv4Addr,
+        /// L'adresse d'où l'annuaire nous voit.
+        vu: Ipv4Addr,
+    },
+}
+
+impl std::fmt::Display for Retour {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TrouObtenu => f.write_str("la box ouvre maintenant un trou IPv6"),
+            Self::RedirectionPerdue => f.write_str("la redirection IPv4 est perdue"),
+            Self::DoubleNat { boite, vu } => write!(
+                f,
+                "double NAT : la box dit {boite}, l'annuaire nous voit depuis {vu}"
+            ),
+        }
+    }
+}
+
+/// Ce qu'un tour sait, pour conclure — sans la box ni le réseau : [`decider`]
+/// en est une fonction, éprouvée à part.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Faits {
+    /// Le port de l'écho.
+    port: u16,
+    /// D'où l'annuaire nous voit.
+    vu: Option<IpAddr>,
+    /// La redirection tenue : son port externe, et l'adresse externe que la
+    /// box a dite.
+    redirection: Option<(u16, Option<Ipv4Addr>)>,
+    /// Le trou tenu : l'adresse pour laquelle il est ouvert.
+    trou: Option<Ipv6Addr>,
+    /// La box dit son pare-feu IPv6 inactif : tout entre en IPv6.
+    pare_feu_inactif: bool,
+    /// L'adresse externe pour laquelle un double NAT a été constaté.
+    double_nat: Option<Ipv4Addr>,
+}
+
+/// **CE QU'UN TOUR CONCLUT** — le port à annoncer, et la famille du bail
+/// (décisions 97 et 106).
+///
+/// - **Bail en IPv4** : le port redirigé s'annonce si l'adresse externe de la
+///   box est `vu_depuis`. Le bail y reste tant que cela tient ; un trou
+///   obtenu, une redirection perdue ou une adresse externe qui n'est pas
+///   `vu_depuis` le renvoient en IPv6 — l'écho n'obéit que s'il avait
+///   basculé.
+/// - **Bail en IPv6** : le port de l'écho s'annonce si le trou est ouvert
+///   pour `vu_depuis`. Sans trou, un pare-feu IPv6 actif, une redirection
+///   vers une adresse externe publique qu'aucun double NAT n'a démentie : le
+///   bail doit passer en IPv4. **Une adresse externe privée ou partagée**
+///   (`100.64.0.0/10`) **est un double NAT déjà visible** : on ne bascule
+///   pas.
+fn decider(faits: &Faits) -> Accord {
+    match faits.vu.map(|vu| vu.to_canonical()) {
+        Some(IpAddr::V4(vu)) => {
+            let port = faits
+                .redirection
+                .filter(|(_, externe)| *externe == Some(vu))
+                .map(|(port, _)| port);
+            let voeu = if faits.trou.is_some() {
+                Voeu::Ipv6(Retour::TrouObtenu)
+            } else {
+                match faits.redirection {
+                    None | Some((_, None)) => Voeu::Ipv6(Retour::RedirectionPerdue),
+                    Some((_, Some(boite))) if boite != vu => {
+                        Voeu::Ipv6(Retour::DoubleNat { boite, vu })
+                    }
+                    Some(_) => Voeu::Rester,
+                }
+            };
+            Accord { port, voeu }
+        }
+        Some(IpAddr::V6(vu)) => {
+            let port = faits
+                .trou
+                .filter(|client| *client == vu)
+                .map(|_| faits.port);
+            let voeu = match faits.redirection {
+                Some((port, Some(externe)))
+                    if faits.trou.is_none()
+                        && !faits.pare_feu_inactif
+                        && !url::externe_privee(externe)
+                        && faits.double_nat != Some(externe) =>
+                {
+                    Voeu::Ipv4 { externe, port }
+                }
+                _ => Voeu::Rester,
+            };
+            Accord { port, voeu }
+        }
+        None => Accord {
+            port: None,
+            voeu: Voeu::Rester,
+        },
+    }
+}
+
+/// Ce que le pare-feu IPv6 de la box a répondu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Trouage {
+    /// Le trou est ouvert (ou renouvelé).
+    Ouvert(Trou),
+    /// Le pare-feu est inactif (`FirewallEnabled = 0`) : rien à ouvrir, tout
+    /// entre.
+    Inactif,
+    /// Les trous ne sont pas permis (`InboundPinholeAllowed = 0`).
+    NonPermis,
+}
+
 /// Ce qu'on demande à la tâche.
 enum Ordre {
     /// L'annuaire nous voit depuis `vu` ; nos adresses sont `locales`.
@@ -114,7 +275,7 @@ enum Ordre {
 #[derive(Debug)]
 pub struct Passerelle {
     ordres: mpsc::UnboundedSender<Ordre>,
-    accords: mpsc::UnboundedReceiver<Option<u16>>,
+    accords: mpsc::UnboundedReceiver<Accord>,
 }
 
 impl std::fmt::Debug for Ordre {
@@ -140,6 +301,8 @@ impl Passerelle {
             boite: None,
             redirection: None,
             trou: None,
+            pare_feu_inactif: false,
+            double_nat: None,
             vu: None,
             locales: Vec::new(),
             constats: Vec::new(),
@@ -155,10 +318,9 @@ impl Passerelle {
         let _ = self.ordres.send(Ordre::Vu { vu, locales });
     }
 
-    /// Le dernier accord arrivé depuis l'appel précédent : `Some(Some(port))`
-    /// — annoncer ce port —, `Some(None)` — n'annoncer rien —, `None` — rien
+    /// Le dernier accord arrivé depuis l'appel précédent, ou `None` — rien
     /// de neuf.
-    pub fn accord(&mut self) -> Option<Option<u16>> {
+    pub fn accord(&mut self) -> Option<Accord> {
         let mut dernier = None;
         while let Ok(accord) = self.accords.try_recv() {
             dernier = Some(accord);
@@ -244,12 +406,20 @@ struct Tache {
     boite: Option<Boite>,
     redirection: Option<Redirection>,
     trou: Option<Trou>,
+    /// Le pare-feu IPv6 de la box se dit inactif : le bail n'a pas à quitter
+    /// l'IPv6 (décision 106).
+    pare_feu_inactif: bool,
+    /// **L'adresse externe pour laquelle un double NAT a été constaté** — un
+    /// bail IPv4 vu d'ailleurs que d'elle. Tant que la box dit cette
+    /// adresse-là, on ne rebascule pas : ce serait rebasculer toutes les
+    /// trente minutes pour constater la même chose (décision 106).
+    double_nat: Option<Ipv4Addr>,
     vu: Option<IpAddr>,
     locales: Vec<IpAddr>,
     /// Ce que le dernier tour a conclu, tel qu'on l'a dit : un tour qui
     /// conclut la même chose ne le redit pas.
     constats: Vec<String>,
-    accorder: mpsc::UnboundedSender<Option<u16>>,
+    accorder: mpsc::UnboundedSender<Accord>,
 }
 
 /// Une ligne du journal de la passerelle.
@@ -296,7 +466,8 @@ impl Tache {
                     } else {
                         // Rien de neuf : le même accord, pour la connexion
                         // qui vient de s'ouvrir.
-                        let _ = self.accorder.send(self.conclure());
+                        let accord = self.conclure();
+                        let _ = self.accorder.send(accord);
                     }
                 }
                 Some(Ordre::Arreter(fait)) => {
@@ -338,7 +509,7 @@ impl Tache {
             )];
         }
         let accord = self.conclure();
-        if let Some(conclusion) = self.conclusion(accord) {
+        if let Some(conclusion) = self.conclusion(&accord) {
             constats.push(conclusion);
         }
         let _ = self.accorder.send(accord);
@@ -501,6 +672,7 @@ impl Tache {
     /// Le trou IPv6, si la box le propose et le permet — **en silence
     /// sinon**, hors du mode bavard (décision 97 ; E20).
     async fn tour_de_trou(&mut self, boite: &Boite, constats: &mut Vec<String>) {
+        self.pare_feu_inactif = false;
         let Some(controle) = &boite.pare_feu else {
             self.bavarder("la box ne propose pas de trou IPv6 (WANIPv6FirewallControl)");
             self.trou = None;
@@ -512,14 +684,18 @@ impl Tache {
             return;
         };
         match self.trouer(controle, client).await {
-            Ok(Some(trou)) => {
+            Ok(Trouage::Ouvert(trou)) => {
                 constats.push(format!(
                     "trou IPv6 UPnP : udp {} vers [{client}], bail 1 h",
                     self.port
                 ));
                 self.trou = Some(trou);
             }
-            Ok(None) => self.trou = None,
+            Ok(Trouage::Inactif) => {
+                self.pare_feu_inactif = true;
+                self.trou = None;
+            }
+            Ok(Trouage::NonPermis) => self.trou = None,
             Err(quoi) => {
                 self.bavarder(&format!("la box refuse le trou IPv6 : {quoi}"));
                 self.trou = None;
@@ -528,16 +704,16 @@ impl Tache {
     }
 
     /// Demande (ou renouvelle) le trou IPv6.
-    async fn trouer(&self, controle: &Url, client: Ipv6Addr) -> Result<Option<Trou>, Echec> {
+    async fn trouer(&self, controle: &Url, client: Ipv6Addr) -> Result<Trouage, Echec> {
         let service = description::PARE_FEU_6;
         let etat = demander(controle, service, &soap::etat_du_pare_feu()).await?;
         if etat.valeur("FirewallEnabled").and_then(soap::booleen) == Some(false) {
             self.bavarder("le pare-feu IPv6 de la box est inactif : rien à ouvrir");
-            return Ok(None);
+            return Ok(Trouage::Inactif);
         }
         if etat.valeur("InboundPinholeAllowed").and_then(soap::booleen) == Some(false) {
             self.bavarder("la box n'autorise pas les trous IPv6 (InboundPinholeAllowed = 0)");
-            return Ok(None);
+            return Ok(Trouage::NonPermis);
         }
         if let Some(tenu) = &self.trou
             && tenu.controle == *controle
@@ -545,7 +721,7 @@ impl Tache {
         {
             let renouveler = soap::renouveler_le_trou(tenu.identifiant, BAIL_S);
             if demander(controle, service, &renouveler).await.is_ok() {
-                return Ok(Some(tenu.clone()));
+                return Ok(Trouage::Ouvert(tenu.clone()));
             }
             // Expiré, ou perdu par une box redémarrée : on le redemande.
         }
@@ -559,7 +735,7 @@ impl Tache {
             .valeur("UniqueID")
             .and_then(|texte| texte.parse::<u16>().ok())
             .ok_or_else(|| Echec::Illisible("pas d'UniqueID".to_owned()))?;
-        Ok(Some(Trou {
+        Ok(Trouage::Ouvert(Trou {
             controle: controle.clone(),
             client,
             identifiant,
@@ -585,28 +761,36 @@ impl Tache {
             .or_else(|| self.locales.iter().find_map(globale))
     }
 
-    /// Le port à annoncer dans `passerelle`, ou rien — voir l'en-tête du
-    /// module.
-    fn conclure(&self) -> Option<u16> {
-        match self.vu.map(|vu| vu.to_canonical()) {
-            Some(IpAddr::V4(vu)) => self
+    /// Ce que ce tour conclut ([`decider`]) — et, bail IPv4 vu d'ailleurs que
+    /// de l'adresse externe de la box, **le double NAT retenu**.
+    fn conclure(&mut self) -> Accord {
+        if let (Some(IpAddr::V4(vu)), Some(boite)) = (
+            self.vu.map(|vu| vu.to_canonical()),
+            self.redirection
+                .as_ref()
+                .and_then(|tenue| tenue.adresse_externe),
+        ) && boite != vu
+        {
+            self.double_nat = Some(boite);
+        }
+        decider(&Faits {
+            port: self.port,
+            vu: self.vu,
+            redirection: self
                 .redirection
                 .as_ref()
-                .filter(|tenue| tenue.adresse_externe == Some(vu))
-                .map(|tenue| tenue.externe),
-            Some(IpAddr::V6(vu)) => self
-                .trou
-                .as_ref()
-                .filter(|tenu| tenu.client == vu)
-                .map(|_| self.port),
-            None => None,
-        }
+                .map(|tenue| (tenue.externe, tenue.adresse_externe)),
+            trou: self.trou.as_ref().map(|tenu| tenu.client),
+            pare_feu_inactif: self.pare_feu_inactif,
+            double_nat: self.double_nat,
+        })
     }
 
     /// Ce qu'on dit de l'accord : pourquoi une redirection obtenue n'est pas
-    /// annoncée.
-    fn conclusion(&self, accord: Option<u16>) -> Option<String> {
-        if accord.is_some() {
+    /// annoncée. **Rien quand le bail doit passer en IPv4** : c'est l'écho
+    /// qui le dit, en basculant — ou qui dit pourquoi il ne le peut pas.
+    fn conclusion(&self, accord: &Accord) -> Option<String> {
+        if accord.port.is_some() || matches!(accord.voeu, Voeu::Ipv4 { .. }) {
             return None;
         }
         let tenue = self.redirection.as_ref()?;
@@ -624,7 +808,21 @@ impl Tache {
                 "la box ne dit pas son adresse externe : la redirection n'est pas annoncée"
                     .to_owned(),
             ),
-            (_, IpAddr::V6(_)) => Some(
+            (Some(externe), IpAddr::V6(_)) if self.double_nat == Some(externe) => Some(format!(
+                "double NAT déjà constaté derrière la box ({externe}) : le bail reste en IPv6, \
+                 la redirection n'est pas annoncée"
+            )),
+            (_, IpAddr::V6(_)) if self.pare_feu_inactif => Some(
+                "le pare-feu IPv6 de la box est inactif : le bail reste en IPv6, où tout entre ; \
+                 la redirection IPv4 n'est pas annoncée"
+                    .to_owned(),
+            ),
+            (None, IpAddr::V6(_)) => Some(
+                "la box ne dit pas son adresse externe : le bail reste en IPv6, la redirection \
+                 n'est pas annoncée"
+                    .to_owned(),
+            ),
+            (Some(_), IpAddr::V6(_)) => Some(
                 "le bail part en IPv6 : la redirection IPv4 n'est pas annoncée (l'annuaire ne \
                  sonde que l'adresse qu'il a vue)"
                     .to_owned(),
@@ -1459,9 +1657,10 @@ mod tests {
     use tokio::net::UdpSocket;
 
     use super::{
-        Echec, INDEX_MAX, adresses_ssdp, bilan_du_groupe_v6, connait_la_passerelle, echanger,
-        envoyer, groupes, hote_ssdp, http, interfaces_du_lien, les_deux, liens_du_lien, port_tire,
-        sans_passerelle, vers_le_groupe_v6,
+        Accord, Boite, Echec, Faits, INDEX_MAX, Reglage, Retour, Tache, Voeu, adresses_ssdp,
+        bilan_du_groupe_v6, connait_la_passerelle, decider, echanger, envoyer, groupes, hote_ssdp,
+        http, interfaces_du_lien, les_deux, liens_du_lien, port_tire, sans_passerelle,
+        vers_le_groupe_v6,
     };
 
     /// `/proc/net/if_inet6` d'une machine à Ethernet, Wi-Fi et pont de
@@ -1800,5 +1999,521 @@ fe80 02 40 20 80   court
         for _ in 0..64 {
             assert!(port_tire() >= 1_024);
         }
+    }
+
+    // ── Le bail en IPv4 (décision 106) ──────────────────────────────────────
+
+    const PORT: u16 = 6634;
+
+    fn v4(texte: &str) -> std::net::Ipv4Addr {
+        texte.parse().unwrap()
+    }
+
+    fn v6(texte: &str) -> std::net::Ipv6Addr {
+        texte.parse().unwrap()
+    }
+
+    /// Les faits d'un bail en IPv6 derrière une box qui redirige vers
+    /// `203.0.113.7`, sans trou.
+    fn livebox() -> Faits {
+        Faits {
+            port: PORT,
+            vu: Some(IpAddr::V6(v6("2001:db8::7"))),
+            redirection: Some((PORT, Some(v4("203.0.113.7")))),
+            trou: None,
+            pare_feu_inactif: false,
+            double_nat: None,
+        }
+    }
+
+    #[test]
+    fn sans_trou_une_redirection_publique_fait_passer_le_bail_en_ipv4() {
+        assert_eq!(
+            decider(&livebox()),
+            Accord {
+                port: None,
+                voeu: Voeu::Ipv4 {
+                    externe: v4("203.0.113.7"),
+                    port: PORT
+                }
+            }
+        );
+        // Le port externe accordé, pas forcément celui de l'écho.
+        let autre = Faits {
+            redirection: Some((51_377, Some(v4("203.0.113.7")))),
+            ..livebox()
+        };
+        assert_eq!(
+            decider(&autre).voeu,
+            Voeu::Ipv4 {
+                externe: v4("203.0.113.7"),
+                port: 51_377
+            }
+        );
+        // Une IPv4 enfouie reste une IPv6 : c'est la famille du bail qui compte.
+        assert_eq!(
+            decider(&Faits {
+                vu: Some(IpAddr::V6(v6("::ffff:203.0.113.7"))),
+                ..livebox()
+            }),
+            Accord {
+                port: Some(PORT),
+                voeu: Voeu::Rester
+            },
+            "vue en IPv4, l'adresse de la box annonce la redirection"
+        );
+    }
+
+    #[test]
+    fn en_ipv6_on_reste_quand_rien_ne_justifie_la_bascule() {
+        let rester = |faits: Faits| decider(&faits).voeu;
+        // Un trou ouvert pour l'adresse vue : on l'annonce, et l'on reste.
+        let troue = Faits {
+            trou: Some(v6("2001:db8::7")),
+            ..livebox()
+        };
+        assert_eq!(
+            decider(&troue),
+            Accord {
+                port: Some(PORT),
+                voeu: Voeu::Rester
+            }
+        );
+        // Un trou ouvert pour une autre de nos adresses : rien à annoncer,
+        // mais la box perce — pas de bascule.
+        assert_eq!(
+            decider(&Faits {
+                trou: Some(v6("2001:db8::8")),
+                ..livebox()
+            }),
+            Accord {
+                port: None,
+                voeu: Voeu::Rester
+            }
+        );
+        // Le pare-feu IPv6 inactif : tout entre en IPv6.
+        assert_eq!(
+            rester(Faits {
+                pare_feu_inactif: true,
+                ..livebox()
+            }),
+            Voeu::Rester
+        );
+        // Pas de redirection, ou une box qui ne dit pas son adresse externe.
+        assert_eq!(
+            rester(Faits {
+                redirection: None,
+                ..livebox()
+            }),
+            Voeu::Rester
+        );
+        assert_eq!(
+            rester(Faits {
+                redirection: Some((PORT, None)),
+                ..livebox()
+            }),
+            Voeu::Rester
+        );
+        // Une adresse externe privée ou partagée : un double NAT visible.
+        for privee in ["100.64.12.34", "192.168.1.1", "10.0.0.1", "169.254.1.1"] {
+            assert_eq!(
+                rester(Faits {
+                    redirection: Some((PORT, Some(v4(privee)))),
+                    ..livebox()
+                }),
+                Voeu::Rester,
+                "{privee}"
+            );
+        }
+        // Un double NAT déjà constaté pour cette adresse-là : on ne rebascule
+        // pas ; pour une autre, si.
+        assert_eq!(
+            rester(Faits {
+                double_nat: Some(v4("203.0.113.7")),
+                ..livebox()
+            }),
+            Voeu::Rester
+        );
+        assert!(matches!(
+            rester(Faits {
+                double_nat: Some(v4("203.0.113.99")),
+                ..livebox()
+            }),
+            Voeu::Ipv4 { .. }
+        ));
+        // Rien de vu : rien à conclure.
+        assert_eq!(
+            decider(&Faits {
+                vu: None,
+                ..livebox()
+            }),
+            Accord {
+                port: None,
+                voeu: Voeu::Rester
+            }
+        );
+    }
+
+    #[test]
+    fn en_ipv4_on_reste_tant_que_la_redirection_tient_et_on_revient_sur_les_trois_cas() {
+        let en_ipv4 = Faits {
+            vu: Some(IpAddr::V4(v4("203.0.113.7"))),
+            ..livebox()
+        };
+        // **L'HYSTÉRÉSIS** : la redirection tient, `vu_depuis` est l'adresse de
+        // la box — on annonce le port redirigé, et l'on reste.
+        assert_eq!(
+            decider(&en_ipv4),
+            Accord {
+                port: Some(PORT),
+                voeu: Voeu::Rester
+            }
+        );
+        // Un trou devient possible.
+        assert_eq!(
+            decider(&Faits {
+                trou: Some(v6("2001:db8::7")),
+                ..en_ipv4
+            })
+            .voeu,
+            Voeu::Ipv6(Retour::TrouObtenu)
+        );
+        // La redirection est perdue — ou la box ne dit plus son adresse.
+        for perdue in [None, Some((PORT, None))] {
+            assert_eq!(
+                decider(&Faits {
+                    redirection: perdue,
+                    ..en_ipv4
+                }),
+                Accord {
+                    port: None,
+                    voeu: Voeu::Ipv6(Retour::RedirectionPerdue)
+                }
+            );
+        }
+        // Le double NAT se révèle.
+        assert_eq!(
+            decider(&Faits {
+                vu: Some(IpAddr::V4(v4("198.51.100.9"))),
+                ..en_ipv4
+            }),
+            Accord {
+                port: None,
+                voeu: Voeu::Ipv6(Retour::DoubleNat {
+                    boite: v4("203.0.113.7"),
+                    vu: v4("198.51.100.9")
+                })
+            }
+        );
+    }
+
+    #[test]
+    fn un_retour_se_dit() {
+        assert_eq!(
+            Retour::TrouObtenu.to_string(),
+            "la box ouvre maintenant un trou IPv6"
+        );
+        assert_eq!(
+            Retour::RedirectionPerdue.to_string(),
+            "la redirection IPv4 est perdue"
+        );
+        assert_eq!(
+            Retour::DoubleNat {
+                boite: v4("203.0.113.7"),
+                vu: v4("198.51.100.9")
+            }
+            .to_string(),
+            "double NAT : la box dit 203.0.113.7, l'annuaire nous voit depuis 198.51.100.9"
+        );
+    }
+
+    /// Ce que la fausse box de [`box_qui_refuse_le_trou`] fait.
+    #[derive(Debug, Default)]
+    struct Comportement {
+        /// `FirewallEnabled`.
+        pare_feu_inactif: bool,
+        /// `AddPinhole` accordé plutôt que refusé (`606`).
+        trou_accorde: bool,
+        /// `AddPortMapping` refusé (`606`).
+        redirection_refusee: bool,
+        /// Les actions reçues.
+        actions: Vec<String>,
+    }
+
+    /// **UNE FAUSSE BOX COMME LA LIVEBOX** : `WANIPConnection:1` redirige et
+    /// dit `203.0.113.7` ; `WANIPv6FirewallControl:1` dit son pare-feu actif,
+    /// les trous permis — puis refuse `AddPinhole` par `606`, comme en vrai.
+    /// Rend l'URL de contrôle de chacun des deux services.
+    async fn box_qui_refuse_le_trou(
+        comportement: std::sync::Arc<std::sync::Mutex<Comportement>>,
+    ) -> (asl_upnp::url::Url, asl_upnp::url::Url) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let ecoute = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ici = ecoute.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut flux, _)) = ecoute.accept().await {
+                let comportement = std::sync::Arc::clone(&comportement);
+                tokio::spawn(async move {
+                    let mut lus = Vec::new();
+                    let mut morceau = [0_u8; 4_096];
+                    let tete = loop {
+                        let Ok(combien) = flux.read(&mut morceau).await else {
+                            return;
+                        };
+                        if combien == 0 {
+                            return;
+                        }
+                        lus.extend_from_slice(&morceau[..combien]);
+                        let texte = String::from_utf8_lossy(&lus).into_owned();
+                        if let Some((tete, corps)) = texte.split_once("\r\n\r\n") {
+                            let longueur: usize = tete
+                                .lines()
+                                .find_map(|ligne| {
+                                    ligne
+                                        .to_ascii_lowercase()
+                                        .strip_prefix("content-length: ")
+                                        .map(str::to_owned)
+                                })
+                                .and_then(|longueur| longueur.trim().parse().ok())
+                                .unwrap_or(0);
+                            if corps.len() >= longueur {
+                                break tete.to_owned();
+                            }
+                        }
+                    };
+                    let action = tete
+                        .lines()
+                        .find_map(|ligne| {
+                            let (nom, valeur) = ligne.split_once(':')?;
+                            nom.eq_ignore_ascii_case("soapaction")
+                                .then(|| valeur.trim().to_owned())
+                        })
+                        .and_then(|valeur| {
+                            valeur
+                                .trim_matches('"')
+                                .split_once('#')
+                                .map(|(_, action)| action.to_owned())
+                        })
+                        .unwrap_or_default();
+                    let service = if tete.starts_with("POST /ctl/Pare-feu ") {
+                        super::description::PARE_FEU_6
+                    } else {
+                        super::description::WAN_IP_1
+                    };
+                    let (statut, corps) = {
+                        let mut etat = comportement.lock().unwrap();
+                        etat.actions.push(action.clone());
+                        let reussi = |valeurs: &str| {
+                            format!(
+                                "<?xml version=\"1.0\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
+                             <u:{action}Response xmlns:u=\"{service}\">{valeurs}</u:{action}Response></s:Body></s:Envelope>"
+                            )
+                        };
+                        let refus = "<?xml version=\"1.0\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
+                         <s:Fault><faultcode>s:Client</faultcode><faultstring>UPnPError</faultstring><detail>\
+                         <UPnPError xmlns=\"urn:schemas-upnp-org:control-1-0\"><errorCode>606</errorCode>\
+                         <errorDescription>Action not authorized</errorDescription></UPnPError></detail></s:Fault></s:Body></s:Envelope>"
+                        .to_owned();
+                        let (statut, corps) = match action.as_str() {
+                            "GetFirewallStatus" => (
+                                "200 OK",
+                                reussi(&format!(
+                                    "<FirewallEnabled>{}</FirewallEnabled><InboundPinholeAllowed>1</InboundPinholeAllowed>",
+                                    u8::from(!etat.pare_feu_inactif)
+                                )),
+                            ),
+                            "AddPinhole" if etat.trou_accorde => {
+                                ("200 OK", reussi("<UniqueID>7</UniqueID>"))
+                            }
+                            "UpdatePinhole" if etat.trou_accorde => ("200 OK", reussi("")),
+                            "AddPortMapping" if !etat.redirection_refusee => ("200 OK", reussi("")),
+                            "GetExternalIPAddress" => (
+                                "200 OK",
+                                reussi("<NewExternalIPAddress>203.0.113.7</NewExternalIPAddress>"),
+                            ),
+                            "DeletePortMapping" | "DeletePinhole" => ("200 OK", reussi("")),
+                            _ => ("500 Internal Server Error", refus),
+                        };
+                        (statut, corps)
+                    };
+                    let ecrit = format!(
+                        "HTTP/1.1 {statut}\r\nContent-Type: text/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{corps}",
+                        corps.len()
+                    );
+                    let _ = flux.write_all(ecrit.as_bytes()).await;
+                    let _ = flux.shutdown().await;
+                });
+            }
+        });
+        let url = |chemin: &str| asl_upnp::url::lire(&format!("http://{ici}{chemin}")).unwrap();
+        (url("/ctl/IPConn"), url("/ctl/Pare-feu"))
+    }
+
+    /// Une tâche de passerelle, sans sa boucle : les tours se mènent à la
+    /// main, contre la fausse box.
+    fn tache(dossier: std::path::PathBuf) -> (Tache, tokio::sync::mpsc::UnboundedReceiver<Accord>) {
+        let (accorder, accords) = tokio::sync::mpsc::unbounded_channel();
+        (
+            Tache {
+                port: PORT,
+                dossier,
+                reglage: Reglage::default(),
+                boite: None,
+                redirection: None,
+                trou: None,
+                pare_feu_inactif: false,
+                double_nat: None,
+                vu: None,
+                locales: vec![
+                    IpAddr::V6(v6("2001:db8::7")),
+                    IpAddr::V4(v4("192.168.1.20")),
+                ],
+                constats: Vec::new(),
+                accorder,
+            },
+            accords,
+        )
+    }
+
+    /// Un tour contre `boite`, vu depuis `vu` : ce qu'il conclut.
+    async fn un_tour(tache: &mut Tache, boite: &Boite, vu: &str) -> Accord {
+        tache.vu = Some(vu.parse().unwrap());
+        let mut constats = Vec::new();
+        tache.tour_de_redirection(boite, &mut constats).await;
+        tache.tour_de_trou(boite, &mut constats).await;
+        tache.conclure()
+    }
+
+    /// **LA LIVEBOX, SUR LA BOUCLE LOCALE** — le pare-feu IPv6 actif et les
+    /// trous permis, `AddPinhole` refusé par `606`, la redirection accordée
+    /// vers `203.0.113.7` : bail en IPv6, la passerelle dit de passer en
+    /// IPv4 ; bail en IPv4 vu de l'adresse de la box, elle annonce le port et
+    /// dit de rester ; vu d'ailleurs, double NAT, et elle ne redit plus de
+    /// basculer vers cette adresse ; la box qui cesse de rediriger, ou qui
+    /// perce enfin, ramène en IPv6 ; un pare-feu inactif n'en fait jamais
+    /// sortir.
+    #[tokio::test]
+    async fn contre_une_box_qui_refuse_le_trou_et_redirige() {
+        let comportement = std::sync::Arc::new(std::sync::Mutex::new(Comportement::default()));
+        let (redirection, pare_feu) =
+            box_qui_refuse_le_trou(std::sync::Arc::clone(&comportement)).await;
+        let boite = Boite {
+            redirection: Some((redirection, super::description::WAN_IP_1, v4("127.0.0.1"))),
+            pare_feu: Some(pare_feu),
+            hote: IpAddr::V4(v4("127.0.0.1")),
+        };
+        let dossier =
+            std::env::temp_dir().join(format!("asl-passerelle-106-{}", std::process::id()));
+        std::fs::create_dir_all(&dossier).unwrap();
+        let (mut tache, _accords) = tache(dossier.clone());
+
+        // IPv6 : le trou demandé, refusé ; la redirection, accordée.
+        let accord = un_tour(&mut tache, &boite, "2001:db8::7").await;
+        assert_eq!(
+            accord,
+            Accord {
+                port: None,
+                voeu: Voeu::Ipv4 {
+                    externe: v4("203.0.113.7"),
+                    port: PORT
+                }
+            }
+        );
+        assert!(
+            comportement
+                .lock()
+                .unwrap()
+                .actions
+                .iter()
+                .any(|a| a == "AddPinhole"),
+            "le trou a été demandé"
+        );
+        assert!(tache.trou.is_none());
+        assert_eq!(
+            tache.conclusion(&accord),
+            None,
+            "l'écho le dit en basculant"
+        );
+
+        // IPv4, vu de l'adresse de la box : on annonce, on reste.
+        let accord = un_tour(&mut tache, &boite, "203.0.113.7").await;
+        assert_eq!(
+            accord,
+            Accord {
+                port: Some(PORT),
+                voeu: Voeu::Rester
+            }
+        );
+
+        // IPv4, vu d'ailleurs : double NAT — retenu.
+        let accord = un_tour(&mut tache, &boite, "198.51.100.9").await;
+        assert_eq!(
+            accord.voeu,
+            Voeu::Ipv6(Retour::DoubleNat {
+                boite: v4("203.0.113.7"),
+                vu: v4("198.51.100.9")
+            })
+        );
+        let accord = un_tour(&mut tache, &boite, "2001:db8::7").await;
+        assert_eq!(
+            accord.voeu,
+            Voeu::Rester,
+            "pas de nouvelle bascule vers la même box"
+        );
+        assert!(tache.conclusion(&accord).unwrap().starts_with(
+            "double NAT déjà constaté derrière la box (203.0.113.7) : le bail reste en IPv6"
+        ),);
+
+        // Une autre tâche, sans ce souvenir : en IPv4, la box cesse de rediriger.
+        let (mut tache, _accords) = tache_neuve(&dossier);
+        assert!(matches!(
+            un_tour(&mut tache, &boite, "2001:db8::7").await.voeu,
+            Voeu::Ipv4 { .. }
+        ));
+        comportement.lock().unwrap().redirection_refusee = true;
+        assert_eq!(
+            un_tour(&mut tache, &boite, "203.0.113.7").await.voeu,
+            Voeu::Ipv6(Retour::RedirectionPerdue)
+        );
+        comportement.lock().unwrap().redirection_refusee = false;
+
+        // En IPv4, la box perce enfin : retour en IPv6, où le trou s'annonce.
+        let (mut tache, _accords) = tache_neuve(&dossier);
+        assert!(matches!(
+            un_tour(&mut tache, &boite, "2001:db8::7").await.voeu,
+            Voeu::Ipv4 { .. }
+        ));
+        comportement.lock().unwrap().trou_accorde = true;
+        assert_eq!(
+            un_tour(&mut tache, &boite, "203.0.113.7").await.voeu,
+            Voeu::Ipv6(Retour::TrouObtenu)
+        );
+        assert_eq!(
+            un_tour(&mut tache, &boite, "2001:db8::7").await,
+            Accord {
+                port: Some(PORT),
+                voeu: Voeu::Rester
+            }
+        );
+        comportement.lock().unwrap().trou_accorde = false;
+
+        // Un pare-feu IPv6 inactif : on reste, et on le dit.
+        comportement.lock().unwrap().pare_feu_inactif = true;
+        let (mut tache, _accords) = tache_neuve(&dossier);
+        let accord = un_tour(&mut tache, &boite, "2001:db8::7").await;
+        assert_eq!(accord.voeu, Voeu::Rester);
+        assert!(
+            tache
+                .conclusion(&accord)
+                .unwrap()
+                .starts_with("le pare-feu IPv6 de la box est inactif : le bail reste en IPv6"),
+        );
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    fn tache_neuve(
+        dossier: &std::path::Path,
+    ) -> (Tache, tokio::sync::mpsc::UnboundedReceiver<Accord>) {
+        tache(dossier.to_owned())
     }
 }

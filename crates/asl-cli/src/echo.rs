@@ -31,8 +31,27 @@
 //! 0.44.0 ou plus), faute de quoi il refuserait l'annonce entière.
 //! `--no-upnp`, ou `ASL_ECHO_UPNP=0` dans l'environnement d'une unité, la
 //! coupe.
+//!
+//! # LE BAIL EN IPv4, QUAND LA BOX NE PERCE PAS SON PARE-FEU IPv6 (décision 106)
+//!
+//! Le bail part en IPv6 d'abord. Mais derrière une box qui refuse le trou
+//! IPv6 et redirige en IPv4 — la Livebox, en vrai —, l'annuaire voit l'IPv6
+//! que la box ferme, et la redirection ne peut pas s'annoncer. Quand la
+//! passerelle le dit ([`passerelle::Voeu::Ipv4`]), l'écho **ferme le bail
+//! IPv6 et le rouvre en IPv4, sur la même socket**, vers les seules adresses
+//! IPv4 des annuaires ; la passerelle vérifie alors que `vu_depuis` est
+//! l'adresse externe de la box. Le bail reste en IPv4 d'une reconnexion à
+//! l'autre, et n'en revient que sur un trou obtenu, une redirection perdue,
+//! un double NAT révélé — ou un annuaire muet en IPv4.
+//!
+//! **La même socket, et c'est pourquoi elle est à double pile, posée
+//! explicitement** ([`lier_dans`]) : le port local est celui que la box
+//! redirige, et le mapping que le keepalive tient est celui de cette socket
+//! (décision 90). Une seconde socket IPv4 liée au même port aurait demandé
+//! `SO_REUSEPORT`, et le noyau aurait réparti les datagrammes entrants entre
+//! les deux — l'écho n'aurait plus su lesquels étaient à lui.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -46,8 +65,8 @@ use asl_proto::{NomService, Passerelle, PointEcoute, Port, Protocole, ViaPassere
 use tokio::net::UdpSocket;
 
 use crate::arguments::Invocation;
-use crate::commandes::{patience, refus_de_l_annuaire, reglages, reglages_du_renvoi};
-use crate::passerelle::{self, Passerelle as TacheDePasserelle};
+use crate::commandes::{PLAFOND_MS, patience, refus_de_l_annuaire, reglages, reglages_du_renvoi};
+use crate::passerelle::{self, Passerelle as TacheDePasserelle, Retour, Voeu};
 use crate::{Issue, Sortie, etat, rendu};
 
 /// Ce que la ligne de commande et l'environnement disent de la passerelle.
@@ -98,6 +117,17 @@ const ENTRETIEN_MS: u64 = 500;
 /// serait rejoint en boucle serrée.
 const REPRISE: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// Combien de temps une bascule en IPv4 n'est pas retentée après un annuaire
+/// muet en IPv4 : **la moitié d'un tour de passerelle** — assez pour que les
+/// accords redits à chaque reconnexion ne la relancent pas, assez peu pour
+/// que le tour suivant ([`passerelle::CADENCE`]) la retente.
+const SUSPENSION: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+const _: () = assert!(
+    SUSPENSION.as_secs() * 2 == passerelle::CADENCE.as_secs(),
+    "la moitié d'un tour de passerelle"
+);
+
 /// Une ligne de bilan par minute, au plus — le débit dépassé, les sondes
 /// refusées, une horloge qui dérive (`protocole.md` §3 quater : « une ligne
 /// de journal par minute au plus »).
@@ -127,7 +157,8 @@ pub async fn echo(
     let tirage = etat::hasard::<8>()
         .map(u64::from_le_bytes)
         .map_err(|quoi| Issue::Configuration(quoi.to_string()))?;
-    let socket = Arc::new(lier_dans(&ordre_de_la_plage(tirage)).await?);
+    let (socket, double_pile) = lier_dans(&ordre_de_la_plage(tirage)).await?;
+    let socket = Arc::new(socket);
     let port = socket
         .local_addr()
         .map_err(|quoi| Issue::Configuration(format!("la socket ne dit pas son port : {quoi}")))?
@@ -162,7 +193,10 @@ pub async fn echo(
     let sortie = tenir_l_echo(
         &reglages,
         identite,
-        &socket,
+        Socket {
+            socket: &socket,
+            double_pile,
+        },
         &points,
         nom,
         &mut repondeur,
@@ -177,11 +211,111 @@ pub async fn echo(
     sortie
 }
 
+/// La socket de l'écho, et ce qu'elle sait.
+#[derive(Debug, Clone, Copy)]
+struct Socket<'a> {
+    socket: &'a Arc<UdpSocket>,
+    /// Liée à `[::]` avec `IPV6_V6ONLY` à zéro : elle sait les deux familles,
+    /// et le bail peut passer en IPv4 sans en changer (décision 106).
+    double_pile: bool,
+}
+
+/// **LA BASCULE EN IPv4** (décision 106), tenue d'un bail à l'autre.
+#[derive(Debug, Default)]
+struct Famille {
+    /// Le bail est en IPv4 parce que l'écho l'y a mis : l'adresse externe et
+    /// le port que la box redirige. `None` : IPv6 d'abord, comme partout.
+    ipv4: Option<(Ipv4Addr, u16)>,
+    /// Jusqu'à quand la bascule n'est pas retentée, après un annuaire muet en
+    /// IPv4 : la moitié d'un tour de passerelle, pour que le tour suivant la
+    /// retente, et que les accords redits à chaque reconnexion ne la
+    /// relancent pas en boucle.
+    pas_avant: Option<std::time::Instant>,
+    /// Ce qu'on a dit la dernière fois qu'une bascule voulue n'a pas pu se
+    /// faire : on ne le redit pas à chaque accord.
+    empechement: Option<Empechement>,
+}
+
+/// Ce qui empêche une bascule en IPv4 que la passerelle demande.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Empechement {
+    /// La socket de l'écho ne sait pas l'IPv4.
+    PasDeDoublePile,
+    /// Aucun annuaire de la liste n'a d'adresse IPv4.
+    PasDAnnuaireIpv4,
+    /// Un annuaire muet en IPv4 tout à l'heure : on attend le tour suivant.
+    Suspendue,
+}
+
+impl std::fmt::Display for Empechement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::PasDeDoublePile => {
+                "la socket de l'écho n'est pas à double pile (IPV6_V6ONLY refusé à zéro)"
+            }
+            Self::PasDAnnuaireIpv4 => "aucun annuaire n'a d'adresse IPv4",
+            Self::Suspendue => {
+                "aucun annuaire n'a répondu en IPv4 tout à l'heure — nouvel essai au prochain \
+                 tour de la passerelle"
+            }
+        })
+    }
+}
+
+/// Ce que l'écho fait d'un [`Voeu`] de la passerelle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Jugement {
+    /// Garder le bail où il est.
+    Rester,
+    /// Fermer le bail IPv6, le rouvrir en IPv4.
+    VersIpv4 { externe: Ipv4Addr, port: u16 },
+    /// Fermer le bail IPv4, le rouvrir en IPv6.
+    VersIpv6(Retour),
+    /// La passerelle voudrait l'IPv4, et c'est impossible d'ici.
+    Empeche(Empechement),
+}
+
+/// **CE QUE L'ÉCHO FAIT D'UN VŒU** — une fonction, éprouvée à part.
+///
+/// - `Ipv4` : basculer, si le bail n'y est pas déjà et que rien ne l'empêche ;
+/// - `Ipv6` : revenir, **seulement d'une bascule que l'écho a faite** — un
+///   bail IPv4 subi (une machine sans IPv6, un annuaire injoignable en IPv6)
+///   n'a nulle part où revenir, et la passerelle ne sait pas la différence ;
+/// - `Rester` : rien.
+fn juger(voeu: Voeu, en_ipv4: bool, empechement: Option<Empechement>) -> Jugement {
+    match voeu {
+        Voeu::Ipv4 { .. } if en_ipv4 => Jugement::Rester,
+        Voeu::Ipv4 { externe, port } => match empechement {
+            Some(empeche) => Jugement::Empeche(empeche),
+            None => Jugement::VersIpv4 { externe, port },
+        },
+        Voeu::Ipv6(retour) if en_ipv4 => Jugement::VersIpv6(retour),
+        Voeu::Ipv6(_) | Voeu::Rester => Jugement::Rester,
+    }
+}
+
+/// **LES SEULS ANNUAIRES IPv4** de ces réglages, pour un bail tenu en IPv4 —
+/// ou rien, s'il n'y en a pas. Une adresse IPv4 enfouie dans l'IPv6
+/// (`::ffff:a.b.c.d`) compte : c'est une IPv4 sur le fil.
+fn en_ipv4_seulement(reglages: &Reglages) -> Option<Reglages> {
+    let annuaires: Vec<_> = reglages
+        .annuaires()
+        .iter()
+        .filter(|annuaire| annuaire.adresse.ip().to_canonical().is_ipv4())
+        .cloned()
+        .collect();
+    Reglages::nouveaux(annuaires, PLAFOND_MS).ok()
+}
+
 /// La boucle de l'écho : joindre, annoncer, tenir, recommencer.
+#[expect(
+    clippy::too_many_lines,
+    reason = "la boucle se lit d'un trait : joindre, annoncer, tenir, basculer ou recommencer"
+)]
 async fn tenir_l_echo(
     reglages: &Reglages,
     identite: &Identite,
-    socket: &Arc<UdpSocket>,
+    socket: Socket<'_>,
     points: &[PointEcoute; 1],
     nom: NomService<'_>,
     repondeur: &mut Repondeur,
@@ -189,6 +323,8 @@ async fn tenir_l_echo(
 ) -> Sortie {
     let arret = ecouter_l_arret();
     let mut journal = Journal::default();
+    let mut famille = Famille::default();
+    let port_local = points[0].port.valeur();
 
     // L'annuaire local vers lequel une racine nous a renvoyés, s'il y en a un
     // — la même règle qu'`asl announce` : un seul saut, et l'on revient aux
@@ -199,18 +335,45 @@ async fn tenir_l_echo(
             println!("écho arrêté.");
             return Ok(());
         }
-        let (courants, racine) = match &local {
+        let (tous, racine) = match &local {
             Some(chez_lui) => (chez_lui, false),
             None => (reglages, true),
         };
-        let mut connexion = match joindre(courants, socket, racine, &arret).await {
+        // **EN IPv4, LES SEULES ADRESSES IPv4** : c'est la famille qui fait
+        // la bascule, et la tournée mettrait l'IPv6 en tête.
+        let filtres = match famille.ipv4 {
+            Some(_) => {
+                let filtres = en_ipv4_seulement(tous);
+                if filtres.is_none() {
+                    println!(
+                        "bail           le bail revient en IPv6 : aucun annuaire n'a d'adresse IPv4"
+                    );
+                    famille.ipv4 = None;
+                }
+                filtres
+            }
+            None => None,
+        };
+        let courants = filtres.as_ref().unwrap_or(tous);
+        let borne = !racine || famille.ipv4.is_some();
+        let mut connexion = match joindre(courants, socket.socket, borne, &arret).await {
             Ok(connexion) => connexion,
             Err(Joindre::Arret) => {
                 println!("écho arrêté.");
                 return Ok(());
             }
             Err(Joindre::Configuration(quoi)) => return Err(quoi),
-            Err(Joindre::LocalMuet) => {
+            // **UN ANNUAIRE MUET EN IPv4 FAIT REVENIR EN IPv6**, et la bascule
+            // attend le tour suivant de la passerelle.
+            Err(Joindre::Muet) if famille.ipv4.is_some() => {
+                println!(
+                    "bail           le bail revient en IPv6 : aucun annuaire ne répond en IPv4"
+                );
+                famille.ipv4 = None;
+                famille.pas_avant = std::time::Instant::now().checked_add(SUSPENSION);
+                continue;
+            }
+            Err(Joindre::Muet) => {
                 println!("l'annuaire local ne répond pas — retour aux racines.");
                 local = None;
                 continue;
@@ -233,7 +396,10 @@ async fn tenir_l_echo(
             repondeur.tenir_le_bail(annuaire, cle, racine);
         }
 
-        let locales = adresses_locales(courants, socket).await;
+        // **TOUTES LES FAMILLES, MÊME EN IPv4** : l'annonce porte l'IPv6 de la
+        // machine pour les sondeurs du même réseau, et la passerelle en a
+        // besoin pour redemander le trou — c'est lui qui fera revenir le bail.
+        let locales = adresses_locales(tous, socket.socket).await;
         let annonce = identite
             .annoncer(nom, points, &locales)
             .map_err(|quoi| Issue::Configuration(format!("l'annonce est refusée : {quoi:?}")))
@@ -311,7 +477,17 @@ async fn tenir_l_echo(
         .await;
         let _ = connexion.ecouter_les_poussees().await;
 
-        tenir(
+        let empechement = if !socket.double_pile {
+            Some(Empechement::PasDeDoublePile)
+        } else if en_ipv4_seulement(tous).is_none() {
+            Some(Empechement::PasDAnnuaireIpv4)
+        } else {
+            famille
+                .pas_avant
+                .filter(|quand| std::time::Instant::now() < *quand)
+                .map(|_| Empechement::Suspendue)
+        };
+        let fin = tenir(
             &mut connexion,
             identite,
             repondeur,
@@ -319,9 +495,31 @@ async fn tenir_l_echo(
             &arret,
             passerelle,
             &mut annonce_tenue,
+            &mut famille,
+            empechement,
         )
         .await;
         repondeur.lacher_le_bail();
+
+        match fin {
+            Jugement::VersIpv4 { externe, port } => {
+                println!(
+                    "bail           le bail passe en IPv4 : la box ne perce pas son pare-feu IPv6, \
+                     mais redirige udp {port_local} (box {externe}:{port})"
+                );
+                famille.ipv4 = Some((externe, port));
+                famille.pas_avant = None;
+                let _ = connexion.fermer().await;
+                continue;
+            }
+            Jugement::VersIpv6(retour) => {
+                println!("bail           le bail revient en IPv6 : {retour}");
+                famille.ipv4 = None;
+                let _ = connexion.fermer().await;
+                continue;
+            }
+            Jugement::Rester | Jugement::Empeche(_) => {}
+        }
 
         if arret.load(Ordering::Acquire) {
             // **LA BOX D'ABORD, LE BAIL ENSUITE** (§3 quater, « La durée ») :
@@ -333,7 +531,11 @@ async fn tenir_l_echo(
             println!("écho retiré : le bail est fermé, l'annonce avec lui.");
             return Ok(());
         }
-        println!("bail perdu — on recommence, et l'on réannonce sur le même port.");
+        if famille.ipv4.is_some() {
+            println!("bail perdu — on recommence en IPv4, et l'on réannonce sur le même port.");
+        } else {
+            println!("bail perdu — on recommence, et l'on réannonce sur le même port.");
+        }
     }
 }
 
@@ -341,8 +543,9 @@ async fn tenir_l_echo(
 enum Joindre {
     /// Une faute de configuration : réessayer n'y changerait rien.
     Configuration(Issue),
-    /// L'annuaire local ne répond pas dans le temps d'une personne.
-    LocalMuet,
+    /// L'annuaire — local, ou joint en IPv4 après une bascule — ne répond
+    /// pas dans le temps d'une personne.
+    Muet,
     /// On a demandé l'arrêt pendant qu'on cherchait.
     Arret,
 }
@@ -351,9 +554,10 @@ enum Joindre {
 ///
 /// **AUX RACINES, SANS BORNE** : l'écho est un daemon, et un annuaire
 /// injoignable doit le faire attendre, pas tomber (`protocole.md` §1.4).
-/// **Chez un annuaire local, la patience d'`asl announce`** : au-delà, on
-/// retourne aux racines, qui diront peut-être que le domaine a changé
-/// d'hébergeur.
+/// **Chez un annuaire local, ou en IPv4 après une bascule, la patience
+/// d'`asl announce`** (`borne`) : au-delà, on retourne aux racines, qui diront
+/// peut-être que le domaine a changé d'hébergeur — ou en IPv6, où le bail
+/// tenait.
 ///
 /// **L'ARRÊT SE REGARDE PENDANT QU'ON CHERCHE** : Ctrl-C ne tue plus le
 /// processus une fois qu'on l'écoute, et une tournée sans fin l'ignorerait.
@@ -362,12 +566,12 @@ enum Joindre {
 async fn joindre(
     reglages: &Reglages,
     socket: &Arc<UdpSocket>,
-    racine: bool,
+    borne: bool,
     arret: &AtomicBool,
 ) -> Result<Connexion, Joindre> {
     let alea = || etat::hasard::<16>().unwrap_or([0; 16]);
     let mut recherche = Box::pin(joindre_sur(reglages, socket, &alea));
-    let echeance = (!racine).then(|| {
+    let echeance = borne.then(|| {
         let depuis = std::time::Instant::now();
         depuis
             .checked_add(std::time::Duration::from_secs(patience()))
@@ -383,13 +587,18 @@ async fn joindre(
             return Err(Joindre::Arret);
         }
         if echeance.is_some_and(|fin| std::time::Instant::now() >= fin) {
-            return Err(Joindre::LocalMuet);
+            return Err(Joindre::Muet);
         }
     }
 }
 
-/// Tient le bail, et répond. Rend quand la connexion tombe, ou qu'on demande
-/// l'arrêt.
+/// Tient le bail, et répond. Rend quand la connexion tombe, qu'on demande
+/// l'arrêt ([`Jugement::Rester`]) — ou que la passerelle dit de changer de
+/// famille ([`Jugement::VersIpv4`], [`Jugement::VersIpv6`]).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "l'état de la boucle de l'écho, que `tenir` lit et ne garde pas"
+)]
 async fn tenir(
     connexion: &mut Connexion,
     identite: &Identite,
@@ -398,13 +607,28 @@ async fn tenir(
     arret: &AtomicBool,
     passerelle: &mut Option<TacheDePasserelle>,
     annonce: &mut AnnonceTenue<'_>,
-) {
+    famille: &mut Famille,
+    empechement: Option<Empechement>,
+) -> Jugement {
     while connexion.vivante() && !arret.load(Ordering::Acquire) {
         if connexion.entretenir(ENTRETIEN_MS).await.is_err() {
             break;
         }
         if let Some(accord) = passerelle.as_mut().and_then(TacheDePasserelle::accord) {
-            reannoncer(connexion, annonce, accord).await;
+            match juger(accord.voeu, famille.ipv4.is_some(), empechement) {
+                Jugement::Rester => {}
+                Jugement::Empeche(empeche) => {
+                    if famille.empechement != Some(empeche) {
+                        println!(
+                            "bail           la box ne perce pas son pare-feu IPv6 et redirige en IPv4, \
+                             mais le bail reste en IPv6 : {empeche}"
+                        );
+                        famille.empechement = Some(empeche);
+                    }
+                }
+                bascule => return bascule,
+            }
+            reannoncer(connexion, annonce, accord.port).await;
         }
         for (datagramme, source) in connexion.echos() {
             let maintenant = maintenant_ms();
@@ -425,6 +649,7 @@ async fn tenir(
             journal.poussee(derniere);
         }
     }
+    Jugement::Rester
 }
 
 /// Ce que l'écho dit de ce qu'il fait — **sobrement** : une ligne par preuve
@@ -705,23 +930,38 @@ fn ordre_de_la_plage(graine: u64) -> [u16; PORTS] {
 
 /// Lie la socket de l'écho au premier de ces ports qui soit libre :
 /// **`[::]:<port>`, à double pile**, et `0.0.0.0:<port>` si la machine n'a
-/// pas d'IPv6 (`protocole.md` §3 quater, « IPv6 d'abord »).
+/// pas d'IPv6 (`protocole.md` §3 quater, « IPv6 d'abord ») ; rend aussi si
+/// elle est à double pile.
 ///
 /// Un port pris — par un autre écho, par n'importe qui — fait passer au
 /// suivant ; une autre faute du noyau aussi, dite à la fin si aucun ne se
-/// lie. La double pile est ce que Linux et macOS donnent par défaut à une
-/// socket liée sur `[::]` (`IPV6_V6ONLY` à zéro) ; la poser explicitement
-/// demanderait un appel que la bibliothèque standard n'expose pas.
+/// lie.
+///
+/// # LA DOUBLE PILE, POSÉE ET NON SUPPOSÉE (décision 106)
+///
+/// Linux et macOS donnent la double pile par défaut à une socket liée sur
+/// `[::]` — **par défaut** : `net.ipv6.bindv6only = 1` la retire à toutes
+/// les sockets d'une machine Linux. Le bail de l'écho doit pouvoir passer en
+/// IPv4 sur CETTE socket, celle dont la box redirige le port ; on pose donc
+/// `IPV6_V6ONLY` à zéro avant de lier (`socket2`, déjà tiré pour
+/// `IPV6_MULTICAST_IF`), et l'on relit l'option : un système qui la refuse
+/// laisse une socket IPv6 seule, et l'écho le dira s'il doit basculer.
 ///
 /// # Erreurs
 ///
 /// [`Issue::Configuration`] — « aucun port libre » — quand toute la plage
 /// est occupée : c'est la machine qu'il faut regarder, pas le réseau.
-async fn lier_dans(ports: &[u16]) -> Result<UdpSocket, Issue> {
+async fn lier_dans(ports: &[u16]) -> Result<(UdpSocket, bool), Issue> {
     let mut derniere: Option<std::io::Error> = None;
     for port in ports {
-        match UdpSocket::bind(("::", *port)).await {
-            Ok(socket) => return Ok(socket),
+        match lier_en_double_pile(*port) {
+            Ok((socket, double_pile)) => match UdpSocket::from_std(socket) {
+                Ok(socket) => return Ok((socket, double_pile)),
+                Err(quoi) => {
+                    derniere = Some(quoi);
+                    continue;
+                }
+            },
             Err(quoi) if quoi.kind() == std::io::ErrorKind::AddrInUse => {
                 derniere = Some(quoi);
                 continue;
@@ -730,7 +970,7 @@ async fn lier_dans(ports: &[u16]) -> Result<UdpSocket, Issue> {
             Err(_) => {}
         }
         match UdpSocket::bind(("0.0.0.0", *port)).await {
-            Ok(socket) => return Ok(socket),
+            Ok(socket) => return Ok((socket, false)),
             Err(quoi) => derniere = Some(quoi),
         }
     }
@@ -741,6 +981,18 @@ async fn lier_dans(ports: &[u16]) -> Result<UdpSocket, Issue> {
          machine{} — un autre écho, ou un autre service. `ss -ulpn` dit lequel.",
         derniere.map_or_else(String::new, |quoi| format!(" (dernier refus : {quoi})"))
     )))
+}
+
+/// Une socket UDP liée à `[::]:<port>`, **`IPV6_V6ONLY` posé à zéro**, non
+/// bloquante — et si l'option a tenu. Voir [`lier_dans`].
+fn lier_en_double_pile(port: u16) -> std::io::Result<(std::net::UdpSocket, bool)> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+    let posee = socket.set_only_v6(false).is_ok();
+    let double_pile = posee && socket.only_v6().is_ok_and(|seule| !seule);
+    socket.set_nonblocking(true)?;
+    socket.bind(&SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)).into())?;
+    Ok((socket.into(), double_pile))
 }
 
 /// Les adresses de cette machine à annoncer : **une par famille**, celle par
@@ -847,9 +1099,129 @@ fn ecouter_l_arret() -> Arc<AtomicBool> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DERNIER_PORT, PREMIER_PORT, lier_dans, ordre_de_la_plage};
+    use super::{
+        DERNIER_PORT, Empechement, Jugement, PREMIER_PORT, en_ipv4_seulement, juger, lier_dans,
+        ordre_de_la_plage,
+    };
     use crate::Issue;
+    use crate::passerelle::{Retour, Voeu};
+    use asl_client_tokio::{Annuaire, Reglages};
+    use asl_id::{Genre, Identifiant};
     use tokio::net::UdpSocket;
+
+    #[test]
+    fn l_echo_ne_revient_que_d_une_bascule_qu_il_a_faite() {
+        let externe = "203.0.113.7".parse().unwrap();
+        let ipv4 = Voeu::Ipv4 {
+            externe,
+            port: 6634,
+        };
+        let retour = Voeu::Ipv6(Retour::RedirectionPerdue);
+        // En IPv6 : basculer, sauf empêchement ; un retour ne veut rien dire.
+        assert_eq!(
+            juger(ipv4, false, None),
+            Jugement::VersIpv4 {
+                externe,
+                port: 6634
+            }
+        );
+        for empeche in [
+            Empechement::PasDeDoublePile,
+            Empechement::PasDAnnuaireIpv4,
+            Empechement::Suspendue,
+        ] {
+            assert_eq!(
+                juger(ipv4, false, Some(empeche)),
+                Jugement::Empeche(empeche)
+            );
+        }
+        assert_eq!(juger(retour, false, None), Jugement::Rester);
+        assert_eq!(juger(Voeu::Rester, false, None), Jugement::Rester);
+        // En IPv4 par bascule : rester, ou revenir.
+        assert_eq!(juger(ipv4, true, None), Jugement::Rester);
+        assert_eq!(juger(Voeu::Rester, true, None), Jugement::Rester);
+        assert_eq!(
+            juger(retour, true, Some(Empechement::Suspendue)),
+            Jugement::VersIpv6(Retour::RedirectionPerdue)
+        );
+    }
+
+    #[test]
+    fn les_empechements_se_disent() {
+        assert!(
+            Empechement::PasDeDoublePile
+                .to_string()
+                .contains("pas à double pile")
+        );
+        assert_eq!(
+            Empechement::PasDAnnuaireIpv4.to_string(),
+            "aucun annuaire n'a d'adresse IPv4"
+        );
+        assert!(
+            Empechement::Suspendue
+                .to_string()
+                .contains("prochain tour de la passerelle")
+        );
+    }
+
+    #[test]
+    fn en_ipv4_seulement_les_adresses_ipv4() {
+        let identite = Identifiant::depuis_entropie(Genre::Annuaire, [0x11; 16]);
+        let annuaire = |adresse: &str| Annuaire {
+            adresse: adresse.parse().unwrap(),
+            nom: "racine".to_owned(),
+            identite,
+        };
+        let deux = Reglages::nouveaux(
+            vec![
+                annuaire("[2001:db8::1]:6630"),
+                annuaire("203.0.113.1:6630"),
+                annuaire("[::ffff:203.0.113.2]:6630"),
+            ],
+            15_000,
+        )
+        .unwrap();
+        let quatre: Vec<String> = en_ipv4_seulement(&deux)
+            .unwrap()
+            .annuaires()
+            .iter()
+            .map(|annuaire| annuaire.adresse.to_string())
+            .collect();
+        assert_eq!(quatre, ["203.0.113.1:6630", "[::ffff:203.0.113.2]:6630"]);
+        let six = Reglages::nouveaux(vec![annuaire("[2001:db8::1]:6630")], 15_000).unwrap();
+        assert!(en_ipv4_seulement(&six).is_none());
+    }
+
+    /// **LA DOUBLE PILE, SUR LE VRAI NOYAU** : la socket de l'écho, liée à
+    /// `[::]`, reçoit d'une socket IPv4 — c'est ce qui laisse le bail passer
+    /// en IPv4 sans changer de port (décision 106).
+    #[tokio::test]
+    async fn la_socket_de_l_echo_recoit_aussi_l_ipv4() {
+        let (_tenu, _, libre) = un_pris_un_libre().await;
+        let (socket, double_pile) = lier_dans(&[libre]).await.expect("un port libre");
+        let ici = socket.local_addr().unwrap();
+        if !ici.is_ipv6() {
+            // Une machine sans IPv6 : la socket est IPv4, rien à éprouver.
+            assert!(!double_pile);
+            return;
+        }
+        assert!(double_pile, "IPV6_V6ONLY posé à zéro");
+        let quatre = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        quatre
+            .send_to(b"\x04asl", ("127.0.0.1", ici.port()))
+            .await
+            .unwrap();
+        let mut recu = [0_u8; 16];
+        let (lus, source) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            socket.recv_from(&mut recu),
+        )
+        .await
+        .expect("reçu dans les deux secondes")
+        .unwrap();
+        assert_eq!(&recu[..lus], b"\x04asl");
+        assert_eq!(source.ip().to_canonical().to_string(), "127.0.0.1");
+    }
 
     #[test]
     fn l_ordre_est_un_melange_de_toute_la_plage() {
@@ -888,7 +1260,7 @@ mod tests {
     #[tokio::test]
     async fn un_port_pris_fait_passer_au_suivant() {
         let (_tenu, pris, libre) = un_pris_un_libre().await;
-        let socket = lier_dans(&[pris, libre])
+        let (socket, _) = lier_dans(&[pris, libre])
             .await
             .expect("le suivant est libre");
         assert_eq!(socket.local_addr().unwrap().port(), libre);
