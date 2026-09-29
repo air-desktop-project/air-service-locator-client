@@ -779,6 +779,8 @@ pub struct EtatDEcho {
     pub port: Option<u16>,
     /// Les jetons délivrés.
     pub jetons: u32,
+    /// Chaque annonce reçue, telle quelle — `passerelle` comprise.
+    pub annonces: Vec<String>,
 }
 
 /// Un annuaire qui connaît l'écho d'UNE machine, et délivre des jetons pour
@@ -806,6 +808,11 @@ pub struct AnnuaireDEcho {
     pub sans_droit: Vec<asl_id::Identifiant>,
     /// Ce que les connexions partagent.
     pub etat: Arc<std::sync::Mutex<EtatDEcho>>,
+    /// La version que `GET /v1/version` rend — `None` : la route n'existe
+    /// pas (`404`). **À 0.44.0 ou plus, le banc accepte `passerelle`** dans
+    /// l'annonce de l'écho ; avant, il la refuse (`400`), comme le décodeur
+    /// d'un annuaire d'avant refuse tout champ inconnu.
+    pub version: Option<&'static str>,
 }
 
 impl AnnuaireDEcho {
@@ -873,7 +880,30 @@ impl ams_h3::Service for AnnuaireDEcho {
             (Method::Get, b"/v1/domaines") => Self::repondre(sortie, StatusCode::OK, b"[]"),
             // **L'ANNONCE DE L'ÉCHO** : on en retient le port, et l'on rend
             // un bail comme l'annuaire.
+            (Method::Get, b"/v1/version") => match self.version {
+                Some(version) => {
+                    let corps = format!(r#"{{"version":"{version}","posture":"optional"}}"#);
+                    Self::repondre(sortie, StatusCode::OK, corps.as_bytes())
+                }
+                None => ams_h3::Reponse::new(StatusCode::NOT_FOUND, &[]),
+            },
             (Method::Post, b"/v1/annonce") => {
+                if let Ok(mut etat) = self.etat.lock() {
+                    etat.annonces
+                        .push(String::from_utf8_lossy(corps).into_owned());
+                }
+                // **`passerelle` (serveur 0.44.0)** : l'`asl-proto` épinglé la
+                // lit ; le banc ne l'accepte que s'il se dit assez récent — un
+                // annuaire d'avant refuse tout champ inconnu.
+                let marque: &[u8] = b"\"passerelle\":";
+                let porte_passerelle = corps.windows(marque.len()).any(|f| f == marque);
+                let connait = self.version.is_some_and(|version| {
+                    let mut morceaux = version.split('.').map(|m| m.parse::<u64>().unwrap_or(0));
+                    (morceaux.next().unwrap_or(0), morceaux.next().unwrap_or(0)) >= (0, 44)
+                });
+                if porte_passerelle && !connait {
+                    return ams_h3::Reponse::new(StatusCode::BAD_REQUEST, &[]);
+                }
                 let mut tampons = asl_proto::cadrage::Tampons::nouveaux();
                 let Ok(annonce) = asl_proto::Annonce::decoder(corps, &mut tampons) else {
                     return ams_h3::Reponse::new(StatusCode::BAD_REQUEST, &[]);

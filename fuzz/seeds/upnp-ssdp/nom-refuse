@@ -1,0 +1,4 @@
+HTTP/1.1 200 OK
+ST: urn:schemas-upnp-org:device:InternetGatewayDevice:1
+LOCATION: http://box.lan/igd.xml
+

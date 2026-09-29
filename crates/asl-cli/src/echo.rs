@@ -19,16 +19,21 @@
 //! une entrée-sortie, éprouvé à part. Le tri de la socket au premier octet :
 //! `asl-client-tokio`. Ce fichier-ci ne fait qu'obéir et dire.
 //!
-//! # PAS ENCORE D'UPnP, ET PAS D'OPTION QUI FERAIT SEMBLANT
+//! # LA PASSERELLE (décisions 94 à 97)
 //!
-//! La passerelle (décisions 94 à 97) est la PR suivante. `--no-upnp` n'existe
-//! donc pas encore : **une option acceptée et sans effet est pire qu'une option
-//! refusée** — qui l'écrirait croirait avoir demandé quelque chose. Le point
-//! d'accroche est [`apres_l_annonce`] : c'est là que la box sera interrogée,
-//! une fois `vu_depuis` connu, et que l'annonce sera refaite avec
-//! `passerelle`.
+//! **Active par défaut** (décision 95 ; E15) : une tâche à côté
+//! ([`crate::passerelle`]) demande à la box la redirection du port de l'écho,
+//! et de lui seul. L'annonce est faite deux fois (§3 quater, « Comment
+//! l'annuaire l'apprend ») : **sans** `passerelle` d'abord, pour apprendre
+//! `vu_depuis` ; **avec** (`Annonce::avec_passerelle`, `asl-proto` 0.44.0),
+//! sur la même connexion, une fois la box interrogée —
+//! et seulement vers un annuaire qui connaît le champ (`GET /v1/version`,
+//! 0.44.0 ou plus), faute de quoi il refuserait l'annonce entière.
+//! `--no-upnp`, ou `ASL_ECHO_UPNP=0` dans l'environnement d'une unité, la
+//! coupe.
 
 use std::net::{IpAddr, SocketAddr};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -37,12 +42,51 @@ use asl_client::echo::{NOM_SERVICE, Repondeur, Silence};
 use asl_client_tokio::{Connexion, Faute as FauteReseau, Reglages, joindre_sur};
 use asl_echo::RefusSonde;
 use asl_id::Genre;
-use asl_proto::{NomService, PointEcoute, Port, Protocole};
+use asl_proto::{NomService, Passerelle, PointEcoute, Port, Protocole, ViaPasserelle};
 use tokio::net::UdpSocket;
 
 use crate::arguments::Invocation;
 use crate::commandes::{patience, refus_de_l_annuaire, reglages, reglages_du_renvoi};
+use crate::passerelle::{self, Passerelle as TacheDePasserelle};
 use crate::{Issue, Sortie, etat, rendu};
+
+/// Ce que la ligne de commande et l'environnement disent de la passerelle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OptionsEcho {
+    /// `--no-upnp` n'a pas été donné.
+    pub upnp: bool,
+    /// `--verbose` : dire aussi ce que la passerelle tait d'habitude.
+    pub bavard: bool,
+}
+
+/// Lit `ASL_ECHO_UPNP` — `0` coupe la passerelle, `1` la laisse ; toute
+/// autre valeur est refusée plutôt que devinée — et `ASL_ECHO_SSDP`.
+///
+/// # Erreurs
+///
+/// [`Issue::Configuration`] sur une valeur qui ne se lit pas.
+fn reglage_de_la_passerelle(options: OptionsEcho) -> Result<Option<passerelle::Reglage>, Issue> {
+    let par_l_environnement = match std::env::var("ASL_ECHO_UPNP").as_deref() {
+        Err(_) | Ok("1") => true,
+        Ok("0") => false,
+        Ok(autre) => {
+            return Err(Issue::Configuration(format!(
+                "ASL_ECHO_UPNP vaut 0 (couper UPnP) ou 1, et non « {autre} »"
+            )));
+        }
+    };
+    if !options.upnp || !par_l_environnement {
+        return Ok(None);
+    }
+    let ssdp = match std::env::var("ASL_ECHO_SSDP") {
+        Ok(texte) => Some(passerelle::adresses_ssdp(&texte).map_err(Issue::Configuration)?),
+        Err(_) => None,
+    };
+    Ok(Some(passerelle::Reglage {
+        bavard: options.bavard,
+        ssdp,
+    }))
+}
 
 /// Combien de temps la boucle dort entre deux réveils, au plus : une sonde
 /// réveille la boucle dès qu'elle arrive, et ceci ne borne que le temps qu'un
@@ -71,8 +115,14 @@ fn maintenant_ms() -> u64 {
 
 /// L'écho de cette machine. Ne rend la main que sur un arrêt demandé, ou sur
 /// une faute de configuration.
-pub async fn echo(invocation: &Invocation, identite: &Identite) -> Sortie {
+pub async fn echo(
+    invocation: &Invocation,
+    identite: &Identite,
+    dossier: &Path,
+    options: OptionsEcho,
+) -> Sortie {
     refuser_root()?;
+    let reglage_upnp = reglage_de_la_passerelle(options)?;
     let reglages = reglages(invocation)?;
     let tirage = etat::hasard::<8>()
         .map(u64::from_le_bytes)
@@ -93,14 +143,52 @@ pub async fn echo(invocation: &Invocation, identite: &Identite) -> Sortie {
         .map(u64::from_le_bytes)
         .map_err(|quoi| Issue::Configuration(quoi.to_string()))?;
     let mut repondeur = Repondeur::nouveau(identite, graine);
-    let arret = ecouter_l_arret();
-    let mut journal = Journal::default();
 
     println!(
         "écho           {} — udp {port}, tiré dans {PREMIER_PORT}–{DERNIER_PORT}",
         identite.machine().texte().as_str()
     );
     println!("               il ne répond qu'aux sondes signées ; aux autres, le silence.");
+
+    // **LA PASSERELLE, À CÔTÉ** : elle ne bloque jamais une réponse. Elle
+    // retire d'abord ce qu'un arrêt brutal a laissé sur la box.
+    let mut passerelle = match reglage_upnp {
+        Some(reglage) => Some(TacheDePasserelle::lancer(port, dossier.to_owned(), reglage)),
+        None => {
+            println!("passerelle     UPnP coupé : la box n'est pas interrogée");
+            None
+        }
+    };
+    let sortie = tenir_l_echo(
+        &reglages,
+        identite,
+        &socket,
+        &points,
+        nom,
+        &mut repondeur,
+        &mut passerelle,
+    )
+    .await;
+    // Ce qui n'a pas déjà été retiré avant la fermeture du bail — une
+    // faute, un arrêt pendant qu'on cherchait l'annuaire — l'est ici.
+    if let Some(passerelle) = passerelle.take() {
+        passerelle.arreter().await;
+    }
+    sortie
+}
+
+/// La boucle de l'écho : joindre, annoncer, tenir, recommencer.
+async fn tenir_l_echo(
+    reglages: &Reglages,
+    identite: &Identite,
+    socket: &Arc<UdpSocket>,
+    points: &[PointEcoute; 1],
+    nom: NomService<'_>,
+    repondeur: &mut Repondeur,
+    passerelle: &mut Option<TacheDePasserelle>,
+) -> Sortie {
+    let arret = ecouter_l_arret();
+    let mut journal = Journal::default();
 
     // L'annuaire local vers lequel une racine nous a renvoyés, s'il y en a un
     // — la même règle qu'`asl announce` : un seul saut, et l'on revient aux
@@ -113,9 +201,9 @@ pub async fn echo(invocation: &Invocation, identite: &Identite) -> Sortie {
         }
         let (courants, racine) = match &local {
             Some(chez_lui) => (chez_lui, false),
-            None => (&reglages, true),
+            None => (reglages, true),
         };
-        let mut connexion = match joindre(courants, &socket, racine, &arret).await {
+        let mut connexion = match joindre(courants, socket, racine, &arret).await {
             Ok(connexion) => connexion,
             Err(Joindre::Arret) => {
                 println!("écho arrêté.");
@@ -145,10 +233,20 @@ pub async fn echo(invocation: &Invocation, identite: &Identite) -> Sortie {
             repondeur.tenir_le_bail(annuaire, cle, racine);
         }
 
-        let locales = adresses_locales(courants, &socket).await;
+        let locales = adresses_locales(courants, socket).await;
         let annonce = identite
-            .annoncer(nom, &points, &locales)
-            .map_err(|quoi| Issue::Configuration(format!("l'annonce est refusée : {quoi:?}")))?;
+            .annoncer(nom, points, &locales)
+            .map_err(|quoi| Issue::Configuration(format!("l'annonce est refusée : {quoi:?}")))
+            .and_then(|annonce| {
+                // L'encodage est une validation : une annonce qui ne tient
+                // pas dans un message est une faute rendue ici, pas une panne
+                // qu'on recommencerait sans fin.
+                asl_client_tokio::encoder(&annonce)
+                    .map(|_| annonce)
+                    .map_err(|quoi| {
+                        Issue::Configuration(format!("l'annonce ne s'encode pas : {quoi}"))
+                    })
+            })?;
         match connexion.authentifier(identite).await {
             Ok(()) => {}
             // **UN REFUS DE LA CLÉ S'ARRÊTE ICI** : réessayer ne la rendrait
@@ -198,20 +296,39 @@ pub async fn echo(invocation: &Invocation, identite: &Identite) -> Sortie {
             connexion.maintenir(bail);
         }
         dire_le_bail(annuaire, distante, &corps);
-        apres_l_annonce(&mut connexion, &corps);
+        let mut annonce_tenue = AnnonceTenue {
+            sans: annonce,
+            annoncee: None,
+            accepte: false,
+        };
+        apres_l_annonce(
+            &mut connexion,
+            &corps,
+            &locales,
+            passerelle,
+            &mut annonce_tenue,
+        )
+        .await;
         let _ = connexion.ecouter_les_poussees().await;
 
         tenir(
             &mut connexion,
             identite,
-            &mut repondeur,
+            repondeur,
             &mut journal,
             &arret,
+            passerelle,
+            &mut annonce_tenue,
         )
         .await;
         repondeur.lacher_le_bail();
 
         if arret.load(Ordering::Acquire) {
+            // **LA BOX D'ABORD, LE BAIL ENSUITE** (§3 quater, « La durée ») :
+            // la redirection est retirée avant que l'annonce tombe.
+            if let Some(passerelle) = passerelle.take() {
+                passerelle.arreter().await;
+            }
             let _ = connexion.fermer().await;
             println!("écho retiré : le bail est fermé, l'annonce avec lui.");
             return Ok(());
@@ -279,10 +396,15 @@ async fn tenir(
     repondeur: &mut Repondeur,
     journal: &mut Journal,
     arret: &AtomicBool,
+    passerelle: &mut Option<TacheDePasserelle>,
+    annonce: &mut AnnonceTenue<'_>,
 ) {
     while connexion.vivante() && !arret.load(Ordering::Acquire) {
         if connexion.entretenir(ENTRETIEN_MS).await.is_err() {
             break;
+        }
+        if let Some(accord) = passerelle.as_mut().and_then(TacheDePasserelle::accord) {
+            reannoncer(connexion, annonce, accord).await;
         }
         for (datagramme, source) in connexion.echos() {
             let maintenant = maintenant_ms();
@@ -428,14 +550,108 @@ fn dire_le_bail(annuaire: Option<asl_id::Identifiant>, distante: Option<SocketAd
     }
 }
 
-/// **LE POINT D'ACCROCHE DE LA PASSERELLE** (décisions 94 à 97, PR suivante).
+/// L'annonce de l'écho sur UNE connexion : l'annonce sans `passerelle`, ce
+/// qu'on y a annoncé depuis, et si l'annuaire connaît le champ.
+#[derive(Debug)]
+struct AnnonceTenue<'a> {
+    /// L'annonce, sans `passerelle`.
+    sans: asl_proto::Annonce<'a>,
+    /// Le port de `passerelle` que cette connexion a annoncé, s'il y en a un.
+    annoncee: Option<u16>,
+    /// L'annuaire de cette connexion connaît `passerelle` (0.44.0 ou plus).
+    accepte: bool,
+}
+
+/// **CE QUI SUIT LA PREMIÈRE ANNONCE** (décision 97 ; E21) : lire la
+/// version de l'annuaire — il faut 0.44.0 pour `passerelle` —, puis dire à la
+/// passerelle d'où l'annuaire nous voit. Elle répondra par un accord, que
+/// [`tenir`] réannonce sur cette même connexion.
+async fn apres_l_annonce(
+    connexion: &mut Connexion,
+    reponse: &[u8],
+    locales: &[IpAddr],
+    passerelle: &Option<TacheDePasserelle>,
+    annonce: &mut AnnonceTenue<'_>,
+) {
+    let Some(passerelle) = passerelle else {
+        return;
+    };
+    let mut tampons = asl_proto::cadrage::TamponsReponse::nouveaux();
+    let Ok(lue) = asl_proto::Reponse::decoder(reponse, &mut tampons) else {
+        return;
+    };
+    let vu = lue.vu_depuis.adresse;
+    let version = match connexion.version().await {
+        Ok(corps) => rendu::version_seule(&corps).ok(),
+        Err(_) => None,
+    };
+    annonce.accepte = version
+        .as_deref()
+        .is_some_and(passerelle::connait_la_passerelle);
+    if !annonce.accepte {
+        let (a, b, c) = passerelle::VERSION_PASSERELLE;
+        println!(
+            "passerelle     l'annuaire ({}) ne connaît pas encore le champ `passerelle` ({a}.{b}.{c}) :\n\
+             \x20              ce que la box accordera ne lui sera pas annoncé",
+            version.as_deref().unwrap_or("version inconnue")
+        );
+    }
+    passerelle.vu(vu, locales.to_vec());
+}
+
+/// Réannonce sur la connexion tenue, avec ou sans `passerelle`, selon
+/// l'accord de la box — et seulement vers un annuaire qui connaît le champ.
 ///
-/// C'est ici, l'annonce faite et `vu_depuis` connu, que l'écho interrogera la
-/// box — SSDP sur le lien local, `AddAnyPortMapping` du seul port de l'écho,
-/// `GetExternalIPAddress` comparée à `vu_depuis` — et réannoncera avec
-/// `passerelle` sur la même connexion, si l'annuaire en connaît le champ.
-/// Aujourd'hui, il n'y a rien à faire : la socket du bail seule.
-const fn apres_l_annonce(_connexion: &mut Connexion, _reponse: &[u8]) {}
+/// **LE CHAMP EST ÉCRIT PAR `asl-proto`** (`Annonce::avec_passerelle`,
+/// serveur 0.44.0) : la même grammaire que celle que l'annuaire lit, et qui
+/// refuse le champ sur toute autre annonce que `asl-echo`.
+async fn reannoncer(
+    connexion: &mut Connexion,
+    annonce: &mut AnnonceTenue<'_>,
+    accord: Option<u16>,
+) {
+    if accord == annonce.annoncee || !annonce.accepte {
+        return;
+    }
+    let corps = match accord {
+        Some(port) => {
+            let passerelle = Port::depuis_u16(port).map(|port| Passerelle {
+                port,
+                via: ViaPasserelle::Upnp,
+            });
+            match passerelle.and_then(|passerelle| annonce.sans.avec_passerelle(passerelle)) {
+                Ok(avec) => avec,
+                Err(quoi) => {
+                    println!(
+                        "annonce        la passerelle ne s'écrit pas ({quoi}) : l'annonce reste sans"
+                    );
+                    return;
+                }
+            }
+        }
+        None => annonce.sans,
+    };
+    match connexion.annoncer(&corps).await {
+        Ok(_) => {
+            annonce.annoncee = accord;
+            match accord {
+                Some(port) => println!(
+                    "annonce        réannoncée avec la passerelle : port externe {port} (upnp)"
+                ),
+                None => println!("annonce        réannoncée sans passerelle"),
+            }
+        }
+        // Un refus du champ : on n'insiste pas sur cette connexion.
+        Err(FauteReseau::Statut(code)) => {
+            annonce.accepte = false;
+            println!(
+                "annonce        l'annuaire refuse la passerelle ({code}) : l'annonce reste sans"
+            );
+        }
+        // Une panne : la connexion le dira, et l'on recommencera.
+        Err(_) => {}
+    }
+}
 
 /// Le premier port de la plage de l'écho.
 ///

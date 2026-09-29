@@ -954,6 +954,16 @@ pub fn version(corps: &[u8]) -> Result<(String, String), String> {
     Ok((vue.version, format!("{posture}{glose}")))
 }
 
+/// La version seule que `GET /v1/version` rend — ce qu'`asl echo` compare
+/// avant d'envoyer `passerelle`.
+///
+/// # Erreurs
+///
+/// Rend `Err` avec ce qui n'a pas pu être lu.
+pub fn version_seule(corps: &[u8]) -> Result<String, String> {
+    version_vue(corps).map(|vue| vue.version)
+}
+
 /// Ce que porte `GET /v1/version`.
 struct VersionVue {
     /// La version que l'annuaire dit servir.

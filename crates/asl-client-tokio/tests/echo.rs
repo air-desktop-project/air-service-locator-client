@@ -43,6 +43,7 @@ async fn lever_l_annuaire(
         compte: asl_id::Identifiant::depuis_entropie(asl_id::Genre::Utilisateur, [0x55; 16]),
         sans_droit: Vec::new(),
         etat: Arc::default(),
+        version: None,
     };
     let (adresse, tache) = lever_a_plusieurs(cert, cle, service).await;
     (identite, adresse, tache)

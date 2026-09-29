@@ -81,7 +81,13 @@ pub enum Commande {
     /// L'écho de cette machine : annoncer `asl-echo`, tenir le bail sur la
     /// socket où il écoute, et répondre aux sondes autorisées
     /// (`protocole.md` §3 quater).
-    Echo,
+    Echo {
+        /// La passerelle UPnP : active par défaut, `--no-upnp` la coupe
+        /// (décision 95 ; E15).
+        upnp: bool,
+        /// `--verbose` : dire aussi ce que la passerelle tait d'habitude.
+        bavard: bool,
+    },
     /// Sonder l'écho d'une machine, d'ici, et vérifier que c'est bien elle.
     Ping {
         /// La machine : son `m-…`, ou un nom ou un alias que ce compte voit.
@@ -132,6 +138,13 @@ pub enum CibleDeMachine {
 /// **LE NOM DE LA COMMANDE QUI FAIT CELA**, et non une lettre : `asl where`
 /// est le verbe qui résout, `--where` dit « et faites-le pour chacun ».
 pub const OPTION_WHERE: &str = "--where";
+
+/// L'option d'`asl echo` qui coupe la passerelle UPnP (décision 95 ; E15).
+pub const OPTION_NO_UPNP: &str = "--no-upnp";
+
+/// L'option d'`asl echo` qui dit aussi ce que la passerelle tait d'habitude
+/// — le trou IPv6 absent, une réponse SSDP écartée (décision 97 ; E20).
+pub const OPTION_VERBOSE: &str = "--verbose";
 
 /// Un annuaire tel qu'il a été écrit sur la ligne de commande.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -482,10 +495,22 @@ where
         // Sans argument : l'annuaire joint dit lui-même de quelle voie il
         // parle, et le client n'a pas à nommer un pair qu'il ne connaît pas.
         "replication" => Commande::Replication,
-        // **PAS D'OPTION, ET C'EST DÉLIBÉRÉ** : `--no-upnp` viendra avec la
-        // passerelle (décisions 94 à 97). L'accepter avant, sans effet,
-        // laisserait croire qu'on a demandé quelque chose.
-        "echo" => Commande::Echo,
+        // **DEUX OPTIONS, APRÈS LA COMMANDE**, parce qu'elles n'ont de sens
+        // que pour elle : `--no-upnp` coupe la passerelle (E15), `--verbose`
+        // dit ce qu'elle tait d'habitude (E20). Tout autre mot est refusé.
+        "echo" => {
+            let mut upnp = true;
+            let mut bavard = false;
+            for mot in suite.by_ref() {
+                match mot.as_str() {
+                    OPTION_NO_UPNP => upnp = false,
+                    OPTION_VERBOSE => bavard = true,
+                    _ if mot.starts_with("--") => return Err(Faute::OptionInconnue(mot)),
+                    _ => return Err(Faute::ArgumentEnTrop(mot)),
+                }
+            }
+            Commande::Echo { upnp, bavard }
+        }
         "ping" => {
             let cible = suite.next().ok_or(Faute::ArgumentManquant {
                 commande: "ping",
@@ -1011,11 +1036,35 @@ mod essais {
     }
 
     #[test]
-    fn echo_ne_prend_rien_et_pas_encore_no_upnp() {
-        assert_eq!(lire(&["echo"]).unwrap().commande, Commande::Echo);
+    fn echo_prend_no_upnp_et_verbose_et_rien_d_autre() {
         assert_eq!(
-            lire(&["echo", "--no-upnp"]),
-            Err(Faute::ArgumentEnTrop("--no-upnp".to_owned()))
+            lire(&["echo"]).unwrap().commande,
+            Commande::Echo {
+                upnp: true,
+                bavard: false
+            }
+        );
+        assert_eq!(
+            lire(&["echo", "--no-upnp"]).unwrap().commande,
+            Commande::Echo {
+                upnp: false,
+                bavard: false
+            }
+        );
+        assert_eq!(
+            lire(&["echo", "--verbose", "--no-upnp"]).unwrap().commande,
+            Commande::Echo {
+                upnp: false,
+                bavard: true
+            }
+        );
+        assert_eq!(
+            lire(&["echo", "--upnp"]),
+            Err(Faute::OptionInconnue("--upnp".to_owned()))
+        );
+        assert_eq!(
+            lire(&["echo", "grenier"]),
+            Err(Faute::ArgumentEnTrop("grenier".to_owned()))
         );
     }
 

@@ -509,11 +509,57 @@ octet** — le QUIC de l'annuaire à la connexion, l'écho (`0x04` à `0x0F`)
 mis de côté pour le porteur (`Connexion::echos`, `envoyer_a`), le reste
 jeté. La politique — qui croire, le débit, l'anti-rejeu, le jugement d'une
 réponse — est `asl_client::echo`, sans une entrée-sortie, couverte et
-fuzzée. **Ce qui manque encore, et viendra** : la passerelle UPnP, puis PCP
-et NAT-PMP (décisions 94 à 97) — `--no-upnp` n'existe pas avant elle, pour
-qu'aucune option ne soit acceptée sans effet —, le LaunchAgent du Mac, et l'identité sur macOS dans le conteneur de groupe.
-Et, faute de `getifaddrs` (C4), l'écho n'annonce qu'une adresse locale par
-famille : celle par laquelle la machine sort vers l'annuaire.
+fuzzée. **Ce qui manque encore, et viendra** : PCP et NAT-PMP (décision 96),
+le LaunchAgent du Mac, et l'identité sur macOS dans le conteneur de
+groupe. Et, faute de `getifaddrs` (C4), l'écho n'annonce
+qu'une adresse locale par famille : celle par laquelle la machine sort vers
+l'annuaire.
+
+**La passerelle : UPnP, pour mettre toutes les chances de son côté** (0.24.0,
+décisions 94 à 97). Derrière une box, le bail ne laisse entrer que ce que le
+NAT veut bien laisser entrer ; une redirection demandée à la box laisse
+entrer tout le monde sur **ce port-là** — c'est ce qui rend l'écho joignable
+d'un `asl ping` lancé d'ailleurs. **Active par défaut** ; `asl echo
+--no-upnp`, ou `ASL_ECHO_UPNP=0` dans l'environnement d'une unité, la coupe.
+Une tâche à côté de l'écho, qui ne retarde jamais une réponse :
+
+- **elle cherche la box sur le lien local seulement** — `M-SEARCH` vers
+  `239.255.255.250:1900` et `[ff02::c]:1900`, `InternetGatewayDevice:2` puis
+  `:1` — et ne suit une `LOCATION` que si c'est **l'adresse littérale qui a
+  répondu**, sur le réseau local : aucun nom (C20), aucun tiers (C19) ;
+- **elle ne demande que le port de l'écho, en UDP** : `AddAnyPortMapping`
+  (IGD v2), sinon `AddPortMapping` (le même port externe d'abord, trois ports
+  tirés au hasard sur conflit `718`), **bail d'une heure renouvelé toutes les
+  trente minutes**, permanent seulement si la box l'exige (`725`) ; et le trou
+  IPv6 (`WANIPv6FirewallControl:1`, `AddPinhole`) si la box le propose et le
+  permet — sinon elle se tait, sauf `--verbose` ;
+- **elle compare `GetExternalIPAddress` à `vu_depuis`** : égales, la box est
+  le dernier NAT et la redirection est annoncée ; une adresse privée ou
+  partagée (`100.64.0.0/10`), ou une autre, c'est **un double NAT** — dit, et
+  pas annoncé ;
+- **elle l'annonce** par le champ `passerelle` (`{"port":…,"via":"upnp"}`, le
+  port seul : l'annuaire emploie l'adresse qu'il a observée), réannoncé sur la
+  même connexion — **et seulement à un annuaire 0.44.0 ou plus**, lu dans
+  `GET /v1/version` : un annuaire plus ancien refuserait l'annonce entière ;
+- **elle recommence** toutes les trente minutes et quand l'adresse change, et
+  **retire tout à l'arrêt, avant de fermer le bail** ; ce qu'elle a ouvert est
+  retenu dans le répertoire d'état (`upnp-<port>`), et **retiré au démarrage
+  suivant** si l'écho a été tué.
+
+```text
+passerelle     redirection UPnP : udp 6634 → box 203.0.113.7:6634, bail 1 h
+annonce        réannoncée avec la passerelle : port externe 6634 (upnp)
+passerelle     redirection retirée : udp 6634
+```
+
+Le codec — SSDP, HTTP/1.1 (`Content-Length`, `chunked`, ou jusqu'à la
+fermeture), un XML réduit sans DTD, SOAP, la mémoire — est la crate
+**`asl-upnp`** : sans une entrée-sortie ni une dépendance, couverte à 100 %,
+quatre cibles de fuzz. `igd-next` n'a servi que de référence (décision 96).
+**UPnP reste hors d'`asl-client`** : c'est l'utilitaire qui le parle, pas la
+bibliothèque que chargent les daemons des autres. `ASL_ECHO_SSDP=<ip:port>`
+interroge une passerelle en unicast plutôt que les groupes — c'est ainsi que
+les essais parlent à une fausse box, et qu'aucun ne touche la vraie.
 
 **Il n'existe aucun mode anonyme.** Une résolution hors d'une connexion
 authentifiée par une clé n'est pas prévue par le serveur, et un client qui

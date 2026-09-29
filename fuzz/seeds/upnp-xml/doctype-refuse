@@ -1,0 +1,1 @@
+<!DOCTYPE a [<!ENTITY x "xx">]><a>&x;&#65;<![CDATA[<b>]]></a>

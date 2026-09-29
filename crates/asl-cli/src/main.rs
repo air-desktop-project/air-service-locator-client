@@ -49,6 +49,7 @@ mod commandes;
 mod domaines;
 mod echo;
 mod etat;
+mod passerelle;
 mod ping;
 mod rendu;
 
@@ -224,7 +225,7 @@ COMMANDS
                                       each, whether it has applied everything
                                       the other wrote.
 
-    echo                              Answer for this machine. Takes a UDP port
+    echo [--no-upnp] [--verbose]      Answer for this machine. Takes a UDP port
                                       at random in 6631-6639 (the next one if it
                                       is taken; none free is a configuration
                                       error), announces `asl-echo` on it (one udp
@@ -248,6 +249,23 @@ COMMANDS
                                         systemctl --user enable --now asl-echo
                                       on a server with no login session, once:
                                         loginctl enable-linger <account>
+                                      UPnP, on by default: asks the home
+                                      gateway (SSDP on the local link only,
+                                      literal addresses only) to forward THIS
+                                      udp port and no other — 1 h lease renewed
+                                      every 30 min, removed on stop, and after
+                                      a crash on the next start; an IPv6
+                                      pinhole too if the gateway offers one.
+                                      The forwarded port is announced
+                                      (`passerelle`) only to a directory
+                                      >= 0.44.0, and only if the gateway's
+                                      external address is the one the
+                                      directory sees (else: double NAT, said).
+                                      --no-upnp or ASL_ECHO_UPNP=0 turns it
+                                      off; --verbose also says what it keeps
+                                      quiet (no IPv6 pinhole, a skipped reply).
+                                      ASL_ECHO_SSDP=<ip:port>[,…] asks those
+                                      gateways directly instead of multicast.
 
     ping <m-…|name|alias>             Prove, from here, that a machine answers and
                                       that it is really it. Resolves its asl-echo,
@@ -335,6 +353,7 @@ EXAMPLES
     asl domain d-7Q2H4K9M2P7R1T8X3V5W6Y0Z1A
     asl replication
     asl echo
+    asl echo --no-upnp
     asl ping grenier
     asl ping m-7F3A9C2E5B1D4068ABCDEFGHJK"
     );
@@ -432,9 +451,13 @@ async fn conduire(invocation: &Invocation) -> Sortie {
             let identite = identite(&dossier)?;
             commandes::replication(invocation, &identite).await
         }
-        Commande::Echo => {
+        Commande::Echo { upnp, bavard } => {
             let identite = identite(&dossier)?;
-            echo::echo(invocation, &identite).await
+            let options = echo::OptionsEcho {
+                upnp: *upnp,
+                bavard: *bavard,
+            };
+            echo::echo(invocation, &identite, &dossier, options).await
         }
         Commande::Ping { cible } => {
             let identite = identite(&dossier)?;
