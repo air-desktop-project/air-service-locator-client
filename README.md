@@ -528,7 +528,9 @@ Une tâche à côté de l'écho, qui ne retarde jamais une réponse :
   `:1` ; le groupe IPv6, de lien local, **une fois par interface**
   (`[ff02::c%<index>]`, 0.24.1 : macOS refuse l'envoi qui ne la nomme pas) —
   les interfaces à lien local de `/proc/net/if_inet6` sous Linux, les index 1
-  à 32 ailleurs, sans C, les refus tus — et ne suit une `LOCATION` que si c'est **l'adresse littérale qui a
+  à 32 ailleurs, sans C, les refus tus ; **les deux familles s'écoutent à
+  part et en parallèle** (0.24.2), le silence ou la réponse de l'une
+  n'abrégeant pas l'attente de l'autre — et ne suit une `LOCATION` que si c'est **l'adresse littérale qui a
   répondu**, sur le réseau local : aucun nom (C20), aucun tiers (C19) ;
 - **elle ne demande que le port de l'écho, en UDP** : `AddAnyPortMapping`
   (IGD v2), sinon `AddPortMapping` (le même port externe d'abord, trois ports

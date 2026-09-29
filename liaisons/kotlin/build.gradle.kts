@@ -24,7 +24,7 @@ plugins {
 }
 
 group = "io.github.airdesktopproject"
-version = "0.24.1"
+version = "0.24.2"
 
 kotlin {
     // **L'API FFM EST STABLE DEPUIS LE JDK 22.** C'est ce que cette liaison
