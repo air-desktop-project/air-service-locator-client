@@ -97,8 +97,15 @@ pub enum FauteHttp {
     Codage,
     /// Un morceau mal formé.
     Morceau,
-    /// La connexion s'est fermée avant la fin annoncée.
+    /// La connexion s'est fermée avant la fin annoncée — après avoir envoyé
+    /// quelque chose.
     Tronquee,
+    /// La connexion s'est fermée **sans un octet** : la box a accepté la
+    /// connexion et n'a rien répondu. Vu sur une Livebox (SoftAtHome), qui
+    /// annonce une description en IPv6 et ne la sert pas (`curl` : « Empty
+    /// reply from server »). Ce n'est pas une réponse coupée : il n'y en a
+    /// pas eu.
+    Vide,
 }
 
 /// Lit ce qui est arrivé jusqu'ici ; `fin` dit que la connexion est fermée,
@@ -108,6 +115,9 @@ pub enum FauteHttp {
 ///
 /// Voir [`FauteHttp`].
 pub fn lire(octets: &[u8], fin: bool) -> Result<Lu, FauteHttp> {
+    if fin && octets.is_empty() {
+        return Err(FauteHttp::Vide);
+    }
     if octets.len() > REPONSE_MAX {
         return Err(FauteHttp::TropLong);
     }
