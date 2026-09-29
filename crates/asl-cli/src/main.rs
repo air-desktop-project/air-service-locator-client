@@ -52,6 +52,7 @@ mod etat;
 mod passerelle;
 mod ping;
 mod rendu;
+mod stable;
 
 use arguments::{Commande, Invocation};
 
