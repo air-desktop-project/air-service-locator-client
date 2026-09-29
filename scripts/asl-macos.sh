@@ -120,7 +120,10 @@ for arch in arm64 x86_64; do
         dedans && $1 == "offset" { print $2, taille; exit }')
     [ -n "${decalage:-}" ] && [ -n "${taille:-}" ] \
         || echec "$arch : aucune section __TEXT,__info_plist"
-    section=$(tail -c "+$((decalage + 1))" "$tranche" | head -c "$((taille))")
+    # `dd` et non `tail | head` : sous `pipefail`, `head` qui ferme le tube
+    # avant la fin ferait échouer `tail`. `skip` sur un fichier se positionne,
+    # il ne lit pas octet par octet ce qui précède.
+    section=$(dd if="$tranche" bs=1 skip="$decalage" count="$((taille))" 2>/dev/null)
     case "$section" in
         *"<string>org.airdesktop.servicelocator.asl</string>"*) ;;
         *) echec "$arch : __TEXT,__info_plist ne porte pas l'identifiant org.airdesktop.servicelocator.asl" ;;
