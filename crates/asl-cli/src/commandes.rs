@@ -12,7 +12,8 @@ use asl_client_tokio::{
 };
 use asl_proto::{NomService, PointEcoute};
 
-use crate::arguments::{Cible, Invocation};
+use crate::arguments::{Cible, CibleDeDomaine, Invocation};
+use crate::domaines::{AdresseVue, ServiceVu, ServicesVus, VueDeDomaine};
 use crate::etat;
 use crate::rendu;
 use crate::{Issue, Sortie};
@@ -687,6 +688,180 @@ fn compte_etranger(demande: asl_id::Identifiant, notre: asl_id::Identifiant) -> 
         notre.texte().as_str(),
         demande.texte().as_str()
     ))
+}
+
+// ── `asl domains` et `asl domain` ───────────────────────────────────────────
+
+/// Les domaines que ce compte voit — `GET /v1/domaines` (serveur 0.39.0).
+///
+/// **UNE LISTE VIDE EST UNE ISSUE, PAS UNE SORTIE** : un compte a toujours au
+/// moins un domaine, et l'annuaire rend `[]` à une machine sans `lecture`
+/// plutôt que de refuser. On le dit sur la sortie d'erreur, code 3 — un
+/// script qui liste des domaines ne doit pas prendre ce silence pour « rien
+/// à faire ».
+pub async fn domaines(invocation: &Invocation, identite: &Identite) -> Sortie {
+    let reglages = reglages(invocation)?;
+    let mut connexion = ouvrir_et_relire(invocation, &reglages).await?;
+    connexion
+        .authentifier(identite)
+        .await
+        .map_err(refus_de_l_annuaire)?;
+    let visibles = connexion.domaines().await.map_err(refus_de_l_annuaire)?;
+    let _ = connexion.fermer().await;
+    if visibles.is_empty() {
+        return Err(Issue::RefusDit(crate::domaines::SANS_LECTURE.to_owned()));
+    }
+    print!("{}", crate::domaines::liste(&visibles));
+    Ok(())
+}
+
+/// Un domaine, ses machines, et les services de celles qui sont à nous.
+///
+/// # DANS L'ORDRE, ET POURQUOI
+///
+/// 1. **L'alias se résout d'abord** (`GET /v1/domaines?alias=…`), s'il en est
+///    un : aucun domaine, on le dit ; plusieurs, on refuse et on les liste —
+///    choisir à la place de l'utilisateur serait lui montrer peut-être le
+///    domaine d'un autre sous le nom du sien.
+/// 2. **Le détail** (`GET /v1/domaines/{d}`). Un `404` ne se distingue pas
+///    (C10) ; mais un second `GET /v1/domaines` vide dit que c'est la
+///    capacité `lecture` qui manque, et cela vaut d'être dit à part.
+/// 3. **Qui je suis** (`GET /v1/moi`) : c'est ce qui sépare une machine à
+///    moi d'une machine d'autrui.
+/// 4. **Les services de chaque machine à moi** — et d'aucune autre :
+///    l'annuaire ne les sert qu'au propriétaire, et une requête pour une
+///    machine d'autrui ne rendrait qu'un `[]` qu'on prendrait pour « rien ».
+/// 5. Avec `--where`, **chaque service annoncé se résout** comme `asl where`
+///    le ferait (`GET /v1/ou/{m}/{nom}`), si l'on tient `localiser` — sur la
+///    machine, parce qu'elle est à nous, ou sur le domaine.
+///
+/// Un échec à l'étape 4 ou 5 n'arrête pas le verbe : il se dit sur la ligne
+/// de la machine ou du service, et le reste s'affiche.
+pub async fn domaine(
+    invocation: &Invocation,
+    identite: &Identite,
+    cible: &CibleDeDomaine,
+    ou: bool,
+) -> Sortie {
+    let reglages = reglages(invocation)?;
+    let mut connexion = ouvrir_et_relire(invocation, &reglages).await?;
+    connexion
+        .authentifier(identite)
+        .await
+        .map_err(refus_de_l_annuaire)?;
+
+    let issue = lire_un_domaine(&mut connexion, cible, ou).await;
+    let _ = connexion.fermer().await;
+    print!("{}", crate::domaines::detail(&issue?));
+    Ok(())
+}
+
+/// Le corps d'[`domaine`], sur une connexion prouvée — séparé pour que la
+/// connexion se ferme quelle que soit l'issue.
+async fn lire_un_domaine(
+    connexion: &mut Connexion,
+    cible: &CibleDeDomaine,
+    ou: bool,
+) -> Result<VueDeDomaine, Issue> {
+    let domaine = match cible {
+        CibleDeDomaine::Identifiant(domaine) => *domaine,
+        CibleDeDomaine::Alias(alias) => {
+            let trouves = connexion
+                .domaines_par_alias(alias)
+                .await
+                .map_err(refus_de_l_annuaire)?;
+            match trouves.as_slice() {
+                [] => return Err(Issue::RefusDit(crate::domaines::alias_inconnu(alias))),
+                [seul] => seul.domaine,
+                plusieurs => {
+                    // Ce qu'on voit de chacun, pour qu'on sache lequel taper ;
+                    // sans `lecture`, rien — et chacun se dit hors de vos droits.
+                    let visibles = connexion.domaines().await.unwrap_or_default();
+                    return Err(Issue::Usage(crate::domaines::alias_ambigu(
+                        alias, plusieurs, &visibles,
+                    )));
+                }
+            }
+        }
+    };
+
+    let detail = match connexion.domaine(domaine).await {
+        Ok(detail) => detail,
+        Err(FauteReseau::Statut(404)) => {
+            let visibles = connexion.domaines().await.map_err(refus_de_l_annuaire)?;
+            return Err(Issue::RefusDit(
+                if visibles.is_empty() {
+                    crate::domaines::SANS_LECTURE
+                } else {
+                    crate::domaines::HORS_DE_VOS_DROITS
+                }
+                .to_owned(),
+            ));
+        }
+        Err(autre) => return Err(refus_de_l_annuaire(autre)),
+    };
+    let moi = connexion
+        .moi()
+        .await
+        .map_err(refus_de_l_annuaire)?
+        .proprietaire;
+    let localise_le_domaine = detail.domaine.peut("localiser");
+
+    let mut services = Vec::with_capacity(detail.machines.len());
+    for machine in &detail.machines {
+        if machine.proprietaire != moi {
+            services.push(ServicesVus::Autrui);
+            continue;
+        }
+        let lus = match connexion.services_de_machine(machine.machine).await {
+            Ok(lus) => lus,
+            Err(quoi) => {
+                services.push(ServicesVus::Echec(quoi.to_string()));
+                continue;
+            }
+        };
+        let mut vus = Vec::with_capacity(lus.len());
+        for service in lus {
+            let adresse = if ou {
+                // **À MOI, JE LA LOCALISE** : le propriétaire tient tous les
+                // droits sur sa machine ; `localiser` sur le domaine l'emporte
+                // aussi pour les machines d'autrui, le jour où l'on en verra
+                // les services.
+                let localise = localise_le_domaine || machine.proprietaire == moi;
+                Some(resoudre(connexion, machine.machine, &service, localise).await)
+            } else {
+                None
+            };
+            vus.push(ServiceVu { service, adresse });
+        }
+        services.push(ServicesVus::Liste(vus));
+    }
+    Ok(VueDeDomaine {
+        detail,
+        moi,
+        services,
+    })
+}
+
+/// Résout un service listé, comme `asl where <m-…> <nom>`.
+async fn resoudre(
+    connexion: &mut Connexion,
+    machine: asl_id::Identifiant,
+    service: &asl_client_tokio::domaines::ServiceDeMachine,
+    localise: bool,
+) -> AdresseVue {
+    use asl_client_tokio::domaines::EtatDeService;
+    if !localise {
+        return AdresseVue::HorsDeVosDroits;
+    }
+    if !matches!(service.etat, EtatDeService::Annonce(_)) {
+        return AdresseVue::Parti;
+    }
+    match connexion.ou(machine, &service.nom).await {
+        Ok(corps) => AdresseVue::Resolue(corps),
+        Err(FauteReseau::Statut(404)) => AdresseVue::Introuvable,
+        Err(quoi) => AdresseVue::Echec(quoi.to_string()),
+    }
 }
 
 // ── `asl roots` ─────────────────────────────────────────────────────────────

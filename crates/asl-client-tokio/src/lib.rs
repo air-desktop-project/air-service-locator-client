@@ -39,6 +39,7 @@ use tokio::net::UdpSocket;
 mod appareil;
 mod attache;
 mod confiance;
+pub mod domaines;
 mod pont;
 mod racines;
 mod reponse;

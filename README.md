@@ -259,6 +259,30 @@ une clé apportée par un autre appareil et pas encore prouvée sous une posture
 exigée) — pour soi seulement : nommer un autre compte est refusé avant toute
 requête, un appareil ne sort pas de son compte.
 
+**Les domaines se lisent depuis une machine** (0.22.0, serveur 0.39.0,
+`protocole.md` §3) — pourvu qu'elle porte la capacité `lecture`. `asl
+domains` liste ceux que son compte voit : les siens, et ceux où l'un de ses
+groupes tient un droit, chacun avec son alias, son hébergeur (`racines` ou
+l'annuaire local), vos droits, et « domaine racine » pour lui seul. `asl
+domain <d-…|alias> [--where]` en montre un : alias, propriétaire,
+hébergeur, droits, puis **chaque machine qui y est rangée** — identifiant,
+nom d'hôte, alias, propriétaire — et, pour chacune des vôtres, **ses
+services** (`GET /v1/machines/{m}/services`), annoncés ou partis ; avec
+`--where`, chaque service annoncé se résout comme `asl where <m-…> <nom>`
+(`localiser`). L'alias est sensible à la casse ; un alias que plusieurs
+domaines portent est refusé, candidats listés. Trois silences y sont dits
+pour ce qu'ils sont : une liste de domaines vide veut dire « pas de
+`lecture` » (un compte a toujours le sien) ; des machines absentes sans
+`voir` ne veulent pas dire un domaine vide ; et **les services d'une
+machine d'un autre compte ne sont pas servis** — l'annuaire ne les rend
+qu'à leur propriétaire, même à qui voit le domaine, limite actuelle du
+serveur (« à trancher » dans son `protocole.md` §3) : `asl` le dit sans
+rien demander. La bibliothèque porte ces lectures typées dans
+`asl_client_tokio::domaines` (`Connexion::{domaines, domaines_par_alias,
+domaine, services_de_machine}`) ; l'ABI C et JNI n'en ont pas — ce sont des
+lectures de la voie machine, et les applications lisent les mêmes routes
+sur la voie appareil par `asl_appareil_requete`.
+
 **L'exploitant vérifie la voie entre les deux racines depuis une machine
 enrôlée** : `asl replication` **joint les DEUX** et rend, pour chacune, le
 pair, la voie (`ouverte`, `coupée`, ou `seule` sans pair réglé), son horloge

@@ -67,6 +67,15 @@ pub enum Commande {
         /// toute requête.
         compte: Option<Identifiant>,
     },
+    /// Les domaines que ce compte voit (`GET /v1/domaines`, serveur 0.39.0).
+    Domaines,
+    /// Un domaine, ses machines et leurs services.
+    Domaine {
+        /// Le domaine, par son `d-…` ou par son alias.
+        cible: CibleDeDomaine,
+        /// `--where` : résoudre aussi l'adresse de chaque service listé.
+        ou: bool,
+    },
     /// L'état de la voie entre les deux racines, vu de celle qu'on a jointe.
     Replication,
     /// La liste des racines, demandée à une racine et VÉRIFIÉE : chaque clé
@@ -81,6 +90,26 @@ pub enum Commande {
     /// Afficher la version et le commit, puis s'arrêter.
     Version,
 }
+
+/// Un domaine tel qu'il a été écrit : son identifiant, ou son alias.
+///
+/// **UN `d-…` VALIDE EST UN IDENTIFIANT, TOUT LE RESTE UN ALIAS.** Un alias
+/// est du texte libre, et rien n'empêche d'en poser un qui ressemble à un
+/// identifiant ; celui-là se désigne par le `d-…` de son domaine, que
+/// `asl domains` donne.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CibleDeDomaine {
+    /// Le domaine, nommé par son identifiant.
+    Identifiant(Identifiant),
+    /// Un alias — **sensible à la casse**, comme partout.
+    Alias(String),
+}
+
+/// L'option propre à `asl domain` : résoudre chaque service listé.
+///
+/// **LE NOM DE LA COMMANDE QUI FAIT CELA**, et non une lettre : `asl where`
+/// est le verbe qui résout, `--where` dit « et faites-le pour chacun ».
+pub const OPTION_WHERE: &str = "--where";
 
 /// Un annuaire tel qu'il a été écrit sur la ligne de commande.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -399,6 +428,35 @@ where
         "enrolled" => Commande::Enroles {
             compte: utilisateur_facultatif(suite.next())?,
         },
+        "domains" => Commande::Domaines,
+        // **LA SEULE OPTION QUI SUIT UNE COMMANDE**, parce qu'elle n'a de
+        // sens que pour celle-ci : `--where` avant ou après le domaine. Tout
+        // autre mot qui commence par `--` y est refusé plutôt que pris pour
+        // un alias — un alias qui commencerait ainsi se désigne par son `d-…`.
+        "domain" => {
+            let mut ou = false;
+            let mut cible = None;
+            for mot in suite.by_ref() {
+                if mot == OPTION_WHERE {
+                    ou = true;
+                } else if mot.starts_with("--") {
+                    return Err(Faute::OptionInconnue(mot));
+                } else if cible.is_none() {
+                    cible = Some(mot);
+                } else {
+                    return Err(Faute::ArgumentEnTrop(mot));
+                }
+            }
+            let cible = cible.ok_or(Faute::ArgumentManquant {
+                commande: "domain",
+                quoi: "un domaine : son `d-…` ou son alias",
+            })?;
+            let cible = match Identifiant::analyser_genre(Genre::Domaine, &cible) {
+                Ok(domaine) => CibleDeDomaine::Identifiant(domaine),
+                Err(_) => CibleDeDomaine::Alias(cible),
+            };
+            Commande::Domaine { cible, ou }
+        }
         // Sans argument : l'annuaire joint dit lui-même de quelle voie il
         // parle, et le client n'a pas à nommer un pair qu'il ne connaît pas.
         "replication" => Commande::Replication,
@@ -834,6 +892,78 @@ mod essais {
         assert_eq!(
             lire(&["enrolled", compte.texte().as_str(), "encore"]),
             Err(Faute::ArgumentEnTrop("encore".to_owned()))
+        );
+    }
+
+    #[test]
+    fn domains_ne_prend_rien() {
+        assert_eq!(lire(&["domains"]).unwrap().commande, Commande::Domaines);
+        assert_eq!(
+            lire(&["domains", "Maison"]),
+            Err(Faute::ArgumentEnTrop("Maison".to_owned()))
+        );
+    }
+
+    #[test]
+    fn domain_prend_un_identifiant_ou_un_alias_et_where_de_part_ou_d_autre() {
+        let domaine = Identifiant::depuis_entropie(Genre::Domaine, [7; 16]);
+        assert_eq!(
+            lire(&["domain", domaine.texte().as_str()])
+                .unwrap()
+                .commande,
+            Commande::Domaine {
+                cible: CibleDeDomaine::Identifiant(domaine),
+                ou: false
+            }
+        );
+        // **L'ALIAS EST GARDÉ TEL QU'ÉCRIT** : la casse compte, les espaces
+        // et les accents aussi — le shell l'a déjà découpé.
+        for ligne in [
+            &["domain", "Maison été", "--where"][..],
+            &["domain", "--where", "Maison été"][..],
+        ] {
+            assert_eq!(
+                lire(ligne).unwrap().commande,
+                Commande::Domaine {
+                    cible: CibleDeDomaine::Alias("Maison été".to_owned()),
+                    ou: true
+                },
+                "{ligne:?}"
+            );
+        }
+        // Un identifiant d'un autre genre n'est pas un domaine : c'est un
+        // alias, que l'annuaire ne trouvera pas — et le dira.
+        let machine = Identifiant::depuis_entropie(Genre::Machine, [7; 16]);
+        assert_eq!(
+            lire(&["domain", machine.texte().as_str()])
+                .unwrap()
+                .commande,
+            Commande::Domaine {
+                cible: CibleDeDomaine::Alias(machine.texte().as_str().to_owned()),
+                ou: false
+            }
+        );
+        assert_eq!(
+            lire(&["domain"]),
+            Err(Faute::ArgumentManquant {
+                commande: "domain",
+                quoi: "un domaine : son `d-…` ou son alias"
+            })
+        );
+        assert_eq!(
+            lire(&["domain", "--where"]),
+            Err(Faute::ArgumentManquant {
+                commande: "domain",
+                quoi: "un domaine : son `d-…` ou son alias"
+            })
+        );
+        assert_eq!(
+            lire(&["domain", "Maison", "Grenier"]),
+            Err(Faute::ArgumentEnTrop("Grenier".to_owned()))
+        );
+        assert_eq!(
+            lire(&["domain", "Maison", "--verbose"]),
+            Err(Faute::OptionInconnue("--verbose".to_owned()))
         );
     }
 
