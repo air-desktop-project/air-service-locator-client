@@ -346,6 +346,12 @@ fn ailleurs_que(
         .map_err(|quoi| Issue::Configuration(quoi.to_string()))
 }
 
+/// Ce qu'`asl enroll` suggère une fois la machine enrôlée : activer l'écho,
+/// que le paquet a posé sans l'activer (`protocole.md` §3 quater, décision
+/// 93).
+#[cfg(target_os = "linux")]
+const SUGGESTION_ECHO: &str = "Pour que l'annuaire puisse prouver qu'elle est joignable : systemctl --user enable --now asl-echo";
+
 /// Lie une clé neuve à cette machine.
 ///
 /// # UN CODE REFUSÉ S'ESSAIE UNE FOIS SUR L'AUTRE RACINE
@@ -415,6 +421,12 @@ pub async fn enrole(invocation: &Invocation, dossier: &Path, code: &str) -> Sort
         "La clé a été générée ICI, et sa moitié privée n'a pas quitté ce disque.\n\
          Le code est dépensé : il ne servira plus."
     );
+    // **UNE LIGNE, ET RIEN D'ACTIVÉ** (décision 93 ; E14) : le paquet pose
+    // l'unité de l'écho désactivée, et c'est ici, au moment où la clé existe,
+    // qu'on dit qu'elle est là. Sous Linux seulement : c'est là que le paquet
+    // la pose.
+    #[cfg(target_os = "linux")]
+    println!("{SUGGESTION_ECHO}");
     let _ = connexion.fermer().await;
     Ok(())
 }
@@ -1558,6 +1570,33 @@ mod tests {
         assert!(
             super::restants_sans(&seule, Some(une)).is_none(),
             "sans autre adresse, il n'y a pas de seconde tentative"
+        );
+    }
+
+    /// **CE QU'`asl enroll` SUGGÈRE EXISTE, ET LANCE L'ÉCHO** : le nom de
+    /// l'unité que la suggestion donne est celui du fichier que le paquet
+    /// pose, et ce fichier lance `/usr/bin/asl echo`. Deux textes qui disent
+    /// la même chose divergent ; celui-ci les confronte.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn la_suggestion_d_enroll_nomme_l_unite_que_le_paquet_pose() {
+        let unite = include_str!("../../../paquet/asl-echo.service");
+        assert!(
+            super::SUGGESTION_ECHO.ends_with("systemctl --user enable --now asl-echo"),
+            "{}",
+            super::SUGGESTION_ECHO
+        );
+        assert!(
+            unite
+                .lines()
+                .any(|ligne| ligne == "ExecStart=/usr/bin/asl echo"),
+            "l'unité lance l'écho"
+        );
+        assert!(
+            unite
+                .lines()
+                .any(|ligne| ligne == "WantedBy=default.target"),
+            "et s'active dans la cible de l'utilisateur"
         );
     }
 }

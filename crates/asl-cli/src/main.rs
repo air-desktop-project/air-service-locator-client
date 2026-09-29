@@ -243,6 +243,11 @@ COMMANDS
                                       Open the range once in the firewall:
                                         nft: udp dport 6631-6639 accept
                                         ufw allow proto udp from any to any port 6631:6639
+                                      As a service (Linux, the package ships the
+                                      user unit, disabled):
+                                        systemctl --user enable --now asl-echo
+                                      on a server with no login session, once:
+                                        loginctl enable-linger <account>
 
     ping <m-…|name|alias>             Prove, from here, that a machine answers and
                                       that it is really it. Resolves its asl-echo,
