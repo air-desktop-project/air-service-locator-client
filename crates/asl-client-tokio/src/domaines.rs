@@ -1,4 +1,5 @@
-//! Les domaines, lus depuis une machine (`protocole.md` §3, serveur 0.39.0) :
+//! Les domaines, lus depuis une machine (`protocole.md` §3, serveur 0.39.0,
+//! 0.40.0 pour les services d'autrui) :
 //! ce qu'un compte y voit, ce qui y est rangé, et les services de ses machines.
 //!
 //! # POURQUOI ICI, ET NON DANS `asl-client`
@@ -20,13 +21,15 @@
 //! | `GET /v1/domaines` | les domaines visibles — [`Domaine`] ; `[]` sans `lecture` |
 //! | `GET /v1/domaines?alias=…` | ceux qui portent cet alias — [`DomaineTrouve`] ; sans `lecture` aussi |
 //! | `GET /v1/domaines/{d}` | le domaine, ses groupes, ses machines — [`DomaineDetaille`] ; `404` sinon (C10) |
-//! | `GET /v1/machines/{m}/services` | les services d'une machine — [`ServiceDeMachine`] — **à son propriétaire seul** ; `[]` aux autres |
+//! | `GET /v1/machines/{m}/services` | les services d'une machine — [`ServiceDeMachine`] ; voir ci-dessous |
 //!
-//! **Les services d'une machine d'un AUTRE compte ne sont servis nulle part**,
-//! même à qui tient `voir` sur le domaine où elle est rangée : c'est une
-//! limite du serveur, dite dans son `protocole.md` §3 comme « à trancher ». Un
-//! `[]` rendu pour une telle machine ne dit donc pas qu'elle n'a rien ; il dit
-//! qu'on ne le saura pas par là.
+//! **Les services d'une machine d'un AUTRE compte** (serveur 0.40.0,
+//! décisions 103–104) se lisent selon ce que le domaine où elle est rangée
+//! nous donne : avec `voir`, la liste **sans adresses** — un service vivant y
+//! porte `"annonce":{}` ; avec `localiser`, la liste complète, et
+//! `GET /v1/ou` atteint toutes les machines du domaine ; sans l'un ni
+//! l'autre, `[]`. Un `[]` rendu pour une machine d'autrui qu'on ne voit pas
+//! ne dit donc pas qu'elle n'a rien ; il dit qu'on ne le saura pas par là.
 //!
 //! # UN LECTEUR QUI SAUTE CE QU'IL NE CONNAÎT PAS
 //!
@@ -204,6 +207,11 @@ pub enum EtatDeService {
     /// (`asl_proto::Reponse`) **tel que l'annuaire l'a réémis**, que
     /// `asl_proto::Reponse::decoder` lit — bail, adresse observée,
     /// joignabilité de chaque point.
+    ///
+    /// **OU `{}`, SANS ADRESSES** : c'est ce que l'annuaire rend pour la
+    /// machine d'un autre compte à qui n'a que `voir` sur son domaine
+    /// (serveur 0.40.0). Le service est vivant, mais ses adresses sont hors
+    /// de vos droits — et `Reponse::decoder` refuse cet objet vide.
     Annonce(Vec<u8>),
     /// Déclaré, mais sa connexion n'est plus tenue. `volontaire` dit si le
     /// daemon s'est retiré lui-même ; `None` quand l'annuaire ne le sait plus
@@ -488,9 +496,11 @@ impl Connexion {
 
     /// Les services d'une machine — `GET /v1/machines/{m}/services`.
     ///
-    /// **À SON PROPRIÉTAIRE SEUL** : pour la machine d'un autre compte,
-    /// l'annuaire rend `[]` — même à qui voit le domaine où elle est rangée.
-    /// Une liste vide ne dit donc quelque chose que pour une machine à soi.
+    /// **SELON LES DROITS SUR SON DOMAINE**, pour la machine d'un autre
+    /// compte (serveur 0.40.0) : avec `voir`, la liste sans adresses (un
+    /// service vivant y est [`EtatDeService::Annonce`] de `{}`) ; avec
+    /// `localiser`, la liste complète ; sans l'un ni l'autre, `[]`. Une liste
+    /// vide ne dit donc quelque chose que pour une machine qu'on voit.
     ///
     /// # Errors
     ///
@@ -1084,6 +1094,18 @@ mod essais {
         assert_eq!(lus[2].sonde_par, Some(n));
         assert_eq!(lus[2].sonde_locale, Some(false));
         assert_eq!(lus[3].etat, EtatDeService::Autre("suspendu".to_owned()));
+    }
+
+    #[test]
+    fn un_service_d_autrui_vu_avec_voir_se_lit_annonce_sans_adresses() {
+        // La forme du serveur 0.40.0 pour la machine d'un autre compte, à qui
+        // n'a que `voir` : l'état, et un objet d'annonce vide.
+        let s = texte(id(Genre::Service, 1));
+        let corps =
+            format!(r#"[{{"service":"{s}","nom":"imprimante","etat":"annonce","annonce":{{}}}}]"#);
+        let lus = lire_services(corps.as_bytes()).expect("elle se lit");
+        assert_eq!(lus.len(), 1);
+        assert_eq!(lus[0].etat, EtatDeService::Annonce(b"{}".to_vec()));
     }
 
     #[test]

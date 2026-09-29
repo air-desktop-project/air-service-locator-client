@@ -362,18 +362,18 @@ groupes tient un droit, chacun avec son alias, son hébergeur (`racines` ou
 l'annuaire local), vos droits, et « domaine racine » pour lui seul. `asl
 domain <d-…|alias> [--where]` en montre un : alias, propriétaire,
 hébergeur, droits, puis **chaque machine qui y est rangée** — identifiant,
-nom d'hôte, alias, propriétaire — et, pour chacune des vôtres, **ses
-services** (`GET /v1/machines/{m}/services`), annoncés ou partis ; avec
-`--where`, chaque service annoncé se résout comme `asl where <m-…> <nom>`
-(`localiser`). L'alias est sensible à la casse ; un alias que plusieurs
-domaines portent est refusé, candidats listés. Trois silences y sont dits
+nom d'hôte, alias, propriétaire — et **leurs services** (`GET
+/v1/machines/{m}/services`), annoncés ou partis : ceux de vos machines, et,
+depuis le serveur 0.40.0 (0.22.3), **ceux de toutes les machines du domaine
+pour qui y a `voir`** — sans leurs adresses : un service vivant d'autrui se
+dit « annoncé », sans candidat. Avec `--where`, chaque service annoncé se
+résout comme `asl where <m-…> <nom>` : sur vos machines, et sur toutes celles
+du domaine s'il vous donne `localiser` ; sinon, la ligne « adresse : hors de
+vos droits » le dit. L'alias est sensible à la casse ; un alias que plusieurs
+domaines portent est refusé, candidats listés. Deux silences y sont dits
 pour ce qu'ils sont : une liste de domaines vide veut dire « pas de
-`lecture` » (un compte a toujours le sien) ; des machines absentes sans
-`voir` ne veulent pas dire un domaine vide ; et **les services d'une
-machine d'un autre compte ne sont pas servis** — l'annuaire ne les rend
-qu'à leur propriétaire, même à qui voit le domaine, limite actuelle du
-serveur (« à trancher » dans son `protocole.md` §3) : `asl` le dit sans
-rien demander. La bibliothèque porte ces lectures typées dans
+`lecture` » (un compte a toujours le sien) ; et des machines absentes sans
+`voir` ne veulent pas dire un domaine vide. La bibliothèque porte ces lectures typées dans
 `asl_client_tokio::domaines` (`Connexion::{domaines, domaines_par_alias,
 domaine, services_de_machine}`) ; l'ABI C et JNI n'en ont pas — ce sont des
 lectures de la voie machine, et les applications lisent les mêmes routes

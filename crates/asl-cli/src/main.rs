@@ -190,14 +190,16 @@ COMMANDS
 
     domain <d-…|alias> [--where]      One domain: its alias, owner, host, your
                                       rights, and every machine filed in it —
-                                      with, for each of YOUR machines, its
-                                      services. A machine of another account
-                                      shows none: the directory serves them to
-                                      their owner only. An alias is
+                                      with the services of each: yours, and,
+                                      with `voir` on the domain, those of
+                                      other accounts' machines too, without
+                                      their addresses. An alias is
                                       case-sensitive; one borne by several
                                       domains is refused, listing them.
                                       --where also resolves each service
-                                      listed, as `asl where` would.
+                                      listed, as `asl where` would: on your
+                                      machines, and on every machine of the
+                                      domain with `localiser`.
 
     replication                       The state of the link between the two
                                       root directories. Reaches BOTH — one
