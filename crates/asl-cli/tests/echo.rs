@@ -582,6 +582,9 @@ struct ReglageIgd {
     permanent_seulement: bool,
     /// Tant de `718 ConflictInMappingEntry` avant d'accepter.
     conflits: u32,
+    /// Le délai avant de répondre au `M-SEARCH` : une vraie box le tire au
+    /// hasard jusqu'à `MX` secondes.
+    retard_ssdp: Duration,
 }
 
 /// Une fausse box sur la boucle locale : un répondeur SSDP en unicast, et un
@@ -625,6 +628,8 @@ impl FauxIgd {
         let actions: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
 
         let compte = Arc::clone(&recherches);
+        let retard = reglage.retard_ssdp;
+        let udp = Arc::new(udp);
         let repondeur = tokio::spawn(async move {
             let mut tampon = [0_u8; 2_048];
             while let Ok((lus, source)) = udp.recv_from(&mut tampon).await {
@@ -646,7 +651,11 @@ impl FauxIgd {
                     "HTTP/1.1 200 OK\r\nCACHE-CONTROL: max-age=120\r\nST: {cible}\r\n\
                      USN: uuid:faux::{cible}\r\nEXT:\r\nLOCATION: http://127.0.0.1:{port_http}/rootDesc.xml\r\n\r\n"
                 );
-                let _ = udp.send_to(reponse.as_bytes(), source).await;
+                let udp = Arc::clone(&udp);
+                tokio::spawn(async move {
+                    tokio::time::sleep(retard).await;
+                    let _ = udp.send_to(reponse.as_bytes(), source).await;
+                });
             }
         });
 
@@ -689,6 +698,87 @@ impl FauxIgd {
 }
 
 impl Drop for FauxIgd {
+    fn drop(&mut self) {
+        for tache in &self.taches {
+            tache.abort();
+        }
+    }
+}
+
+/// **LA MÊME BOX, VUE EN IPv6** : un répondeur SSDP sur `[::1]` qui répond
+/// tout de suite, et sert — sur `[::1]` aussi — la description de la box.
+/// Jointe en IPv6, elle ne peut rien donner pour la redirection IPv4 : c'est
+/// ce que la Livebox a fait à 0.24.1. `repond: false` : un IPv6 muet.
+struct VoisinV6 {
+    ssdp: SocketAddr,
+    recherches: Arc<Mutex<u32>>,
+    taches: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl VoisinV6 {
+    async fn lever(repond: bool) -> Self {
+        let http = tokio::net::TcpListener::bind("[::1]:0")
+            .await
+            .expect("un port HTTP en IPv6");
+        let port_http = http.local_addr().unwrap().port();
+        let udp = UdpSocket::bind("[::1]:0")
+            .await
+            .expect("un port SSDP en IPv6");
+        let ssdp = udp.local_addr().unwrap();
+        let recherches: Arc<Mutex<u32>> = Arc::default();
+        let compte = Arc::clone(&recherches);
+        let repondeur = tokio::spawn(async move {
+            let mut tampon = [0_u8; 2_048];
+            while let Ok((lus, source)) = udp.recv_from(&mut tampon).await {
+                let recu =
+                    String::from_utf8_lossy(tampon.get(..lus).unwrap_or_default()).into_owned();
+                if !recu.starts_with("M-SEARCH * HTTP/1.1\r\n") {
+                    continue;
+                }
+                {
+                    let mut vus = compte.lock().unwrap();
+                    *vus = vus.saturating_add(1);
+                }
+                if !repond {
+                    continue;
+                }
+                let cible = recu
+                    .lines()
+                    .find_map(|ligne| ligne.strip_prefix("ST: "))
+                    .unwrap_or_default()
+                    .to_owned();
+                let reponse = format!(
+                    "HTTP/1.1 200 OK\r\nST: {cible}\r\nUSN: uuid:voisin::{cible}\r\n\
+                     LOCATION: http://[::1]:{port_http}/rootDesc.xml\r\n\r\n"
+                );
+                let _ = udp.send_to(reponse.as_bytes(), source).await;
+            }
+        });
+        let serveur = tokio::spawn(async move {
+            while let Ok((mut flux, _)) = http.accept().await {
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+                    let mut morceau = [0_u8; 4_096];
+                    let _ = flux.read(&mut morceau).await;
+                    let ecrit = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nContent-Length: {}\r\n\
+                         Connection: close\r\n\r\n{DESCRIPTION_IGD}",
+                        DESCRIPTION_IGD.len()
+                    );
+                    let _ = flux.write_all(ecrit.as_bytes()).await;
+                    let _ = flux.shutdown().await;
+                });
+            }
+        });
+        Self {
+            ssdp,
+            recherches,
+            taches: vec![repondeur, serveur],
+        }
+    }
+}
+
+impl Drop for VoisinV6 {
     fn drop(&mut self) {
         for tache in &self.taches {
             tache.abort();
@@ -970,6 +1060,7 @@ async fn le_permanent_seulement_si_la_box_l_exige_et_un_conflit_fait_tirer_un_po
         externe: "127.0.0.1",
         permanent_seulement: true,
         conflits: 1,
+        ..ReglageIgd::default()
     })
     .await;
     let ssdp = vers_la_fausse_box(&igd);
@@ -1175,4 +1266,76 @@ async fn asl_echo_upnp_se_lit_strictement() {
         "{}",
         texte(&sortie.stderr)
     );
+}
+
+/// **NON-RÉGRESSION DE 0.24.1** — vue en vrai derrière une Livebox : la box
+/// répond tout de suite en IPv6 (sa description, jointe en IPv6, ne donne pas
+/// de redirection IPv4) et en IPv4 plus tard. L'écoute commune s'arrêtait
+/// 300 ms après la première réponse : l'IPv4 n'était jamais entendue, et
+/// l'écho disait « pas de passerelle UPnP ». Chaque famille a désormais son
+/// délai : la redirection IPv4 est obtenue.
+#[tokio::test(flavor = "multi_thread")]
+async fn une_reponse_ipv6_precoce_ne_coupe_pas_l_ecoute_ipv4() {
+    let igd = FauxIgd::lever(ReglageIgd {
+        externe: "127.0.0.1",
+        retard_ssdp: Duration::from_millis(1_200),
+        ..ReglageIgd::default()
+    })
+    .await;
+    let voisin = VoisinV6::lever(true).await;
+    passerelle_ipv4_malgre_l_ipv6(&igd, &voisin, "echo-upnp-v6-precoce").await;
+}
+
+/// L'IPv6 muet — une box qui n'écoute pas `ff02::c` — ne retarde ni
+/// n'empêche l'IPv4.
+#[tokio::test(flavor = "multi_thread")]
+async fn un_ipv6_muet_ne_retarde_pas_l_ipv4() {
+    let igd = FauxIgd::lever(ReglageIgd {
+        externe: "127.0.0.1",
+        retard_ssdp: Duration::from_millis(1_200),
+        ..ReglageIgd::default()
+    })
+    .await;
+    let voisin = VoisinV6::lever(false).await;
+    passerelle_ipv4_malgre_l_ipv6(&igd, &voisin, "echo-upnp-v6-muet").await;
+}
+
+/// L'écho, qui cherche la box par les deux familles à la fois
+/// (`ASL_ECHO_SSDP` : l'IPv4 de `igd`, l'IPv6 de `voisin`), obtient et
+/// annonce la redirection IPv4 — et le mode bavard dit chaque famille.
+async fn passerelle_ipv4_malgre_l_ipv6(igd: &FauxIgd, voisin: &VoisinV6, nom: &str) {
+    let ssdp = format!("{},{}", igd.ssdp, voisin.ssdp);
+    let decor = Decor::lever_avec(
+        nom,
+        Vec::new(),
+        Some("0.44.0"),
+        &["echo", "--verbose"],
+        &[("ASL_ECHO_UPNP", "1"), ("ASL_ECHO_SSDP", &ssdp)],
+    )
+    .await;
+    let port = decor.port;
+    let etat = Arc::clone(&decor.etat);
+    attendre("l'annonce avec passerelle", || {
+        etat.lock()
+            .unwrap()
+            .annonces
+            .iter()
+            .any(|annonce| annonce.contains("\"passerelle\""))
+    })
+    .await;
+    assert!(
+        *voisin.recherches.lock().unwrap() >= 1,
+        "l'IPv6 a été interrogée"
+    );
+    let (code, dit) = decor.arreter();
+    assert_eq!(code, Some(0), "{dit}");
+    for attendu in [
+        format!("SSDP IPv4 : M-SEARCH vers {}", igd.ssdp),
+        format!("SSDP IPv6 : M-SEARCH vers {}", voisin.ssdp),
+        "SSDP IPv4 : 2 réponse(s) reçue(s), 1 passerelle(s) retenue(s)".to_owned(),
+        format!("redirection UPnP : udp {port} → box 127.0.0.1:{port}, bail 1 h"),
+    ] {
+        assert!(dit.contains(&attendu), "« {attendu} » manque : {dit}");
+    }
+    assert!(!dit.contains("pas de passerelle UPnP"), "{dit}");
 }

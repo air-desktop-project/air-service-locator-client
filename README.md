@@ -528,8 +528,14 @@ Une tâche à côté de l'écho, qui ne retarde jamais une réponse :
   `:1` ; le groupe IPv6, de lien local, **une fois par interface**
   (`[ff02::c%<index>]`, 0.24.1 : macOS refuse l'envoi qui ne la nomme pas) —
   les interfaces à lien local de `/proc/net/if_inet6` sous Linux, les index 1
-  à 32 ailleurs, sans C, les refus tus — et ne suit une `LOCATION` que si c'est **l'adresse littérale qui a
-  répondu**, sur le réseau local : aucun nom (C20), aucun tiers (C19) ;
+  à 32 ailleurs, sans C, les refus tus ; **les deux familles s'écoutent à
+  part et en parallèle** (0.24.2), le silence ou la réponse de l'une
+  n'abrégeant pas l'attente de l'autre — et ne suit une `LOCATION` que si
+  c'est **l'adresse littérale qui a répondu**, sur le réseau local ; ou, pour
+  une réponse venue d'un lien local IPv6, **une adresse de l'un de nos
+  préfixes** qui n'est pas la nôtre (la Livebox répond de `fe80::…` et se
+  décrit à son adresse globale, dans notre `/64`) : aucun nom (C20), aucun
+  tiers (C19) ;
 - **elle ne demande que le port de l'écho, en UDP** : `AddAnyPortMapping`
   (IGD v2), sinon `AddPortMapping` (le même port externe d'abord, trois ports
   tirés au hasard sur conflit `718`), **bail d'une heure renouvelé toutes les
@@ -554,6 +560,20 @@ passerelle     redirection UPnP : udp 6634 → box 203.0.113.7:6634, bail 1 h
 annonce        réannoncée avec la passerelle : port externe 6634 (upnp)
 passerelle     redirection retirée : udp 6634
 ```
+
+**Sous macOS, le pare-feu applicatif doit laisser entrer les réponses.** La
+réponse à un `M-SEARCH` vient de l'adresse unicast de la box, alors que la
+requête est partie vers un groupe : pour le pare-feu, c'est une connexion
+entrante, qu'il jette sans rien dire pour un binaire qu'il ne sait pas
+identifier — **un `asl` non signé ne reçoit aucune réponse SSDP**, et l'écho
+dit « aucune réponse SSDP reçue ». Signez-le, ou autorisez-le :
+
+```sh
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add /chemin/vers/asl
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp /chemin/vers/asl
+```
+
+L'`asl` livré dans l'application Mac est signé, et n'est pas concerné.
 
 Le codec — SSDP, HTTP/1.1 (`Content-Length`, `chunked`, ou jusqu'à la
 fermeture), un XML réduit sans DTD, SOAP, la mémoire — est la crate

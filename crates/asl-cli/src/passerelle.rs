@@ -312,7 +312,7 @@ impl Tache {
 
     /// Un tour : chercher la box, demander ou renouveler, conclure.
     async fn tour(&mut self) {
-        let trouvee = self.chercher().await;
+        let (trouvee, recues) = self.chercher().await;
         let entendue = trouvee.is_some();
         // **UNE BOX QUI N'A PAS RÉPONDU AU `M-SEARCH` N'EST PAS PARTIE** : un
         // datagramme se perd. On renouvelle là où l'on a déjà parlé ; si elle
@@ -328,10 +328,11 @@ impl Tache {
         self.boite = boite.filter(|_| entendue || tient);
         self.retenir();
         if self.boite.is_none() {
-            constats = vec![
-                "pas de passerelle UPnP : joignable depuis l'annuaire, peut-être pas d'ailleurs"
-                    .to_owned(),
-            ];
+            constats = vec![sans_passerelle(
+                cfg!(target_os = "macos"),
+                recues,
+                std::env::current_exe().ok().as_deref(),
+            )];
         }
         let accord = self.conclure();
         if let Some(conclusion) = self.conclusion(accord) {
@@ -774,7 +775,7 @@ impl Tache {
 
     /// Cherche la box : SSDP, puis la description de chaque passerelle
     /// entendue, jusqu'à en avoir une qui redirige.
-    async fn chercher(&self) -> Option<Boite> {
+    async fn chercher(&self) -> (Option<Boite>, usize) {
         let destinations = match &self.reglage.ssdp {
             Some(adresses) => adresses.clone(),
             None => groupes(&interfaces_du_lien(
@@ -783,7 +784,7 @@ impl Tache {
                     .as_deref(),
             )),
         };
-        let entendues = self.ecouter_ssdp(&destinations).await;
+        let (entendues, recues) = self.ecouter_ssdp(&destinations).await;
         let mut boite: Option<Boite> = None;
         for location in entendues.iter().take(DESCRIPTIONS_MAX) {
             let (choix, locale) = match examiner(location).await {
@@ -793,6 +794,18 @@ impl Tache {
                     continue;
                 }
             };
+            // **CE QU'UNE DESCRIPTION N'APPORTE PAS SE DIT** : c'est ce qui
+            // manquait pour lire l'essai réel de 0.24.1.
+            match (&choix.connexion, locale.to_canonical(), &choix.pare_feu) {
+                (None, _, None) => self.bavarder(&format!(
+                    "description {location} : ni redirection, ni pare-feu IPv6"
+                )),
+                (Some(_), IpAddr::V6(_), None) => self.bavarder(&format!(
+                    "description {location} : redirection décrite, mais jointe en IPv6 — \
+                     elle se demande depuis l'IPv4"
+                )),
+                _ => {}
+            }
             let trouvee = boite.get_or_insert(Boite {
                 redirection: None,
                 pare_feu: None,
@@ -813,99 +826,329 @@ impl Tache {
                 trouvee.pare_feu = Some(pare_feu);
             }
         }
-        boite.filter(|trouvee| trouvee.redirection.is_some() || trouvee.pare_feu.is_some())
+        (
+            boite.filter(|trouvee| trouvee.redirection.is_some() || trouvee.pare_feu.is_some()),
+            recues,
+        )
     }
 
     /// Envoie le `M-SEARCH` et écoute : rend les `LOCATION` admises, une par
-    /// passerelle.
-    async fn ecouter_ssdp(&self, destinations: &[SocketAddr]) -> Vec<Url> {
-        let mut sockets = Vec::new();
-        for six in [false, true] {
-            let visees: Vec<&SocketAddr> = destinations
-                .iter()
-                .filter(|destination| destination.is_ipv6() == six)
-                .collect();
-            if visees.is_empty() {
-                continue;
+    /// passerelle — **celles d'IPv4 d'abord**.
+    ///
+    /// # DEUX FAMILLES, INDÉPENDANTES ET EN PARALLÈLE
+    ///
+    /// Chacune a sa socket, ses envois, son écoute et **son propre délai** :
+    /// l'échec, le silence ou la réponse de l'une ne retarde ni n'abrège
+    /// l'autre. C'est la leçon de 0.24.1, vue en vrai derrière une Livebox :
+    /// les deux familles partageaient une écoute, et la PREMIÈRE réponse
+    /// entendue la raccourcissait à [`APRES_LA_PREMIERE`]. Une réponse IPv6
+    /// arrivée tôt — dont la description, jointe en IPv6, ne peut rien donner
+    /// pour la redirection IPv4 (`NewInternalClient` est l'adresse IPv4 d'où
+    /// l'on parle à la box) — coupait l'écoute avant que la réponse IPv4 ne
+    /// vienne : la box tire son délai au hasard jusqu'à `MX` secondes. En
+    /// 0.24.0, le `M-SEARCH` IPv6 ne partait pas sous macOS, et le défaut ne
+    /// se voyait pas.
+    async fn ecouter_ssdp(&self, destinations: &[SocketAddr]) -> (Vec<Url>, usize) {
+        let (quatre, six) = les_deux(
+            self.ecouter_une_famille(destinations, false),
+            self.ecouter_une_famille(destinations, true),
+        )
+        .await;
+        let (quatre, recues_4) = quatre;
+        let (six, recues_6) = six;
+        // Une box peut se décrire à la même adresse dans ses deux réponses.
+        let mut entendues: Vec<Url> = Vec::new();
+        for location in quatre.into_iter().chain(six) {
+            if !entendues.contains(&location) {
+                entendues.push(location);
             }
-            let lien = if six { "[::]:0" } else { "0.0.0.0:0" };
-            let Ok(socket) = UdpSocket::bind(lien).await else {
-                self.bavarder(&format!("SSDP : pas de socket {lien}"));
-                continue;
-            };
-            // **UN SAUT** (§3 quater) : la box est sur le lien.
-            if !six {
-                let _ = socket.set_multicast_ttl_v4(1);
+        }
+        (entendues, recues_4.saturating_add(recues_6))
+    }
+
+    /// Le `M-SEARCH` d'une famille, et son écoute — voir [`Self::ecouter_ssdp`].
+    async fn ecouter_une_famille(
+        &self,
+        destinations: &[SocketAddr],
+        six: bool,
+    ) -> (Vec<Url>, usize) {
+        let famille = if six { "IPv6" } else { "IPv4" };
+        let visees: Vec<&SocketAddr> = destinations
+            .iter()
+            .filter(|destination| destination.is_ipv6() == six)
+            .collect();
+        if visees.is_empty() {
+            if six && self.reglage.ssdp.is_none() {
+                self.bavarder("SSDP IPv6 : aucune interface à lien local, rien n'est envoyé");
             }
-            // Le groupe IPv6 part sur des interfaces peut-être essayées à
-            // l'aveugle ([`interfaces_du_lien`]) : leurs refus sont attendus,
-            // et l'on ne dit que le bilan.
-            let mut sur: Vec<u32> = Vec::new();
-            let mut refus: Option<(SocketAddr, std::io::Error)> = None;
-            for destination in visees {
-                let hote = hote_ssdp(*destination);
-                for cible in ssdp::CIBLES {
-                    match envoyer(&socket, &ssdp::recherche(cible, &hote), *destination).await {
-                        Ok(_) => {
-                            if let SocketAddr::V6(v6) = destination
-                                && vers_le_groupe_v6(destination)
-                                && !sur.contains(&v6.scope_id())
-                            {
+            return (Vec::new(), 0);
+        }
+        let lien = if six { "[::]:0" } else { "0.0.0.0:0" };
+        let socket = match UdpSocket::bind(lien).await {
+            Ok(socket) => socket,
+            Err(quoi) => {
+                self.bavarder(&format!("SSDP {famille} : pas de socket {lien} ({quoi})"));
+                return (Vec::new(), 0);
+            }
+        };
+        // **UN SAUT** (§3 quater) : la box est sur le lien.
+        if !six {
+            let _ = socket.set_multicast_ttl_v4(1);
+        }
+        // Le groupe IPv6 part sur des interfaces peut-être essayées à
+        // l'aveugle ([`interfaces_du_lien`]) : leurs refus sont attendus, et
+        // l'on ne dit que le bilan. Toute autre destination dit le sien.
+        let mut sur: Vec<u32> = Vec::new();
+        let mut refus: Option<(SocketAddr, std::io::Error)> = None;
+        let mut parties: Vec<SocketAddr> = Vec::new();
+        for destination in visees {
+            let hote = hote_ssdp(*destination);
+            for cible in ssdp::CIBLES {
+                match envoyer(&socket, &ssdp::recherche(cible, &hote), *destination).await {
+                    Ok(_) => match destination {
+                        SocketAddr::V6(v6) if vers_le_groupe_v6(destination) => {
+                            if !sur.contains(&v6.scope_id()) {
                                 sur.push(v6.scope_id());
                             }
                         }
-                        Err(quoi) if vers_le_groupe_v6(destination) => {
-                            refus = Some((*destination, quoi));
-                            // L'interface refuse `:2` ; elle refusera `:1`.
-                            break;
+                        _ => {
+                            if !parties.contains(destination) {
+                                parties.push(*destination);
+                            }
                         }
-                        Err(quoi) => self.bavarder(&format!("SSDP vers {destination} : {quoi}")),
+                    },
+                    Err(quoi) if vers_le_groupe_v6(destination) => {
+                        refus = Some((*destination, quoi));
+                        // L'interface refuse `:2` ; elle refusera `:1`.
+                        break;
+                    }
+                    Err(quoi) => {
+                        self.bavarder(&format!("SSDP {famille} vers {destination} : {quoi}"));
+                        break;
                     }
                 }
             }
-            if let Some(bilan) = bilan_du_groupe_v6(&sur, refus.as_ref()) {
-                self.bavarder(&bilan);
-            }
-            sockets.push(socket);
         }
+        if !parties.is_empty() {
+            self.bavarder(&format!(
+                "SSDP {famille} : M-SEARCH vers {}",
+                parties
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if let Some(bilan) = bilan_du_groupe_v6(&sur, refus.as_ref()) {
+            self.bavarder(&bilan);
+        }
+        if parties.is_empty() && sur.is_empty() {
+            return (Vec::new(), 0);
+        }
+        // Nos liens IPv6, pour admettre une box qui répond de son lien local
+        // et se décrit à son adresse globale (`ssdp::passerelle`).
+        let table = if six {
+            std::fs::read_to_string("/proc/net/if_inet6").ok()
+        } else {
+            None
+        };
+        let (entendues, recues) = self.ecouter(&socket, famille, table.as_deref()).await;
+        self.bavarder(&format!(
+            "SSDP {famille} : {recues} réponse(s) reçue(s), {} passerelle(s) retenue(s)",
+            entendues.len()
+        ));
+        (entendues, recues)
+    }
+
+    /// Écoute une socket de recherche jusqu'à [`ECOUTE_SSDP`] — ou
+    /// [`APRES_LA_PREMIERE`] après sa première passerelle : rend les
+    /// `LOCATION` admises, et le nombre de datagrammes reçus.
+    async fn ecouter(
+        &self,
+        socket: &UdpSocket,
+        famille: &str,
+        table: Option<&str>,
+    ) -> (Vec<Url>, usize) {
         let mut entendues: Vec<Url> = Vec::new();
+        let mut recues = 0_usize;
         let debut = Instant::now();
         let mut fin = debut.checked_add(ECOUTE_SSDP).unwrap_or(debut);
         let mut tampon = vec![0_u8; ssdp::REPONSE_MAX];
-        while !sockets.is_empty() && Instant::now() < fin {
-            for socket in &sockets {
-                let tranche = Duration::from_millis(50);
-                let Ok(Ok((lus, source))) =
-                    tokio::time::timeout(tranche, socket.recv_from(&mut tampon)).await
-                else {
-                    continue;
-                };
-                let recu = tampon.get(..lus).unwrap_or_default();
-                match ssdp::passerelle(recu, source.ip()) {
-                    Ok(mut location) => {
-                        // Un lien local se joint par l'interface d'où il a
-                        // répondu.
-                        if let SocketAddr::V6(source) = source
-                            && location.portee == 0
-                        {
-                            location.portee = source.scope_id();
-                        }
-                        if !entendues.contains(&location) {
-                            if entendues.is_empty() {
-                                fin = Instant::now()
-                                    .checked_add(APRES_LA_PREMIERE)
-                                    .unwrap_or(fin)
-                                    .min(fin);
-                            }
-                            entendues.push(location);
-                        }
+        loop {
+            let reste = fin.saturating_duration_since(Instant::now());
+            if reste.is_zero() {
+                break;
+            }
+            let (lus, source) =
+                match tokio::time::timeout(reste, socket.recv_from(&mut tampon)).await {
+                    Err(_) => break,
+                    Ok(Ok(recu)) => recu,
+                    // Une socket UDP non connectée n'a guère d'erreur à rendre ;
+                    // si elle en rend une, elle la rendrait encore.
+                    Ok(Err(quoi)) => {
+                        self.bavarder(&format!("SSDP {famille} : écoute interrompue ({quoi})"));
+                        break;
                     }
-                    Err(quoi) => self.bavarder(&format!("SSDP de {source} écartée : {quoi:?}")),
+                };
+            recues = recues.saturating_add(1);
+            let recu = tampon.get(..lus).unwrap_or_default();
+            let liens = match source {
+                SocketAddr::V6(v6) => liens_du_lien(table, v6.scope_id(), &self.locales),
+                SocketAddr::V4(_) => Vec::new(),
+            };
+            match ssdp::passerelle(recu, source.ip(), &liens) {
+                Ok((mut location, admission)) => {
+                    if let ssdp::Admission::SurLeLien {
+                        lien: (notre, longueur),
+                        meme_identifiant,
+                    } = admission
+                    {
+                        self.bavarder(&format!(
+                            "SSDP de {source} : LOCATION {location} admise — sur notre lien \
+                             ({notre}/{longueur}){}",
+                            if meme_identifiant {
+                                ", même identifiant d'interface que la source"
+                            } else {
+                                ", autre identifiant d'interface que la source"
+                            }
+                        ));
+                    }
+                    // Un lien local se joint par l'interface d'où il a
+                    // répondu ; une adresse globale, par la route.
+                    if let (SocketAddr::V6(source), IpAddr::V6(hote)) = (source, location.hote)
+                        && hote.is_unicast_link_local()
+                        && location.portee == 0
+                    {
+                        location.portee = source.scope_id();
+                    }
+                    if !entendues.contains(&location) {
+                        if entendues.is_empty() {
+                            fin = Instant::now()
+                                .checked_add(APRES_LA_PREMIERE)
+                                .unwrap_or(fin)
+                                .min(fin);
+                        }
+                        entendues.push(location);
+                    }
                 }
+                Err(quoi) => self.bavarder(&format!("SSDP de {source} écartée : {quoi:?}")),
             }
         }
-        entendues
+        (entendues, recues)
     }
+}
+
+/// Ce qu'on dit quand aucune passerelle n'est trouvée — et, **sous macOS,
+/// quand aucune réponse SSDP n'est même arrivée**, pourquoi c'est peut-être
+/// la machine et non le réseau.
+///
+/// # LE PARE-FEU APPLICATIF DE macOS
+///
+/// Vu sur le Mac de l'essai réel (journal `com.apple.alf` : « Designated
+/// requirement not obtained for flow, dropping flow ») : la réponse à un
+/// `M-SEARCH` vient de l'adresse **unicast** de la box, alors que la requête
+/// est partie vers un **groupe** ; pour le pare-feu, c'est une connexion
+/// entrante, et il la jette sans rien dire pour un binaire qu'il ne sait pas
+/// identifier — un `asl` non signé. L'envoi réussit, l'écoute reste vide. Le
+/// même binaire signé, ou autorisé, reçoit. L'`asl` livré dans l'app Mac est
+/// signé.
+fn sans_passerelle(macos: bool, recues: usize, binaire: Option<&Path>) -> String {
+    let base = "pas de passerelle UPnP : joignable depuis l'annuaire, peut-être pas d'ailleurs";
+    if !macos || recues > 0 {
+        return base.to_owned();
+    }
+    let chemin = binaire.map_or_else(|| "<chemin d'asl>".to_owned(), |b| b.display().to_string());
+    format!(
+        "{base}\n\
+         passerelle     aucune réponse SSDP reçue : sous macOS, le pare-feu applicatif jette les\n\
+         passerelle     réponses d'un binaire `asl` non signé. Signez-le, ou autorisez-le :\n\
+         passerelle       sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add {chemin}\n\
+         passerelle       sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp {chemin}"
+    )
+}
+
+/// **NOS PRÉFIXES IPv6 SUR L'INTERFACE `index`**, pour admettre une box qui
+/// répond de son lien local et se décrit à son adresse globale
+/// (`ssdp::passerelle`, [`ssdp::Admission::SurLeLien`]).
+///
+/// - **Linux** : `/proc/net/if_inet6` dit, pour chaque adresse, l'index de
+///   son interface et la longueur de son préfixe — on prend celles de
+///   l'interface qui a reçu la réponse, hors lien local et boucle ;
+/// - **partout, et seul sous macOS** (pas de `/proc`, et `getifaddrs` est du
+///   C) : nos adresses IPv6 globales connues — celles que l'annonce porte,
+///   par lesquelles on sort vers l'annuaire —, en `/64`, la longueur d'un lien
+///   IPv6 (RFC 4291 §2.5.1). Une box du même réseau local est dans ce `/64` ;
+///   si la machine a plusieurs réseaux, celui qu'on ne voit pas n'admet
+///   qu'une `LOCATION` égale à sa source, comme avant.
+fn liens_du_lien(table: Option<&str>, index: u32, locales: &[IpAddr]) -> Vec<(Ipv6Addr, u8)> {
+    let admissible = |adresse: &Ipv6Addr| {
+        !adresse.is_unicast_link_local()
+            && !adresse.is_loopback()
+            && !adresse.is_unspecified()
+            && !adresse.is_multicast()
+            && adresse.to_ipv4_mapped().is_none()
+    };
+    let mut liens: Vec<(Ipv6Addr, u8)> = Vec::new();
+    for ligne in table.unwrap_or_default().lines() {
+        let mut champs = ligne.split_whitespace();
+        let (Some(hexa), Some(numero), Some(longueur)) =
+            (champs.next(), champs.next(), champs.next())
+        else {
+            continue;
+        };
+        let adresse = u128::from_str_radix(hexa, 16)
+            .ok()
+            .filter(|_| hexa.len() == 32);
+        let numero = u32::from_str_radix(numero, 16).ok();
+        let longueur = u8::from_str_radix(longueur, 16).ok();
+        if let (Some(adresse), Some(numero), Some(longueur)) = (adresse, numero, longueur)
+            && numero == index
+            && admissible(&Ipv6Addr::from(adresse))
+        {
+            liens.push((Ipv6Addr::from(adresse), longueur));
+        }
+    }
+    for adresse in locales {
+        if let IpAddr::V6(v6) = adresse
+            && admissible(v6)
+            && !liens.iter().any(|(notre, _)| notre == v6)
+        {
+            liens.push((*v6, 64));
+        }
+    }
+    liens
+}
+
+/// **LES DEUX À LA FOIS** : attend deux futurs menés ensemble, dans la même
+/// tâche — ce que `tokio::join!` ferait, sans la fonctionnalité `macros` de
+/// tokio que le binaire ne tire pas.
+async fn les_deux<A: Future, B: Future>(a: A, b: B) -> (A::Output, B::Output) {
+    use std::task::Poll;
+    let mut a = std::pin::pin!(a);
+    let mut b = std::pin::pin!(b);
+    let mut fait_a: Option<A::Output> = None;
+    let mut fait_b: Option<B::Output> = None;
+    std::future::poll_fn(|contexte| {
+        if fait_a.is_none()
+            && let Poll::Ready(sortie) = a.as_mut().poll(contexte)
+        {
+            fait_a = Some(sortie);
+        }
+        if fait_b.is_none()
+            && let Poll::Ready(sortie) = b.as_mut().poll(contexte)
+        {
+            fait_b = Some(sortie);
+        }
+        match (fait_a.take(), fait_b.take()) {
+            (Some(sortie_a), Some(sortie_b)) => Poll::Ready((sortie_a, sortie_b)),
+            (reste_a, reste_b) => {
+                fait_a = reste_a;
+                fait_b = reste_b;
+                Poll::Pending
+            }
+        }
+    })
+    .await
 }
 
 /// Le fichier de mémoire d'un écho de ce port.
@@ -1212,7 +1455,8 @@ mod tests {
 
     use super::{
         INDEX_MAX, adresses_ssdp, bilan_du_groupe_v6, connait_la_passerelle, envoyer, groupes,
-        hote_ssdp, interfaces_du_lien, port_tire, vers_le_groupe_v6,
+        hote_ssdp, interfaces_du_lien, les_deux, liens_du_lien, port_tire, sans_passerelle,
+        vers_le_groupe_v6,
     };
 
     /// `/proc/net/if_inet6` d'une machine à Ethernet, Wi-Fi et pont de
@@ -1414,6 +1658,85 @@ fe80 02 40 20 80   court
             !prises.is_empty(),
             "aucune interface ne prend l'envoi : {refus:?}"
         );
+    }
+
+    /// Les deux futurs avancent ensemble : le plus lent ne retarde pas le
+    /// plus rapide, et le tout dure le plus long des deux, pas la somme.
+    #[tokio::test]
+    async fn les_deux_menent_ensemble() {
+        let debut = std::time::Instant::now();
+        let (lent, vif) = les_deux(
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                "lent"
+            },
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                7
+            },
+        )
+        .await;
+        assert_eq!((lent, vif), ("lent", 7));
+        assert!(debut.elapsed() < std::time::Duration::from_millis(340));
+    }
+
+    #[test]
+    fn nos_liens_sont_ceux_de_l_interface_qui_a_recu_et_nos_adresses_connues() {
+        // enp2s0 (index 2) : sa globale (/64) et son ULA ; ni son lien local,
+        // ni la boucle, ni wlp3s0 (index 3).
+        let table = format!(
+            "{IF_INET6}2a01cb190d272f00aaaaaaaaaaaaaaaa 03 40 00 00   wlp3s0\n\
+             2a01cb190d272f000000000000000099 02 38 00 00   enp2s0\n\
+             zz 02 40 00 00   casse\n"
+        );
+        let ip = |texte: &str| texte.parse::<std::net::Ipv6Addr>().unwrap();
+        assert_eq!(
+            liens_du_lien(Some(&table), 2, &[]),
+            vec![
+                (ip("2a01:cb19:d27:2f00:3e07:54ff:fe4a:1f79"), 64),
+                (ip("fd3f:cb21:8a97:1::103"), 64),
+                (ip("2a01:cb19:d27:2f00::99"), 56),
+            ]
+        );
+        // Sans `/proc` (macOS) : nos adresses globales connues, en /64 ; ni
+        // l'IPv4, ni le lien local, ni la boucle, ni une IPv4 enfouie, ni un
+        // doublon.
+        let locales: Vec<IpAddr> = [
+            "192.168.1.20",
+            "2a01:cb19:d27:2f00:1c2b:3a4d:5e6f:7081",
+            "fe80::1",
+            "::1",
+            "::ffff:192.168.1.20",
+            "::",
+            "ff02::1",
+        ]
+        .iter()
+        .map(|texte| texte.parse().unwrap())
+        .collect();
+        assert_eq!(
+            liens_du_lien(None, 12, &locales),
+            vec![(ip("2a01:cb19:d27:2f00:1c2b:3a4d:5e6f:7081"), 64)]
+        );
+        let deja = [IpAddr::V6(ip("2a01:cb19:d27:2f00:3e07:54ff:fe4a:1f79"))];
+        assert_eq!(liens_du_lien(Some(&table), 2, &deja).len(), 3);
+    }
+
+    #[test]
+    fn sous_macos_sans_reponse_on_dit_le_pare_feu() {
+        let base = "pas de passerelle UPnP : joignable depuis l'annuaire, peut-être pas d'ailleurs";
+        let binaire = std::path::Path::new("/opt/asl/bin/asl");
+        // Ailleurs que sous macOS, ou avec une réponse reçue : la phrase seule.
+        assert_eq!(sans_passerelle(false, 0, Some(binaire)), base);
+        assert_eq!(sans_passerelle(true, 2, Some(binaire)), base);
+        let dit = sans_passerelle(true, 0, Some(binaire));
+        assert!(dit.starts_with(base), "{dit}");
+        assert!(dit.contains("pare-feu applicatif"), "{dit}");
+        assert!(
+            dit.contains("socketfilterfw --add /opt/asl/bin/asl")
+                && dit.contains("socketfilterfw --unblockapp /opt/asl/bin/asl"),
+            "{dit}"
+        );
+        assert!(sans_passerelle(true, 0, None).contains("--add <chemin d'asl>"));
     }
 
     #[test]
