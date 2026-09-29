@@ -1600,10 +1600,28 @@ async fn echanger(url: &Url, requete: &[u8]) -> Result<(http::Reponse, SocketAdd
 /// refuse tout champ inconnu.
 pub const VERSION_PASSERELLE: (u64, u64, u64) = (0, 44, 0);
 
+/// La version d'annuaire qui connaît `passerelle.externe` (serveur 0.45.0,
+/// décision 107) : un membre d'annuaire local plus ancien refuserait
+/// l'annonce entière.
+pub const VERSION_EXTERNE: (u64, u64, u64) = (0, 45, 0);
+
 /// Cette version d'annuaire accepte-t-elle `passerelle` ? Une version qui ne
 /// se lit pas ne l'accepte pas : dans le doute, on n'envoie rien.
 #[must_use]
 pub fn connait_la_passerelle(version: &str) -> bool {
+    au_moins(version, VERSION_PASSERELLE)
+}
+
+/// Cette version d'annuaire accepte-t-elle `passerelle.externe` ? La même
+/// prudence.
+#[must_use]
+pub fn connait_l_externe(version: &str) -> bool {
+    au_moins(version, VERSION_EXTERNE)
+}
+
+/// La version, lue strictement (`M.m.p`, des chiffres seulement), est-elle
+/// au moins `voulue` ?
+fn au_moins(version: &str, voulue: (u64, u64, u64)) -> bool {
     let mut morceaux = version.trim().split('.').map(|morceau| {
         morceau
             .bytes()
@@ -1618,7 +1636,7 @@ pub fn connait_la_passerelle(version: &str) -> bool {
         morceaux.next(),
     ) {
         (Some(Some(majeure)), Some(Some(mineure)), Some(Some(corrective)), None) => {
-            (majeure, mineure, corrective) >= VERSION_PASSERELLE
+            (majeure, mineure, corrective) >= voulue
         }
         _ => false,
     }
@@ -1658,9 +1676,9 @@ mod tests {
 
     use super::{
         Accord, Boite, Echec, Faits, INDEX_MAX, Reglage, Retour, Tache, Voeu, adresses_ssdp,
-        bilan_du_groupe_v6, connait_la_passerelle, decider, echanger, envoyer, groupes, hote_ssdp,
-        http, interfaces_du_lien, les_deux, liens_du_lien, port_tire, sans_passerelle,
-        vers_le_groupe_v6,
+        bilan_du_groupe_v6, connait_l_externe, connait_la_passerelle, decider, echanger, envoyer,
+        groupes, hote_ssdp, http, interfaces_du_lien, les_deux, liens_du_lien, port_tire,
+        sans_passerelle, vers_le_groupe_v6,
     };
 
     /// `/proc/net/if_inet6` d'une machine à Ethernet, Wi-Fi et pont de
@@ -1691,6 +1709,16 @@ fe80 02 40 20 80   court
             "0.43.9", "0.43.0", "0.2.0", "", "0.44", "0.44.0.1", "0.44.x", "0.+44.0", "v0.44.0",
         ] {
             assert!(!connait_la_passerelle(non), "{non}");
+        }
+    }
+
+    #[test]
+    fn seul_un_annuaire_0_45_0_ou_plus_recoit_l_adresse_externe() {
+        for oui in ["0.45.0", "0.45.1", "0.46.0", "1.0.0"] {
+            assert!(connait_l_externe(oui), "{oui}");
+        }
+        for non in ["0.44.2", "0.44.0", "", "0.45", "v0.45.0"] {
+            assert!(!connait_l_externe(non), "{non}");
         }
     }
 
