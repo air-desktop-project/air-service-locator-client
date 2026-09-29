@@ -1,0 +1,98 @@
+# `asl` pour macOS — le binaire universel que l'application Mac embarque.
+#
+# ── POURQUOI UN WORKFLOW À PART ────────────────────────────────────────────
+#
+# `natif.yml` construit la bibliothèque (`asl-client-ffi`) pour les porteurs de
+# liaisons ; ceci construit l'UTILITAIRE, pour un seul consommateur, le projet
+# Mac, qui le reprend épinglé par SHA (comme le xcframework) et le pose dans
+# `Air Service Locator.app/Contents/Helpers/asl`. Ce ne sont ni les mêmes
+# sources, ni le même artefact, ni le même lecteur.
+#
+# ── POURQUOI AUSSI SUR LES PR ──────────────────────────────────────────────
+#
+# Ce qui compte ici ne se voit pas sur Linux : l'`Info.plist` intégré par
+# `build.rs` n'existe que pour une cible macOS, et sans lui un `asl` signé en
+# bac à sable meurt au démarrage. Le découvrir après le merge, c'est le
+# découvrir chez le projet Mac. Le filtre de chemins garde les PR de
+# documentation hors de ce runner.
+#
+# ── CE QU'IL NE FAIT PAS ───────────────────────────────────────────────────
+#
+# **Il ne signe rien.** La signature (Developer ID, runtime renforcé, droits
+# de `asl.entitlements`) appartient au projet Mac ; un dépôt public n'a pas à
+# porter l'identité d'un éditeur.
+
+name: asl-macos
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "scripts/asl-macos.sh"
+      - ".github/workflows/asl-macos.yml"
+  pull_request:
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "scripts/asl-macos.sh"
+      - ".github/workflows/asl-macos.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: asl-macos-${{ github.ref }}-${{ github.event_name == 'push' && github.sha || 'partage' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  universel:
+    name: asl universel (arm64 + x86_64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # `rust-toolchain.toml` épingle la toolchain d'Air : rustup la lit tout
+      # seul, et c'est à ELLE qu'on ajoute les deux cibles.
+      - name: Toolchain épinglée et cibles macOS
+        run: |
+          rustup show active-toolchain
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          rustc -vV
+
+      - name: asl-macos
+        run: ./scripts/asl-macos.sh
+
+      # **L'ARCHIVE SE DÉPLIE ET SE REVÉRIFIE**, indépendamment du script : ce
+      # qui est éprouvé est ce que le projet Mac téléchargera.
+      - name: L'archive se vérifie
+        run: |
+          archive=$(ls distribution/asl-macos-universel-*.tar.gz)
+          mkdir -p verif
+          tar -C verif -xzf "$archive"
+          cd verif/asl-macos-universel-*
+          lipo -info asl
+          ./asl --version
+          # Le système lui-même relit la section : c'est ce que le bac à sable
+          # consultera.
+          launchctl plist __TEXT,__info_plist asl | tee plist.txt
+          grep -q 'org.airdesktop.servicelocator.asl' plist.txt
+          plutil -lint asl.entitlements
+          shasum -a 256 -c <(sed -n '/^[0-9a-f]\{64\}  /p' MANIFESTE)
+          cat MANIFESTE
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: asl-macos-universel
+          path: distribution/asl-macos-universel-*.tar.gz
+          if-no-files-found: error

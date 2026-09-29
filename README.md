@@ -185,10 +185,14 @@ partagent le conteneur de groupe `SB7H9B6TY8.org.airdesktop.servicelocator`.
    `~/Library/Containers/org.airdesktop.servicelocator.mac/Data/Library/Application Support/asl/`,
    s'il en porte une — avec un avertissement : l'application la migre au
    premier lancement, il suffit de la lancer ;
-4. `$XDG_CONFIG_HOME/asl`, sinon `~/.config/asl` — et c'est là qu'`asl
-   enroll` écrit quand aucun des précédents ne porte d'identité ; sinon il
-   écrit là où l'identité est lue, pour que la commande suivante lise celle
-   qu'il vient de lier.
+4. `$XDG_CONFIG_HOME/asl`, sinon `~/.config/asl`.
+
+Quand aucun ne porte d'identité, `asl enroll` écrit **dans le conteneur de
+groupe si le dossier du groupe existe** (l'application est installée), sinon
+dans `$XDG_CONFIG_HOME/asl`, sinon `~/.config/asl` (0.22.2) : l'`asl` de
+l'application est en bac à sable et ne voit pas `~/.config/asl`. Sinon il
+écrit là où l'identité est lue, pour que la commande suivante lise celle qu'il
+vient de lier.
 
 Le cache `racines` suit l'identité, dans le même dossier. Les chemins partent
 du répertoire du compte, jamais du conteneur qu'un bac à sable met dans
@@ -196,6 +200,72 @@ du répertoire du compte, jamais du conteneur qu'un bac à sable met dans
 chaque commande**, sur la sortie d'erreur, en une ligne ; la plus haute
 priorité est prise. `asl identity` et `asl diagnose` disent d'où l'identité
 est lue. Linux ne change pas.
+
+## asl sur macOS
+
+**Sur macOS, `asl` est livré dans l'application**, pas par un paquet :
+`Air Service Locator.app/Contents/Helpers/asl`, binaire **universel** (arm64 +
+x86_64), **en bac à sable** (Mac App Store). Ce dépôt le produit, le projet
+Mac le reprend — épinglé par le SHA de ce dépôt, comme le xcframework — et le
+signe.
+
+- **Ce dépôt** : `scripts/asl-macos.sh` construit les deux tranches, les réunit
+  par `lipo`, vérifie sur chacune l'`Info.plist` intégré, et produit
+  `distribution/asl-macos-universel-<version>.tar.gz` (le binaire **non
+  signé**, `asl.entitlements`, la licence, un `MANIFESTE` avec les empreintes).
+  La CI le lance sur un runner macOS (`asl-macos.yml`, sur `main` et sur les PR
+  qui touchent au code) et publie l'artefact **`asl-macos-universel`**.
+- **L'`Info.plist` intégré** (`crates/asl-cli/build.rs`, macOS seulement) :
+  `__TEXT,__info_plist`, identifiant `org.airdesktop.servicelocator.asl`,
+  versions = celle du crate. **Sans lui, un `asl` signé en bac à sable meurt au
+  démarrage** (SIGILL dans `sandbox.cold`, macOS 15.7.9) : le bac à sable n'a
+  pas de paquet autour de l'exécutable pour savoir qui il est.
+- **Le projet Mac** signe avec son Developer ID, le runtime renforcé,
+  l'identifiant `org.airdesktop.servicelocator.asl`, et ces droits
+  (`asl.entitlements`, dans l'archive) :
+
+  ```xml
+  <key>com.apple.security.app-sandbox</key>              <true/>
+  <key>com.apple.security.network.client</key>           <true/>
+  <key>com.apple.security.network.server</key>           <true/>
+  <key>com.apple.security.application-groups</key>
+  <array><string>SB7H9B6TY8.org.airdesktop.servicelocator</string></array>
+  ```
+
+  `network.server` n'est pas un luxe : la pile QUIC lie un socket UDP local
+  pour recevoir, et le bac à sable tient ce `bind` pour « serveur » — sans ce
+  droit, tout est « injoignable ».
+
+**Ce que le bac à sable change pour qui tape `asl`** :
+
+- son `HOME` est son propre conteneur,
+  `~/Library/Containers/org.airdesktop.servicelocator.asl/Data` ; `asl`
+  remonte au répertoire du compte et y trouve le conteneur de groupe, là où
+  l'application et son agent tiennent l'identité de la machine ;
+- **`--state` et `ASL_STATE` ne peuvent viser que ce qu'il atteint** : son
+  conteneur, ou le conteneur de groupe. Un autre dossier est refusé par le
+  système (`Operation not permitted`), pas par `asl` ;
+- `~/.config/asl` lui est invisible : `asl enroll` écrit dans le groupe.
+
+**La commande dans le terminal : un lien `~/.local/bin/asl`** vers
+`/Applications/Air Service Locator.app/Contents/Helpers/asl`. L'application
+étant en bac à sable, elle ne peut pas écrire d'elle-même dans `~/.local/bin`
+(une exception temporaire serait refusée sur le Mac App Store). Le bouton
+« Installer la commande asl » ouvre donc un sélecteur de dossier
+(`NSOpenPanel`) qui propose `~/.local/bin` ; l'utilisateur confirme, et
+l'application obtient le droit d'y créer le lien par
+`com.apple.security.files.user-selected.read-write` — un droit de
+l'APPLICATION, pas d'`asl`. La fiche affiche aussi la commande à copier :
+
+```sh
+ln -s "/Applications/Air Service Locator.app/Contents/Helpers/asl" ~/.local/bin/asl
+```
+
+**Pour le développement**, un `asl` autonome, non signé et hors bac à sable,
+reste possible : `cargo build --release -p asl-cli` sur un Mac. Il cherche
+l'identité dans le même ordre (macOS peut demander, une fois, l'autorisation
+d'accéder aux données d'une autre application), et `--state` y vise n'importe
+quel dossier.
 
 ## Ce que le porteur doit poser sur une machine
 
