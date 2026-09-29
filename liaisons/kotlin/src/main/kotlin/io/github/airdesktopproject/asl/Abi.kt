@@ -162,7 +162,8 @@ internal object Abi {
     private val ENTIER = ValueLayout.JAVA_INT
     private val ADRESSE = ValueLayout.ADDRESS
 
-    /** Les vingt-sept fonctions, avec leur signature. */
+    /** Chaque fonction du registre (`abi.txt`), avec sa signature — sans en
+     * écrire le nombre ici : un compte recopié à la main dérive au premier ajout. */
     private val SIGNATURES: Map<String, FunctionDescriptor> = mapOf(
         "asl_version" to FunctionDescriptor.ofVoid(ADRESSE, ADRESSE, ADRESSE),
         "asl_faute_texte" to FunctionDescriptor.of(ADRESSE, ENTIER),
