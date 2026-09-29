@@ -983,9 +983,116 @@ fn version_vue(octets: &[u8]) -> Result<VersionVue, String> {
     })
 }
 
+/// Met en français la réponse d'`asl-directory` — où joindre un annuaire
+/// local (`annuaires.md` §2 quinquies).
+///
+/// # CHAQUE ADRESSE AVEC L'IDENTITÉ À ATTENDRE
+///
+/// Une paire, ce sont deux membres et **deux clés** (décision 59) : ce qu'on
+/// doit trouver au bout de l'adresse de l'un n'est pas la clé de l'autre. La
+/// ligne le dit, adresse par adresse, comme `asl diagnose` le dit d'un `421`.
+///
+/// **LA FORME RÉDUITE N'EST PAS UNE PANNE** : `voir` sans `localiser` dit que
+/// l'annuaire existe et qu'il est vivant, et ne donne pas où — le rendu dit
+/// pourquoi, et comment obtenir les adresses.
+///
+/// # Erreurs
+///
+/// Rend `Err` avec ce qui n'a pas pu être lu.
+pub fn annuaire_local(demande: asl_id::Identifiant, corps: &[u8]) -> Result<String, String> {
+    use asl_client::renvoi::AnnuaireResolu;
+    let resolu = AnnuaireResolu::lire(corps)
+        .map_err(|quoi| format!("la réponse d'asl-directory ne se lit pas ({quoi:?})"))?;
+    let mut texte = format!(
+        "service        {}\nannuaire       {}\n",
+        resolu.service().texte().as_str(),
+        resolu.annuaire().texte().as_str()
+    );
+    if resolu.annuaire() != demande {
+        texte.push_str(&format!(
+            "               (demandé sous {} ; la racine nomme le titulaire)\n",
+            demande.texte().as_str()
+        ));
+    }
+    match resolu.renvoi() {
+        Some(renvoi) => {
+            let combien = renvoi.adresses().len();
+            texte.push_str(&format!(
+                "membres        {combien} adresse{} de membre{} vivant{}, chacune sous l'identité à attendre\n",
+                if combien > 1 { "s" } else { "" },
+                if combien > 1 { "s" } else { "" },
+                if combien > 1 { "s" } else { "" },
+            ));
+            for (adresse, identite) in renvoi.membres() {
+                texte.push_str(&format!(
+                    "  {adresse:<45} identité : {}\n",
+                    identite.texte().as_str()
+                ));
+            }
+            texte.push_str(
+                "\n« Vivant » veut dire que sa voie vers les racines tient — pas qu'il est\n\
+                 joignable d'ici : aucune sonde ne l'a mesuré.\n",
+            );
+        }
+        None => texte.push_str(
+            "adresses       aucune — vous avez voir, pas localiser : pas d'adresses.\n\
+             \x20              L'annuaire existe et il est vivant ; le droit `localiser`\n\
+             \x20              sur un domaine qu'il héberge donne ses adresses.\n",
+        ),
+    }
+    Ok(texte)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{appareils, conclusion, machines, replication, reponses, version, vu};
+    use super::{
+        annuaire_local, appareils, conclusion, machines, replication, reponses, version, vu,
+    };
+
+    fn lu(texte: &str) -> asl_id::Identifiant {
+        asl_id::Identifiant::analyser(texte).expect("un identifiant d'essai")
+    }
+
+    #[test]
+    fn un_annuaire_local_se_dit_adresse_par_adresse_avec_son_identite() {
+        let corps = br#"{"service":"s-294B4BA9XHXFZ5DQ8Q7T35M7PY","annuaire":"n-7MSV5RPCXBZH25PQM4ZPE5X87P","adresses":["[2001:db8::51]:6630","192.0.2.52:6631"],"identites":"n-7MSV5RPCXBZH25PQM4ZPE5X87P n-4EQRD1VWYQQB1Y9C3T49Z8F8Z9"}"#;
+        let dit = annuaire_local(lu("n-7MSV5RPCXBZH25PQM4ZPE5X87P"), corps).expect("lisible");
+        assert!(
+            dit.contains("service        s-294B4BA9XHXFZ5DQ8Q7T35M7PY"),
+            "{dit}"
+        );
+        assert!(dit.contains("2 adresses de membres vivants"), "{dit}");
+        let ligne = dit
+            .lines()
+            .find(|ligne| ligne.contains("192.0.2.52:6631"))
+            .expect("la seconde adresse");
+        assert!(
+            ligne.ends_with("identité : n-4EQRD1VWYQQB1Y9C3T49Z8F8Z9"),
+            "{ligne}"
+        );
+        assert!(!dit.contains("demandé sous"), "{dit}");
+
+        // Une seule adresse, demandée sous un autre `n-…` : on le dit.
+        let seul = br#"{"service":"s-294B4BA9XHXFZ5DQ8Q7T35M7PY","annuaire":"n-7MSV5RPCXBZH25PQM4ZPE5X87P","adresses":["[2001:db8::51]:6630"],"identites":"n-7MSV5RPCXBZH25PQM4ZPE5X87P"}"#;
+        let dit = annuaire_local(lu("n-4EQRD1VWYQQB1Y9C3T49Z8F8Z9"), seul).expect("lisible");
+        assert!(dit.contains("1 adresse de membre vivant,"), "{dit}");
+        assert!(
+            dit.contains("demandé sous n-4EQRD1VWYQQB1Y9C3T49Z8F8Z9"),
+            "{dit}"
+        );
+    }
+
+    #[test]
+    fn un_annuaire_local_vu_sans_localiser_le_dit() {
+        let corps = br#"{"service":"s-294B4BA9XHXFZ5DQ8Q7T35M7PY","annuaire":"n-7MSV5RPCXBZH25PQM4ZPE5X87P"}"#;
+        let dit = annuaire_local(lu("n-7MSV5RPCXBZH25PQM4ZPE5X87P"), corps).expect("lisible");
+        assert!(
+            dit.contains("vous avez voir, pas localiser : pas d'adresses"),
+            "{dit}"
+        );
+        assert!(!dit.contains("identité :"), "{dit}");
+        assert!(annuaire_local(lu("n-7MSV5RPCXBZH25PQM4ZPE5X87P"), b"{}").is_err());
+    }
 
     /// Les trois postures que l'annuaire sert aujourd'hui se disent, et
     /// chacune porte de quoi la comprendre sans connaître le produit.

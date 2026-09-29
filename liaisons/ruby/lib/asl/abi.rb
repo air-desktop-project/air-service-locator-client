@@ -178,7 +178,8 @@ module Asl
       chemins
     end
 
-    # Les vingt-sept fonctions, une fois chargées.
+    # Chaque fonction du registre (`abi.txt`), une fois chargée — sans en écrire
+    # le nombre ici : un compte recopié à la main dérive au premier ajout.
     #
     # **CHAQUE SIGNATURE EST DÉCLARÉE À LA MAIN.** C'est le prix de `fiddle`, et
     # il est réel : une déclaration fausse ne se voit pas au chargement, elle

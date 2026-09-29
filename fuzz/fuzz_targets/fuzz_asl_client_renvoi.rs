@@ -18,12 +18,17 @@
 //! 3. **Un seul saut** : un renvoi reçu du côté local ne compte pas.
 //! 4. **Un retour aux racines depuis le local se paie** : jamais d'attente
 //!    nulle à ce moment-là.
+//! 5. **Une réponse d'`asl-directory` lue porte un `s-…` et un `n-…`** ; sa
+//!    forme complète est exactement le renvoi que [`Renvoi::lire`] tire des
+//!    mêmes octets, et la forme réduite n'a aucune adresse (0.21.0).
 
 #![no_main]
 
 use arbitrary::Arbitrary;
 use asl_client::Reprise;
-use asl_client::renvoi::{ADRESSES_MAX, Aiguillage, Cote, Renvoi, separer_l_adresse};
+use asl_client::renvoi::{
+    ADRESSES_MAX, Aiguillage, AnnuaireResolu, Cote, Renvoi, separer_l_adresse,
+};
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use libfuzzer_sys::fuzz_target;
 
@@ -81,6 +86,18 @@ fuzz_target!(|entree: Entree| {
             if !renvoi.nomme_chaque_membre() {
                 assert_eq!(*identite, renvoi.annuaire());
             }
+        }
+    }
+
+    if let Ok(resolu) = AnnuaireResolu::lire(&entree.corps) {
+        assert!(resolu.service().texte().as_str().starts_with("s-"));
+        assert!(resolu.annuaire().texte().as_str().starts_with("n-"));
+        match resolu.renvoi() {
+            Some(renvoi) => {
+                assert_eq!(Renvoi::lire(&entree.corps).as_ref(), Ok(renvoi));
+                assert_eq!(renvoi.annuaire(), resolu.annuaire());
+            }
+            None => assert!(Renvoi::lire(&entree.corps).is_err()),
         }
     }
 

@@ -361,6 +361,90 @@ pub fn preparer_un_enrolement() -> Result<(Enrolement, [u8; 32]), Faute> {
     Ok((Enrolement::nouveau(graine), graine))
 }
 
+// ── Le cache des racines (décisions 56, 76 et 85) ────────────────────────────
+
+/// Le nom du fichier qui garde les locateurs appris des racines, **à côté de
+/// l'identité**.
+///
+/// # POURQUOI ICI, ET NON DANS `~/.cache`
+///
+/// Parce que c'est l'état de CETTE machine face aux racines, et que qui
+/// déplace l'identité (`--state`, `ASL_STATE`, l'unité systemd d'un daemon)
+/// veut que le reste suive : un daemon sous `/var/lib/asl` n'a pas de
+/// `~/.cache`. **Rien n'y est secret** — des adresses publiques et des `n-…`
+/// —, d'où le mode ordinaire ; et l'effacer ne casse rien.
+pub const CACHE_DES_RACINES: &str = "racines";
+
+/// Ce que le cache des racines dit, une fois cherché.
+pub enum Cache {
+    /// Aucun fichier : rien n'a encore été appris.
+    Absent,
+    /// Un fichier qu'on n'a pas pu lire, ou qui ne se lit pas — **ignoré**, et
+    /// dit dans un diagnostic ; les racines embarquées répondent.
+    Illisible(String),
+    /// Les locateurs appris.
+    Lu(asl_client_tokio::LocateursAppris),
+}
+
+/// Cherche le cache des racines. **Ne rend jamais d'erreur** : un cache
+/// illisible est un cache qu'on ignore.
+#[must_use]
+pub fn lire_le_cache(dossier: &Path) -> Cache {
+    let ou = dossier.join(CACHE_DES_RACINES);
+    let fichier = match fs::File::open(&ou) {
+        Ok(fichier) => fichier,
+        Err(quoi) if quoi.kind() == std::io::ErrorKind::NotFound => return Cache::Absent,
+        Err(quoi) => return Cache::Illisible(quoi.to_string()),
+    };
+    // Une borne à la lecture même : un fichier géant posé là n'est pas lu
+    // jusqu'au bout pour être refusé ensuite.
+    let borne = u64::try_from(asl_client_tokio::CACHE_MAX)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let mut texte = String::new();
+    if let Err(quoi) = fichier.take(borne).read_to_string(&mut texte) {
+        return Cache::Illisible(quoi.to_string());
+    }
+    match asl_client_tokio::LocateursAppris::lire(&texte) {
+        Ok(appris) => Cache::Lu(appris),
+        Err(quoi) => Cache::Illisible(quoi.to_string()),
+    }
+}
+
+/// Écrit le cache des racines, **d'un coup** : un fichier voisin, puis un
+/// renommage. Deux `asl` lancés ensemble ne se lisent jamais à moitié écrits.
+///
+/// # Erreurs
+///
+/// [`Faute::Disque`] — que l'appelant dit, sans échouer pour autant.
+pub fn ecrire_le_cache(
+    dossier: &Path,
+    appris: &asl_client_tokio::LocateursAppris,
+) -> Result<(), Faute> {
+    fs::create_dir_all(dossier).map_err(|quoi| Faute::Disque {
+        ou: dossier.to_path_buf(),
+        quoi,
+    })?;
+    let ou = dossier.join(CACHE_DES_RACINES);
+    let provisoire = dossier.join(format!(".{CACHE_DES_RACINES}.{}", std::process::id()));
+    fs::write(&provisoire, appris.ecrire()).map_err(|quoi| Faute::Disque {
+        ou: provisoire.clone(),
+        quoi,
+    })?;
+    fs::rename(&provisoire, &ou).map_err(|quoi| {
+        let _ = fs::remove_file(&provisoire);
+        Faute::Disque { ou, quoi }
+    })
+}
+
+/// L'heure, en secondes depuis l'époque — celle que le cache retient.
+#[must_use]
+pub fn maintenant() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |ecoule| ecoule.as_secs())
+}
+
 /// Des octets en hexadécimal minuscule.
 fn en_hexa(octets: &[u8]) -> String {
     let mut texte = String::with_capacity(octets.len().saturating_mul(2));
@@ -534,5 +618,53 @@ mod essais {
             "deux tirages identiques : ce n'est pas du hasard"
         );
         assert_ne!(une, [0_u8; 32]);
+    }
+
+    #[test]
+    fn le_cache_des_racines_absent_corrompu_ou_lu() {
+        let ou = dossier("cache");
+        // Absent : rien n'a été appris, et ce n'est pas une faute.
+        assert!(matches!(lire_le_cache(&ou), Cache::Absent));
+
+        // Écrit, puis relu tel quel — le dossier naît s'il manque.
+        let nitrogen = asl_client::racines::RACINES[0]
+            .identite()
+            .expect("embarquée");
+        let (appris, _) = asl_client_tokio::LocateursAppris::depuis_la_liste(
+            &[asl_client_tokio::RacineApprise {
+                identifiant: nitrogen,
+                cle: [0; 32],
+                locateurs: vec!["[2001:db8::1]:6631".to_owned()],
+            }],
+            1_790_000_000,
+        );
+        ecrire_le_cache(&ou, &appris).expect("un dossier à nous");
+        match lire_le_cache(&ou) {
+            Cache::Lu(relu) => assert_eq!(relu, appris),
+            _ => panic!("le cache écrit doit se relire"),
+        }
+        // Rien ne traîne du fichier provisoire.
+        let restes: Vec<_> = fs::read_dir(&ou)
+            .expect("le dossier")
+            .filter_map(Result::ok)
+            .map(|entree| entree.file_name())
+            .collect();
+        assert_eq!(restes, vec![std::ffi::OsString::from(CACHE_DES_RACINES)]);
+
+        // **CORROMPU : IGNORÉ, JAMAIS UNE PANNE** — et l'on dit pourquoi.
+        fs::write(ou.join(CACHE_DES_RACINES), "n'importe quoi\n").expect("écrire");
+        match lire_le_cache(&ou) {
+            Cache::Illisible(quoi) => assert!(quoi.contains("ligne 1"), "{quoi}"),
+            _ => panic!("un cache corrompu est illisible"),
+        }
+        fs::write(ou.join(CACHE_DES_RACINES), [0xFF, 0xFE]).expect("écrire");
+        assert!(matches!(lire_le_cache(&ou), Cache::Illisible(_)));
+        fs::write(
+            ou.join(CACHE_DES_RACINES),
+            "#".repeat(asl_client_tokio::CACHE_MAX + 10),
+        )
+        .expect("écrire");
+        assert!(matches!(lire_le_cache(&ou), Cache::Illisible(_)));
+        let _ = fs::remove_dir_all(&ou);
     }
 }

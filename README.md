@@ -186,6 +186,33 @@ si cette clé se déduit en l'identifiant attendu, sans autorité ni nom.
 `asl roots` demande la liste à une racine et la vérifie : une seule clé qui ne
 donne pas son `n-…` la refuse entière.
 
+**Les locateurs des racines se renouvellent, pas les racines** (0.21.0,
+décisions 56, 76 et 85). Après une connexion à une racine embarquée, `asl`
+relit `GET /v1/racines` — **si son cache a plus de vingt-quatre heures**, ou
+s'il manque, ou s'il ne se lit pas —, la vérifie comme `asl roots`, et garde
+dans le fichier `racines`, **à côté de l'identité** (`--state`, `ASL_STATE`,
+sinon `~/.config/asl/racines`), les seules adresses littérales des racines
+**déjà embarquées**, sous leur `n-…` :
+
+```text
+appris_a = 1790000000
+racine = n-0PWT8HZD80QMSPPDZ5CQXXYHQC [2001:41d0:20a:900::1dd4]:6630 178.32.16.250:6630
+racine = n-3K3P6H252W8K9370QG1YYTWBWB [2001:41d0:20a:900::1d32]:6630 178.32.16.249:6630
+```
+
+Une racine inconnue de ce binaire est ignorée — une racine nouvelle exige une
+nouvelle version du client —, un nom n'est pas gardé (C20), et **aucune racine
+embarquée n'est jamais retirée** : la tournée essaie d'abord les locateurs
+appris, puis ceux de la liste embarquée en secours, IPv6 d'abord dans chaque
+famille. Le cache ne porte aucune confiance — c'est toujours la clé embarquée
+qu'on juge au bout —, et **un cache illisible est ignoré**, jamais une panne :
+les racines embarquées répondent, et il se réécrit à la connexion suivante.
+Un jour, parce qu'une racine ne déménage que par un geste d'exploitant, rare
+et annoncé, et qu'un cache en retard ne casse rien : au moins une racine
+écoute sur 6630. `asl diagnose` et `asl roots` disent d'où vient chaque
+locateur — `appris`, `embarqué`, ou les deux — et l'âge du cache ; `asl roots`
+le remet à jour quel que soit son âge.
+
 **La bascule est finie** (décision 58, étape 5 ; 0.19.0) : depuis le
 2026-09-28, les racines ne servent plus que leur certificat d'identité, et le
 client ne croit plus que lui. La chaîne d'autorité et sa racine épinglée sont
@@ -215,7 +242,17 @@ avant que l'annuaire ne rende le propriétaire. De là, un programme de B part
 d'un `u-…` que A lui a donné : `asl machines <u-…>` liste ce que A lui a ouvert,
 `asl where <service>` trouve toutes les instances d'un nom qu'il a le droit de
 voir — sans qu'un humain ait à recopier des `m-…`. Sans argument, `asl machines`
-rend les siennes ; et `asl enrolled` rend **les appareils enrôlés sur le compte
+rend les siennes ; `asl where <n-…> asl-directory` dit **où joindre un
+annuaire local** (0.21.0, serveur 0.38.0, `annuaires.md` §2 quinquies) — le
+`n-…` de son titulaire, et, avec le droit `localiser`, chaque adresse de
+membre vivant avec **l'identité à attendre au bout** (une paire, ce sont deux
+clés) ; avec `voir` seul, qu'il existe et qu'il est vivant, sans adresses ;
+sinon `404` — introuvable, parti ou hors de vos droits, que la racine ne
+distingue pas (C9). Sous un `n-…`, aucun autre nom ne se résout, et la
+commande le dit. Ce verbe est de la voie machine (décision 86) : il n'a pas
+d'équivalent dans l'ABI ni en JNI — un daemon suit déjà seul le `421` vers
+son annuaire local, et les applications lisent l'état de l'annuaire dans
+`GET /v1/annuaires`. Et `asl enrolled` rend **les appareils enrôlés sur le compte
 de cette machine** (`GET /v1/moi/appareils`, révoqués marqués, modèle et
 plate-forme quand l'appareil s'est décrit, « en attente d'attestation » pour
 une clé apportée par un autre appareil et pas encore prouvée sous une posture
