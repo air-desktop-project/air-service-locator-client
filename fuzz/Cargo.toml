@@ -42,15 +42,15 @@ path = "../crates/asl-upnp"
 
 [dependencies.asl-cle]
 git = "https://github.com/air-desktop-project/air-service-locator-server"
-rev = "6a4f16f"
+rev = "f984ae8"
 
 [dependencies.asl-echo]
 git = "https://github.com/air-desktop-project/air-service-locator-server"
-rev = "6a4f16f"
+rev = "f984ae8"
 
 [dependencies.asl-id]
 git = "https://github.com/air-desktop-project/air-service-locator-server"
-rev = "6a4f16f"
+rev = "f984ae8"
 
 [[bin]]
 name = "fuzz_asl_client_reprise"
