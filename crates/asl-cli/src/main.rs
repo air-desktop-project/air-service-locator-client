@@ -229,10 +229,18 @@ OPTIONS
                              with the locators learned from GET /v1/racines
                              tried first (the `racines` file next to the
                              identity, re-read once a day).
-    --state <dir>            Where this machine's identity lives.
-                             Default: ASL_STATE, then $XDG_CONFIG_HOME/asl,
-                             then ~/.config/asl (on macOS, the Service Locator
-                             app's identity when that one is empty).
+    --state <dir>            Where this machine's identity lives, with the
+                             roots cache next to it. Taken as is, with no
+                             fallback — and so is ASL_STATE, which comes next.
+                             Default: $XDG_CONFIG_HOME/asl, else ~/.config/asl.
+                             On macOS, before those, the first that holds an
+                             identity of: the Service Locator app's group
+                             container (~/Library/Group Containers/
+                             SB7H9B6TY8.org.airdesktop.servicelocator/Library/
+                             Application Support/asl), then the app's former
+                             container (with a warning: launch the app to
+                             migrate it). Differing identities in two places
+                             are reported on stderr, at every command.
     --name <name>            The name sent as `:authority`, when it differs
                              from the host. It proves nothing.
     --help                   This.
@@ -308,13 +316,21 @@ fn main() -> ExitCode {
 
 /// Mène la commande, une fois l'ordonnanceur monté.
 async fn conduire(invocation: &Invocation) -> Sortie {
-    let dossier = etat::repertoire(invocation.etat.as_deref());
+    // **CE QUI CLOCHE DANS L'ÉTAT SE DIT À CHAQUE COMMANDE**, sur la sortie
+    // d'erreur, une ligne chacun : l'ancien conteneur de l'application encore
+    // lu, deux identités de machine qui se contredisent (décision 93). Une
+    // fois ne suffirait pas — c'est précisément ce qu'on oublie.
+    let etat = etat::chercher(invocation.etat.as_deref());
+    for avertissement in &etat.avertissements {
+        eprintln!("asl : {avertissement}");
+    }
+    let dossier = etat.dossier.clone();
 
     match &invocation.commande {
         // Déjà traitée avant l'ordonnanceur : `asl --aide` doit répondre même
         // quand rien ne se monte.
         Commande::Aide | Commande::Version => Ok(()),
-        Commande::Diagnostic => commandes::diagnostic(invocation, &dossier).await,
+        Commande::Diagnostic => commandes::diagnostic(invocation, &etat).await,
         Commande::Enrole { code } => commandes::enrole(invocation, &dossier, code).await,
         Commande::Annonce { service, points } => {
             let identite = identite(&dossier)?;
@@ -350,7 +366,7 @@ async fn conduire(invocation: &Invocation) -> Sortie {
         // Sans identité : `GET /v1/racines` n'exige rien.
         Commande::Racines => commandes::racines_apprises(invocation).await,
         // Hors ligne : rien à joindre.
-        Commande::Identite => commandes::identite(&dossier),
+        Commande::Identite => commandes::identite(&etat),
     }
 }
 

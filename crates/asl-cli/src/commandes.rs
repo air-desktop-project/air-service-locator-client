@@ -1143,7 +1143,8 @@ async fn joindre_et_lire(reglages: &Reglages, identite: &Identite) -> Result<Vec
 ///
 /// C'est ce qu'un script ou un exploitant lit sur une machine dont le réseau est
 /// en panne : le fichier d'identité suffit, et l'annuaire n'a rien à y ajouter.
-pub fn identite(dossier: &Path) -> Sortie {
+pub fn identite(etat: &etat::Etat) -> Sortie {
+    let dossier = etat.dossier.as_path();
     let fiche =
         etat::lire_la_fiche(dossier).map_err(|quoi| Issue::Configuration(quoi.to_string()))?;
     println!(
@@ -1157,6 +1158,7 @@ pub fn identite(dossier: &Path) -> Sortie {
         ),
     }
     println!("identité       {}", dossier.join("identite").display());
+    println!("               lue depuis {}", etat.origine.dire());
     Ok(())
 }
 
@@ -1176,7 +1178,8 @@ pub fn identite(dossier: &Path) -> Sortie {
 /// renvoie à `asl announce` — plutôt que d'affirmer ce qu'il n'a pas mesuré, ce
 /// que C6 interdit à l'annuaire et que l'utilitaire n'a pas plus le droit de
 /// faire.
-pub async fn diagnostic(invocation: &Invocation, dossier: &Path) -> Sortie {
+pub async fn diagnostic(invocation: &Invocation, etat: &etat::Etat) -> Sortie {
+    let dossier = etat.dossier.as_path();
     let reglages = reglages(invocation)?;
 
     println!("annuaires, dans l'ordre où ils seront essayés");
@@ -1271,8 +1274,13 @@ pub async fn diagnostic(invocation: &Invocation, dossier: &Path) -> Sortie {
         Err(quoi) => println!("vu             INDISPONIBLE — {quoi}"),
     }
 
-    // L'identité, si elle existe.
+    // L'identité, si elle existe — et d'où on la lit (décision 93).
     println!();
+    println!(
+        "état           {} — {}",
+        dossier.display(),
+        etat.origine.dire()
+    );
     match etat::lire_la_fiche(dossier) {
         Err(quoi) => {
             println!("identité       ABSENTE OU ILLISIBLE");

@@ -434,6 +434,21 @@ fn enrolled_sans_compte_connu_ne_refuse_pas_hors_ligne() {
     assert_eq!(code(&sortie), Some(4), "{}", texte(&sortie.stderr));
 }
 
+#[test]
+fn identity_dit_d_ou_vient_l_identite() {
+    // `--state` est pris tel quel : l'identité s'y lit, la provenance est
+    // dite, et rien n'est à signaler sur la sortie d'erreur — ni repli, ni
+    // conflit, quoi que porte la maison de qui lance l'essai.
+    let bac = Bac::neuf("identity-origine");
+    let machine = poser_une_identite(bac.chemin(), 0o600);
+    let sortie = asl(&["--state", &bac.chemin().to_string_lossy(), "identity"]);
+    assert_eq!(code(&sortie), Some(0), "{}", texte(&sortie.stderr));
+    let dit = texte(&sortie.stdout);
+    assert!(dit.contains(machine.texte().as_str()), "{dit}");
+    assert!(dit.contains("lue depuis --state"), "{dit}");
+    assert_eq!(texte(&sortie.stderr), "");
+}
+
 // ── Personne n'a répondu : code 4 ───────────────────────────────────────────
 
 #[test]

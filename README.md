@@ -171,6 +171,32 @@ chez l'utilisateur (`$XDG_CONFIG_HOME/asl`, sinon `~/.config/asl`, ou
 `--state`) : ni l'installation ni le retrait du paquet n'y touchent — `apt
 purge asl` ne révoque rien et n'efface aucune clé.
 
+**Sur macOS, l'identité de l'application passe d'abord** (0.22.1, décision 93,
+E11 révisé). Un Mac est enrôlé par l'application Service Locator, et son agent
+`asl-echo` lit la même identité : toutes deux sont en bac à sable, et
+partagent le conteneur de groupe `SB7H9B6TY8.org.airdesktop.servicelocator`.
+`asl` cherche donc, dans l'ordre :
+
+1. `--state`, puis `ASL_STATE` — **tels quels, sans aucun repli** ;
+2. le conteneur de groupe,
+   `~/Library/Group Containers/SB7H9B6TY8.org.airdesktop.servicelocator/Library/Application Support/asl/`,
+   s'il porte une `identite` ;
+3. l'ancien conteneur de l'application,
+   `~/Library/Containers/org.airdesktop.servicelocator.mac/Data/Library/Application Support/asl/`,
+   s'il en porte une — avec un avertissement : l'application la migre au
+   premier lancement, il suffit de la lancer ;
+4. `$XDG_CONFIG_HOME/asl`, sinon `~/.config/asl` — et c'est là qu'`asl
+   enroll` écrit quand aucun des précédents ne porte d'identité ; sinon il
+   écrit là où l'identité est lue, pour que la commande suivante lise celle
+   qu'il vient de lier.
+
+Le cache `racines` suit l'identité, dans le même dossier. Les chemins partent
+du répertoire du compte, jamais du conteneur qu'un bac à sable met dans
+`HOME`. **Deux emplacements qui portent des machines différentes sont dits à
+chaque commande**, sur la sortie d'erreur, en une ligne ; la plus haute
+priorité est prise. `asl identity` et `asl diagnose` disent d'où l'identité
+est lue. Linux ne change pas.
+
 ## Ce que le porteur doit poser sur une machine
 
 **Une paire de clés Ed25519 que la bibliothèque génère ELLE-MÊME**, et dont la
@@ -191,7 +217,7 @@ décisions 56, 76 et 85). Après une connexion à une racine embarquée, `asl`
 relit `GET /v1/racines` — **si son cache a plus de vingt-quatre heures**, ou
 s'il manque, ou s'il ne se lit pas —, la vérifie comme `asl roots`, et garde
 dans le fichier `racines`, **à côté de l'identité** (`--state`, `ASL_STATE`,
-sinon `~/.config/asl/racines`), les seules adresses littérales des racines
+sinon `~/.config/asl/racines` — sur macOS, le dossier où l'identité est lue), les seules adresses littérales des racines
 **déjà embarquées**, sous leur `n-…` :
 
 ```text
