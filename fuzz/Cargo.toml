@@ -39,15 +39,15 @@ path = "../crates/asl-client"
 # lignes avancent ensemble.
 [dependencies.asl-cle]
 git = "https://github.com/air-desktop-project/air-service-locator-server"
-rev = "cffb21d"
+rev = "3f41382"
 
 [dependencies.asl-echo]
 git = "https://github.com/air-desktop-project/air-service-locator-server"
-rev = "cffb21d"
+rev = "3f41382"
 
 [dependencies.asl-id]
 git = "https://github.com/air-desktop-project/air-service-locator-server"
-rev = "cffb21d"
+rev = "3f41382"
 
 [[bin]]
 name = "fuzz_asl_client_reprise"

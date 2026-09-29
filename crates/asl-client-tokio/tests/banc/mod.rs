@@ -639,6 +639,26 @@ pub async fn lever_a_plusieurs<S>(
 where
     S: ams_h3::Service + Clone + Send + 'static,
 {
+    let (adresse, tache, _) = lever_a_plusieurs_qui_pousse(chaine, cle, service).await;
+    (adresse, tache)
+}
+
+/// Le même, avec de quoi **pousser un verdict** quand l'essai le décide — à
+/// chaque connexion qui tient le flux des poussées (`GET /v1/poussees`),
+/// c'est-à-dire à l'écho, et à lui seul.
+pub async fn lever_a_plusieurs_qui_pousse<S>(
+    chaine: Vec<u8>,
+    cle: Vec<u8>,
+    service: S,
+) -> (
+    SocketAddr,
+    tokio::task::JoinHandle<()>,
+    tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+)
+where
+    S: ams_h3::Service + Clone + Send + 'static,
+{
+    let (voie, mut a_pousser) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
     let socket = UdpSocket::bind("127.0.0.1:0").await.expect("une socket");
     let adresse = socket.local_addr().expect("une adresse");
 
@@ -717,6 +737,23 @@ where
                     quic.on_timeout(maintenant());
                 }
             }
+            // **ON NE VIDE LA VOIE QUE SI QUELQU'UN TIENT LE FLUX** — sans
+            // quoi la poussée serait consommée et jetée avant que l'écho l'ait
+            // demandé.
+            if connexions
+                .iter()
+                .any(|(_, _, h3, _)| !h3.tenus().is_empty())
+            {
+                while let Ok(octets) = a_pousser.try_recv() {
+                    for (_, quic, h3, _) in &mut connexions {
+                        let tenus: Vec<StreamId> = h3.tenus().to_vec();
+                        for flux in tenus {
+                            let mut pont = asl_client_tokio::Pont(quic);
+                            let _ = h3.pousser(&mut pont, flux, &octets);
+                        }
+                    }
+                }
+            }
             for (pair, quic, ..) in &mut connexions {
                 loop {
                     match quic.poll_transmit(&mut place, maintenant()) {
@@ -732,7 +769,7 @@ where
             connexions.retain(|(_, quic, ..)| !quic.is_closed());
         }
     });
-    (adresse, tache)
+    (adresse, tache, voie)
 }
 
 /// Ce qu'un [`AnnuaireDEcho`] sait, partagé entre ses connexions.

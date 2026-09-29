@@ -89,23 +89,26 @@ asl-client-ffi = { path = "crates/asl-client-ffi", version = "0.23.0" }
 # (0.10.0, 2026-09-18) : `GET /v1/moi/appareils`, ce qu'`asl enrolled` lit ;
 # puis `5355008` (0.31.0, 2026-09-27, merge de la PR serveur #57) : le `421` qui nomme chaque membre ;
 # puis `cffb21d` (0.42.0, 2026-09-29, merge de la PR serveur #76) : le codec de
-# l'écho et le corps de `POST /v1/echo/jetons` (`protocole.md` §3 quater).
-asl-id = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "cffb21d" }
-asl-proto = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "cffb21d" }
-asl-cle = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "cffb21d" }
-asl-api = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "cffb21d" }
+# l'écho et le corps de `POST /v1/echo/jetons` (`protocole.md` §3 quater) ;
+# puis `3f41382` (0.43.0, merge de la PR serveur #77) : la sonde par l'écho —
+# `asl-proto` lit enfin un verdict mesuré sur le point UDP de l'écho, que
+# l'annuaire pousse quand la signature a tenu.
+asl-id = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "3f41382" }
+asl-proto = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "3f41382" }
+asl-cle = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "3f41382" }
+asl-api = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "3f41382" }
 # `asl-racines` (serveur 0.31.0, décision 59) : la liste embarquée des racines
 # et la moitié pure de la règle « clé = identité », une fois pour les deux
 # dépôts — la 0.17.0 les avait recopiées. **SHA d'une branche non mergée**
 # (`identite-par-membre`, PR serveur #57) : à avancer au SHA de merge.
-asl-racines = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "cffb21d" }
+asl-racines = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "3f41382" }
 # `asl-echo` (serveur 0.41.0, décisions 89 à 91) : les trois datagrammes de
 # l'écho et le jeton, lus, écrits et vérifiés hors ligne — le codec que
 # l'annuaire emploie pour sonder, et `asl echo` / `asl ping` pour répondre et
 # vérifier. Une grammaire, écrite une fois pour les deux dépôts, comme les
 # autres ; `no_std`, sans entrée-sortie, et rien de neuf dans le graphe
 # (`asl-cle` et `asl-id` y étaient déjà).
-asl-echo = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "cffb21d" }
+asl-echo = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "3f41382" }
 
 # ── LA PILE QUIC ET HTTP/3, EMPRUNTÉE À `air-mail-server` (C15) ─────────────
 #

@@ -10,12 +10,12 @@
 //! l'annuaire ne vérifie ni preuve ni droit ; c'est l'essai qui dit qui a le
 //! droit ([`banc::AnnuaireDEcho`]).
 //!
-//! # CE QUI N'EST PAS ÉPROUVÉ, ET POURQUOI
+//! # LE VERDICT MESURÉ SUR UDP
 //!
-//! La poussée d'un verdict `joignable` sur le point de l'écho : l'`asl-proto`
-//! épinglé (serveur 0.42.0) refuse un verdict mesuré sur UDP, et c'est la PR
-//! serveur de la sonde par l'écho qui le relâche. Le banc rend donc
-//! `en_cours`, et l'essai qui fera pousser `joignable` viendra avec ce SHA.
+//! Depuis le serveur 0.43.0, l'annuaire pousse `joignable` sur le point UDP
+//! de l'écho quand sa signature a tenu — un verdict qu'un `asl-proto` de
+//! 0.42.0 refusait. [`l_echo_dit_le_verdict_joignable_que_l_annuaire_pousse`]
+//! le fait pousser par le banc, et vérifie que l'écho le lit et le dit.
 
 #[path = "../../asl-client-tokio/tests/banc/mod.rs"]
 mod banc;
@@ -32,7 +32,7 @@ use asl_echo::{
     DefiEcho, Jeton, REPONSE_OCTETS, REQUETE_OCTETS, Reponse, SondeAnnuaire, SondeJeton,
 };
 use asl_id::{Genre, Identifiant};
-use banc::{AnnuaireDEcho, EtatDEcho, cle_de_banc, lever_a_plusieurs, materiel};
+use banc::{AnnuaireDEcho, EtatDEcho, cle_de_banc, lever_a_plusieurs_qui_pousse, materiel};
 use tokio::net::UdpSocket;
 
 /// Les deux machines de l'essai : l'écho, et celle qui sonde.
@@ -112,6 +112,7 @@ struct Decor {
     sondeur: Bac,
     _bac_echo: Bac,
     tache: tokio::task::JoinHandle<()>,
+    pousser: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
 }
 
 impl Decor {
@@ -127,7 +128,7 @@ impl Decor {
             sans_droit,
             etat: Arc::clone(&etat),
         };
-        let (adresse, tache) = lever_a_plusieurs(cert, pkcs8, service).await;
+        let (adresse, tache, pousser) = lever_a_plusieurs_qui_pousse(cert, pkcs8, service).await;
         let annuaire = format!("{adresse}={}", identite_du_banc.texte().as_str());
 
         let bac_echo = Bac::neuf(&format!("{nom}-echo"));
@@ -159,6 +160,7 @@ impl Decor {
             sondeur,
             _bac_echo: bac_echo,
             tache,
+            pousser,
         }
     }
 
@@ -496,4 +498,36 @@ async fn une_reponse_illisible_se_dit_telle() {
     );
     assert!(dit.contains("réponse illisible"), "{dit}");
     tache.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn l_echo_dit_le_verdict_joignable_que_l_annuaire_pousse() {
+    let decor = Decor::lever("echo-joignable", Vec::new()).await;
+    // Le port est dans la plage de l'écho.
+    assert!((6631..=6639).contains(&decor.port), "{}", decor.port);
+    // **CE QUE L'ANNUAIRE 0.43.0 POUSSE** quand la preuve a tenu : `joignable`
+    // sur le point UDP, avec le candidat qui a répondu.
+    let port = decor.port;
+    let poussee = format!(
+        r#"{{"vu_depuis":{{"adresse":"127.0.0.1","port":{port}}},"derriere_nat":"non","joignabilite":[{{"protocole":"udp","port":{port},"verdict":"joignable","candidat":"127.0.0.1:{port}","origine":"reflexif","a":1789217731000}}]}}"#
+    );
+    let mut tampons = asl_proto::cadrage::TamponsReponse::nouveaux();
+    asl_proto::Poussee::decoder(poussee.as_bytes(), &mut tampons)
+        .expect("l'asl-proto épinglé lit un verdict mesuré sur UDP");
+    decor
+        .pousser
+        .send(poussee.into_bytes())
+        .expect("le banc écoute");
+    // Le temps que la poussée traverse, et qu'une boucle d'entretien la lise.
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    let (code, dit) = decor.arreter();
+    assert_eq!(code, Some(0), "{dit}");
+    assert!(
+        dit.lines().any(
+            |ligne| ligne.starts_with(&format!("verdict        udp:{port}"))
+                && ligne.contains("joignable      constaté à 1789217731000")
+        ),
+        "l'écho dit le verdict poussé : {dit}"
+    );
+    assert!(!dit.contains("ILLISIBLE"), "{dit}");
 }
