@@ -405,7 +405,9 @@ seconde, `coupée` si.
 **L'écho : prouver qu'une machine est joignable, et que c'est bien elle**
 (0.23.0, serveur 0.42.0, `protocole.md` §3 quater, décisions 89 à 93).
 `asl echo` fait répondre cette machine : il lie **une** socket UDP à un port
-que le noyau tire, annonce `asl-echo` avec un seul point `udp:<port>`, et
+tiré **au hasard dans la plage 6631–6639** (le suivant de son ordre tiré si
+celui-là est pris ; toute la plage prise est une faute de configuration,
+« aucun port libre dans 6631–6639 », code 2), annonce `asl-echo` avec un seul point `udp:<port>`, et
 **tient le bail sur cette même socket** — derrière un NAT, le mapping que le
 bail ouvre et que son keepalive garde est celui de la socket où l'écho
 écoute. Il ne répond qu'aux sondes signées, vérifiées hors ligne : celle de
@@ -422,12 +424,28 @@ proprement. Son journal est sobre : une ligne par preuve rendue, un bilan par
 minute au plus de ce qu'il a tu, et l'horloge qui dérive quand une sonde
 d'annuaire authentique arrive hors de sa fenêtre.
 
+**La plage s'ouvre une fois dans le pare-feu de chaque machine qui fait
+tourner l'écho** (décision du 2026-09-29 : un port éphémère tombait sous la
+politique `drop` du pare-feu, et personne ne peut ouvrir d'avance un port
+qu'il ne connaît pas) :
+
+```sh
+# nft, dans la chaîne input de la table inet filter
+nft add rule inet filter input udp dport 6631-6639 accept
+# ou ufw
+sudo ufw allow proto udp from any to any port 6631:6639
+```
+
+Neuf ports, et non un : plusieurs échos peuvent tourner sur une machine, et
+l'écho reste sans port fixe (décision 89) — il ne répond de toute façon
+qu'aux sondes signées.
+
 ```text
 $ asl echo
-écho           m-3GE1R70W3GE1R70W3GE1R70W3G — udp 38302, tiré par le noyau
+écho           m-3GE1R70W3GE1R70W3GE1R70W3G — udp 6634, tiré dans 6631–6639
                il ne répond qu'aux sondes signées ; aux autres, le silence.
-bail           tenu par n-0PWT8HZD80QMSPPDZ5CQXXYHQC ([2001:41d0:20a:900::1dd4]:6630) — s-1Y7R… annoncé, vu depuis [2a01:e0a:…]:38302
-verdict        udp:38302    non sondé      …
+bail           tenu par n-0PWT8HZD80QMSPPDZ5CQXXYHQC ([2001:41d0:20a:900::1dd4]:6630) — s-1Y7R… annoncé, vu depuis [2a01:e0a:…]:6634
+verdict        udp:6634     joignable      constaté à 1790000000000
 sonde          jeton    m-40G2081040G2081040G2081040 depuis [2a01:cb00:…]:47031 — preuve rendue
 ```
 
@@ -443,7 +461,7 @@ partie et sous quelle adresse l'écho l'a vue :
 ```text
 $ asl ping grenier
 sonde partie de m-40G2081040G2081040G2081040 (carbon) depuis [2a01:cb00:…]:47031, vue par l'écho comme [2a01:cb00:…]:47031
-  [2a01:e0a:…]:38302  udp  réflexif  joignable d'ici — 18 ms, preuve vérifiée (depuis [2a01:cb00:…]:47031)
+  [2a01:e0a:…]:6634  udp  réflexif  joignable d'ici — 18 ms, preuve vérifiée (depuis [2a01:cb00:…]:47031)
 grenier (m-3GE1R70W3GE1R70W3GE1R70W3G) : joignable d'ici, 18 ms, preuve vérifiée
   — clé de m-3GE1R70W3GE1R70W3GE1R70W3G selon la racine n-0PWT8HZD80QMSPPDZ5CQXXYHQC ; constaté à 12:02:31 UTC
 ```

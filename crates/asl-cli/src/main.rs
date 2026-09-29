@@ -224,8 +224,11 @@ COMMANDS
                                       each, whether it has applied everything
                                       the other wrote.
 
-    echo                              Answer for this machine. Draws a UDP port,
-                                      announces `asl-echo` on it (one udp point)
+    echo                              Answer for this machine. Takes a UDP port
+                                      at random in 6631-6639 (the next one if it
+                                      is taken; none free is a configuration
+                                      error), announces `asl-echo` on it (one udp
+                                      point)
                                       and HOLDS the lease on that same socket, so
                                       a NAT mapping stays open. Answers signed
                                       probes only — from the directory holding
@@ -237,6 +240,9 @@ COMMANDS
                                       once is never answered twice. Refuses to run
                                       as root. Does not return: Ctrl-C or SIGTERM
                                       closes the lease cleanly.
+                                      Open the range once in the firewall:
+                                        nft: udp dport 6631-6639 accept
+                                        ufw allow proto udp from any to any port 6631:6639
 
     ping <m-…|name|alias>             Prove, from here, that a machine answers and
                                       that it is really it. Resolves its asl-echo,

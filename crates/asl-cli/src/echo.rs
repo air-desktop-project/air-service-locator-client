@@ -3,7 +3,8 @@
 //!
 //! # CE QU'IL FAIT
 //!
-//! Il lie **une** socket UDP à un port que le noyau tire, annonce `asl-echo`
+//! Il lie **une** socket UDP à un port tiré au hasard dans
+//! [`PREMIER_PORT`]–[`DERNIER_PORT`], annonce `asl-echo`
 //! avec un seul point `udp:<port>`, et **tient le bail sur cette même
 //! socket** (décision 90 ; E2) : derrière un NAT, le mapping que le bail ouvre
 //! et que son keepalive tient est celui de la socket où l'écho écoute. Puis il
@@ -73,7 +74,10 @@ fn maintenant_ms() -> u64 {
 pub async fn echo(invocation: &Invocation, identite: &Identite) -> Sortie {
     refuser_root()?;
     let reglages = reglages(invocation)?;
-    let socket = lier().await?;
+    let tirage = etat::hasard::<8>()
+        .map(u64::from_le_bytes)
+        .map_err(|quoi| Issue::Configuration(quoi.to_string()))?;
+    let socket = Arc::new(lier_dans(&ordre_de_la_plage(tirage)).await?);
     let port = socket
         .local_addr()
         .map_err(|quoi| Issue::Configuration(format!("la socket ne dit pas son port : {quoi}")))?
@@ -93,7 +97,7 @@ pub async fn echo(invocation: &Invocation, identite: &Identite) -> Sortie {
     let mut journal = Journal::default();
 
     println!(
-        "écho           {} — udp {port}, tiré par le noyau",
+        "écho           {} — udp {port}, tiré dans {PREMIER_PORT}–{DERNIER_PORT}",
         identite.machine().texte().as_str()
     );
     println!("               il ne répond qu'aux sondes signées ; aux autres, le silence.");
@@ -433,20 +437,94 @@ fn dire_le_bail(annuaire: Option<asl_id::Identifiant>, distante: Option<SocketAd
 /// Aujourd'hui, il n'y a rien à faire : la socket du bail seule.
 const fn apres_l_annonce(_connexion: &mut Connexion, _reponse: &[u8]) {}
 
-/// Lie la socket de l'écho : **`[::]:0`, à double pile**, et `0.0.0.0:0` si
-/// la machine n'a pas d'IPv6 (`protocole.md` §3 quater, « IPv6 d'abord »).
+/// Le premier port de la plage de l'écho.
 ///
-/// La double pile est ce que Linux et macOS donnent par défaut à une socket
-/// liée sur `[::]` (`IPV6_V6ONLY` à zéro) ; la poser explicitement demanderait
-/// un appel que la bibliothèque standard n'expose pas.
-async fn lier() -> Result<Arc<UdpSocket>, Issue> {
-    let socket = match UdpSocket::bind("[::]:0").await {
-        Ok(socket) => socket,
-        Err(_) => UdpSocket::bind("0.0.0.0:0").await.map_err(|quoi| {
-            Issue::Configuration(format!("aucune socket UDP ne se lie : {quoi}"))
-        })?,
-    };
-    Ok(Arc::new(socket))
+/// # UNE PLAGE, ET NON UN PORT ÉPHÉMÈRE (décision du 2026-09-29)
+///
+/// La spécification disait « un port aléatoire » ; l'essai réel a montré que
+/// c'est le pare-feu de la machine (nft, ufw en politique `drop`) qui
+/// décidait alors, et qu'aucun exploitant ne peut ouvrir d'avance un port
+/// qu'il ne connaît pas. **Neuf ports, 6631 à 6639**, juste au-dessus de
+/// celui de l'annuaire : l'exploitant les ouvre une fois —
+/// `udp dport 6631-6639 accept` (nft), `ufw allow proto udp from any to any
+/// port 6631:6639` —, et l'écho en prend un **au hasard**, le suivant dans
+/// son ordre tiré si celui-là est pris. Il reste sans port fixe (décision
+/// 89) : neuf échos peuvent tourner sur une même machine, et qui balaie ne
+/// sait pas lequel des neuf répondrait — ni qu'il ne répond qu'aux sondes
+/// signées.
+pub const PREMIER_PORT: u16 = 6631;
+
+/// Le dernier port de la plage de l'écho — voir [`PREMIER_PORT`].
+pub const DERNIER_PORT: u16 = 6639;
+
+/// Le nombre de ports de la plage.
+const PORTS: usize = 9;
+
+const _: () = assert!(
+    DERNIER_PORT - PREMIER_PORT + 1 == 9,
+    "PORTS doit compter la plage"
+);
+
+/// Les ports de la plage, **dans un ordre tiré de `graine`** : un mélange de
+/// Fisher-Yates, sur un générateur `xorshift` que la graine amorce. L'ordre
+/// n'a rien de secret — ce qui protège l'écho, ce sont les signatures ; il
+/// étale seulement les échos d'une machine sur la plage.
+fn ordre_de_la_plage(graine: u64) -> [u16; PORTS] {
+    let mut ports = [0_u16; PORTS];
+    for (place, port) in ports.iter_mut().zip(PREMIER_PORT..=DERNIER_PORT) {
+        *place = port;
+    }
+    // Une graine nulle figerait `xorshift` à zéro.
+    let mut etat = graine | 1;
+    for haut in (1..PORTS).rev() {
+        etat ^= etat << 13;
+        etat ^= etat >> 7;
+        etat ^= etat << 17;
+        let borne = u64::try_from(haut).unwrap_or(0).saturating_add(1);
+        let tire = usize::try_from(etat.checked_rem(borne).unwrap_or(0)).unwrap_or(0);
+        ports.swap(haut, tire);
+    }
+    ports
+}
+
+/// Lie la socket de l'écho au premier de ces ports qui soit libre :
+/// **`[::]:<port>`, à double pile**, et `0.0.0.0:<port>` si la machine n'a
+/// pas d'IPv6 (`protocole.md` §3 quater, « IPv6 d'abord »).
+///
+/// Un port pris — par un autre écho, par n'importe qui — fait passer au
+/// suivant ; une autre faute du noyau aussi, dite à la fin si aucun ne se
+/// lie. La double pile est ce que Linux et macOS donnent par défaut à une
+/// socket liée sur `[::]` (`IPV6_V6ONLY` à zéro) ; la poser explicitement
+/// demanderait un appel que la bibliothèque standard n'expose pas.
+///
+/// # Erreurs
+///
+/// [`Issue::Configuration`] — « aucun port libre » — quand toute la plage
+/// est occupée : c'est la machine qu'il faut regarder, pas le réseau.
+async fn lier_dans(ports: &[u16]) -> Result<UdpSocket, Issue> {
+    let mut derniere: Option<std::io::Error> = None;
+    for port in ports {
+        match UdpSocket::bind(("::", *port)).await {
+            Ok(socket) => return Ok(socket),
+            Err(quoi) if quoi.kind() == std::io::ErrorKind::AddrInUse => {
+                derniere = Some(quoi);
+                continue;
+            }
+            // Pas d'IPv6 sur cette machine : l'IPv4 seule, sur le même port.
+            Err(_) => {}
+        }
+        match UdpSocket::bind(("0.0.0.0", *port)).await {
+            Ok(socket) => return Ok(socket),
+            Err(quoi) => derniere = Some(quoi),
+        }
+    }
+    let premier = ports.iter().min().copied().unwrap_or(PREMIER_PORT);
+    let dernier = ports.iter().max().copied().unwrap_or(DERNIER_PORT);
+    Err(Issue::Configuration(format!(
+        "aucun port libre dans {premier}–{dernier} : chacun est déjà pris sur cette\n\
+         machine{} — un autre écho, ou un autre service. `ss -ulpn` dit lequel.",
+        derniere.map_or_else(String::new, |quoi| format!(" (dernier refus : {quoi})"))
+    )))
 }
 
 /// Les adresses de cette machine à annoncer : **une par famille**, celle par
@@ -549,4 +627,86 @@ fn ecouter_l_arret() -> Arc<AtomicBool> {
         }
     });
     arret
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DERNIER_PORT, PREMIER_PORT, lier_dans, ordre_de_la_plage};
+    use crate::Issue;
+    use tokio::net::UdpSocket;
+
+    #[test]
+    fn l_ordre_est_un_melange_de_toute_la_plage() {
+        let mut vus = std::collections::BTreeSet::new();
+        for graine in 0..64_u64 {
+            let ordre = ordre_de_la_plage(graine.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let mut trie = ordre;
+            trie.sort_unstable();
+            assert_eq!(
+                trie.to_vec(),
+                (PREMIER_PORT..=DERNIER_PORT).collect::<Vec<_>>(),
+                "chaque port une fois"
+            );
+            vus.insert(ordre[0]);
+        }
+        assert!(
+            vus.len() > 4,
+            "le premier port varie avec la graine : {vus:?}"
+        );
+    }
+
+    /// Deux ports que le noyau vient de donner : le premier reste tenu, le
+    /// second est rendu.
+    async fn un_pris_un_libre() -> (UdpSocket, u16, u16) {
+        let tenu = UdpSocket::bind("[::]:0").await.expect("une socket");
+        let pris = tenu.local_addr().unwrap().port();
+        let libre = UdpSocket::bind("[::]:0")
+            .await
+            .expect("une socket")
+            .local_addr()
+            .unwrap()
+            .port();
+        (tenu, pris, libre)
+    }
+
+    #[tokio::test]
+    async fn un_port_pris_fait_passer_au_suivant() {
+        let (_tenu, pris, libre) = un_pris_un_libre().await;
+        let socket = lier_dans(&[pris, libre])
+            .await
+            .expect("le suivant est libre");
+        assert_eq!(socket.local_addr().unwrap().port(), libre);
+    }
+
+    #[tokio::test]
+    async fn une_plage_pleine_est_une_faute_de_configuration_dite_clairement() {
+        let (_tenu, pris, _) = un_pris_un_libre().await;
+        match lier_dans(&[pris]).await {
+            Err(Issue::Configuration(quoi)) => {
+                assert!(
+                    quoi.contains(&format!("aucun port libre dans {pris}–{pris}")),
+                    "{quoi}"
+                );
+            }
+            autre => panic!("une faute de configuration : {autre:?}"),
+        }
+        // Sur la vraie plage, le message nomme la vraie plage.
+        let tenus: Vec<_> = {
+            let mut tenus = Vec::new();
+            for port in PREMIER_PORT..=DERNIER_PORT {
+                if let Ok(socket) = UdpSocket::bind(("::", port)).await {
+                    tenus.push(socket);
+                }
+            }
+            tenus
+        };
+        if tenus.len() == 9 {
+            match lier_dans(&ordre_de_la_plage(7)).await {
+                Err(Issue::Configuration(quoi)) => {
+                    assert!(quoi.contains("aucun port libre dans 6631–6639"), "{quoi}");
+                }
+                autre => panic!("une faute de configuration : {autre:?}"),
+            }
+        }
+    }
 }
