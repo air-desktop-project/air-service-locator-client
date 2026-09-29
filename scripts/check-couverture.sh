@@ -33,7 +33,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# **`asl-client` SEULE.** `asl-client-ffi` est une façade — elle n'a aucune
+# **`asl-client`, ET `asl-upnp`** — le codec de la passerelle de l'écho, un
+# étage 1 qui lit ce qu'envoie un appareil du réseau local (C1, C2, C3 :
+# `protocole.md` §3 quater, décision 96). `asl-client-ffi` est une façade — elle n'a aucune
 # logique à elle, et l'y soumettre reviendrait à mesurer la couverture d'un
 # passe-plat. `asl-cli` est un binaire : ses chemins d'erreur dépendent de ce que
 # l'utilisateur a tapé, et les atteindre tous demanderait de simuler un terminal.
@@ -41,7 +43,7 @@ cd "$(dirname "$0")/.."
 # **CE SCRIPT EST UNE COPIE DE CELUI DU DÉPÔT SERVEUR.** Deux copies finissent
 # par diverger — c'est le prix de la séparation, et il est assumé ici comme pour
 # `check-pile` et `check-toolchain`.
-sous_mesure=(asl-client)
+sous_mesure=(asl-client asl-upnp)
 
 echo 'check-couverture — 100 % sur la logique du client (C2)'
 echo

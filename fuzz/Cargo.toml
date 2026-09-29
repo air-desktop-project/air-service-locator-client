@@ -37,17 +37,20 @@ path = "../crates/asl-client"
 # au MÊME SHA que le workspace (`Cargo.toml`, `[workspace.dependencies]`) —
 # cette crate est hors du workspace et ne peut pas en hériter : les deux
 # lignes avancent ensemble.
+[dependencies.asl-upnp]
+path = "../crates/asl-upnp"
+
 [dependencies.asl-cle]
 git = "https://github.com/air-desktop-project/air-service-locator-server"
-rev = "3f41382"
+rev = "d537c6f"
 
 [dependencies.asl-echo]
 git = "https://github.com/air-desktop-project/air-service-locator-server"
-rev = "3f41382"
+rev = "d537c6f"
 
 [dependencies.asl-id]
 git = "https://github.com/air-desktop-project/air-service-locator-server"
-rev = "3f41382"
+rev = "d537c6f"
 
 [[bin]]
 name = "fuzz_asl_client_reprise"
@@ -65,6 +68,34 @@ doc = false
 [[bin]]
 name = "fuzz_asl_client_echo"
 path = "fuzz_targets/fuzz_asl_client_echo.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_asl_upnp_ssdp"
+path = "fuzz_targets/fuzz_asl_upnp_ssdp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_asl_upnp_http"
+path = "fuzz_targets/fuzz_asl_upnp_http.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_asl_upnp_xml"
+path = "fuzz_targets/fuzz_asl_upnp_xml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_asl_upnp_memoire"
+path = "fuzz_targets/fuzz_asl_upnp_memoire.rs"
 test = false
 doc = false
 bench = false

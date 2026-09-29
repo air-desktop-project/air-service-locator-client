@@ -87,6 +87,10 @@ CIBLES=$(cat <<'TABLE'
 fuzz_asl_client_reprise reprise
 fuzz_asl_client_renvoi renvoi
 fuzz_asl_client_echo echo
+fuzz_asl_upnp_ssdp upnp-ssdp
+fuzz_asl_upnp_http upnp-http
+fuzz_asl_upnp_xml upnp-xml
+fuzz_asl_upnp_memoire upnp-memoire
 TABLE
 )
 

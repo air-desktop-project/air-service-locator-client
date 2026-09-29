@@ -1,0 +1,3 @@
+# asl echo
+redirection 51377 urn:schemas-upnp-org:service:WANIPConnection:1 http://192.168.1.1:5000/ctl/IPConn
+trou 7 urn:schemas-upnp-org:service:WANIPv6FirewallControl:1 http://[fe80::1%252]:5000/ctl/IP6FCtl

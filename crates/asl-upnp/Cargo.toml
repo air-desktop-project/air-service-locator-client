@@ -1,0 +1,15 @@
+[package]
+name = "asl-upnp"
+description = "Le codec du client UPnP-IGD d'`asl echo` : SSDP, HTTP/1.1, XML et SOAP réduits, sans une entrée-sortie ni une dépendance."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+# **AUCUNE DÉPENDANCE** (décision 96 ; E17) : la bibliothèque standard, et
+# rien d'autre. `igd-next` a servi de référence ; il n'entre pas au graphe.
+[dependencies]
+
+[lints]
+workspace = true
