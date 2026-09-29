@@ -49,7 +49,11 @@ pub use attache::{
 };
 pub use confiance::{Confiance, Forme};
 pub use pont::Pont;
-pub use racines::{RacineApprise, apprendre_les_racines, racines_embarquees};
+pub use racines::{
+    CACHE_MAX, FauteDeCache, LOCATEURS_MAX, LocateursAppris, Provenance, RELIRE_APRES_S,
+    RacineApprise, apprendre_les_racines, est_une_racine_embarquee, racines_a_essayer,
+    racines_embarquees,
+};
 pub use reponse::Reponse;
 
 /// Ce qu'une connexion peut refuser.
@@ -889,6 +893,34 @@ impl Connexion {
     /// Celles de [`Connexion::requete`], plus [`Faute::Statut`].
     pub async fn ou(&mut self, machine: Identifiant, service: &str) -> Result<Vec<u8>, Faute> {
         let cible = format!("/v1/ou/{}/{service}", machine.texte());
+        let reponse = self.requete(b"GET", cible.as_bytes(), &[], b"").await?;
+        reponse.exige(200)?;
+        Ok(reponse.corps)
+    }
+
+    /// Demande où joindre cet annuaire local — son `asl-directory`
+    /// (`annuaires.md` §2 quinquies, décisions 73 à 87 ; serveur 0.38.0).
+    ///
+    /// `annuaire` est le `n-…` du **titulaire**, qui nomme l'annuaire logique.
+    /// Rend le corps du `200` tel quel ;
+    /// `asl_client::renvoi::AnnuaireResolu::lire` le lit — la forme complète
+    /// (`localiser`) ou la forme réduite (`voir` seul).
+    ///
+    /// **SUR LA VOIE MACHINE SEULEMENT** (décision 86) : la connexion doit
+    /// avoir prouvé la clé d'une machine. Un appareil n'y passe pas.
+    ///
+    /// # Errors
+    ///
+    /// Celles de [`Connexion::requete`], plus [`Faute::Statut`] — **`404` pour
+    /// « introuvable », « parti » ET « hors de vos droits »**, que la racine ne
+    /// distingue pas (C9) ; `401` sans preuve ; `400` d'un annuaire d'avant
+    /// 0.38.0, qui ne lit pas un `n-…` à la place d'une machine.
+    pub async fn ou_annuaire(&mut self, annuaire: Identifiant) -> Result<Vec<u8>, Faute> {
+        let cible = format!(
+            "/v1/ou/{}/{}",
+            annuaire.texte(),
+            asl_client::renvoi::ASL_DIRECTORY
+        );
         let reponse = self.requete(b"GET", cible.as_bytes(), &[], b"").await?;
         reponse.exige(200)?;
         Ok(reponse.corps)

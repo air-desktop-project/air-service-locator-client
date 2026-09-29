@@ -425,3 +425,156 @@ fn apres_une_attache_locale_rompue_on_recommence_par_l_annuaire_local() {
     );
     assert_eq!(a.tours_perdus(), 0);
 }
+
+// ── L'`asl-directory` (décisions 73 à 87) ───────────────────────────────────
+
+/// Le vecteur de production : l'annuaire de la paire speedy/helium, et le
+/// `s-…` que les racines en dérivent (`asl_registre::asl_directory_derive`).
+const TITULAIRE: &str = "n-7MSV5RPCXBZH25PQM4ZPE5X87P";
+const SECOND: &str = "n-4EQRD1VWYQQB1Y9C3T49Z8F8Z9";
+const SERVICE: &str = "s-294B4BA9XHXFZ5DQ8Q7T35M7PY";
+
+fn lu(texte: &str) -> Identifiant {
+    Identifiant::analyser(texte).expect("un identifiant du vecteur")
+}
+
+#[test]
+fn la_reponse_complete_se_lit_comme_un_421_et_garde_son_service() {
+    use asl_client::renvoi::AnnuaireResolu;
+    let texte = format!(
+        r#"{{"service":"{SERVICE}","annuaire":"{TITULAIRE}","adresses":["[2001:db8::51]:6630","192.0.2.52:6631"],"identites":"{TITULAIRE} {SECOND}"}}"#
+    );
+    let resolu = AnnuaireResolu::lire(texte.as_bytes()).expect("la forme que la racine émet");
+    assert_eq!(resolu.service(), lu(SERVICE));
+    assert_eq!(resolu.annuaire(), lu(TITULAIRE));
+    let renvoi = resolu.renvoi().expect("localiser donne les adresses");
+    assert!(renvoi.nomme_chaque_membre());
+    let membres: Vec<(&str, Identifiant)> = renvoi.membres().collect();
+    // **CHAQUE ADRESSE SOUS SON MEMBRE** — et le vrai port, 6631 compris.
+    assert_eq!(
+        membres,
+        [
+            ("[2001:db8::51]:6630", lu(TITULAIRE)),
+            ("192.0.2.52:6631", lu(SECOND))
+        ]
+    );
+    // Le lecteur de renvoi d'hier la lit aussi : c'est la promesse du serveur.
+    assert_eq!(Renvoi::lire(texte.as_bytes()).unwrap(), *renvoi);
+}
+
+#[test]
+fn la_reponse_reduite_dit_qu_il_existe_sans_adresses() {
+    use asl_client::renvoi::AnnuaireResolu;
+    let texte = format!(" {{ \"service\" : \"{SERVICE}\" ,\n \"annuaire\":\"{TITULAIRE}\" }} ");
+    let resolu = AnnuaireResolu::lire(texte.as_bytes()).expect("voir seul");
+    assert_eq!(resolu.service(), lu(SERVICE));
+    assert_eq!(resolu.annuaire(), lu(TITULAIRE));
+    assert!(resolu.renvoi().is_none(), "pas pour vous, pas « personne »");
+    // L'ordre des clés est libre, et une clé inconnue à valeur chaîne se saute.
+    let autre = format!(r#"{{"annuaire":"{TITULAIRE}","plus-tard":"x","service":"{SERVICE}"}}"#);
+    assert_eq!(AnnuaireResolu::lire(autre.as_bytes()).unwrap(), resolu);
+}
+
+#[test]
+fn une_reponse_d_asl_directory_de_travers_est_refusee() {
+    use asl_client::renvoi::AnnuaireResolu;
+    let s = format!(r#""service":"{SERVICE}""#);
+    let a = format!(r#""annuaire":"{TITULAIRE}""#);
+    let ad = r#""adresses":["192.0.2.52:6630"]"#;
+    let id = format!(r#""identites":"{TITULAIRE}""#);
+    let cas: Vec<(Vec<u8>, FauteDeRenvoi)> = vec![
+        (vec![0xFF, 0xFE], FauteDeRenvoi::Forme),
+        (b"[]".to_vec(), FauteDeRenvoi::Forme),
+        (b"{3:4}".to_vec(), FauteDeRenvoi::Forme),
+        (
+            format!(r#"{{"service" "{SERVICE}"}}"#).into_bytes(),
+            FauteDeRenvoi::Forme,
+        ),
+        (format!("{{{s}").into_bytes(), FauteDeRenvoi::Forme),
+        (format!("{{{s};{a}}}").into_bytes(), FauteDeRenvoi::Forme),
+        (
+            format!("{{{s},{a}}} en trop").into_bytes(),
+            FauteDeRenvoi::Forme,
+        ),
+        (
+            format!("{{{s},{s},{a}}}").into_bytes(),
+            FauteDeRenvoi::Forme,
+        ),
+        (
+            format!("{{{s},{a},{a}}}").into_bytes(),
+            FauteDeRenvoi::Forme,
+        ),
+        (
+            format!("{{{s},{a},{ad},{ad}}}").into_bytes(),
+            FauteDeRenvoi::Forme,
+        ),
+        (
+            format!("{{{s},{a},{ad},{id},{id}}}").into_bytes(),
+            FauteDeRenvoi::Forme,
+        ),
+        (
+            format!(r#"{{{s},{a},"adresses":3}}"#).into_bytes(),
+            FauteDeRenvoi::Forme,
+        ),
+        (
+            format!(r#"{{{s},{a},"identites":3}}"#).into_bytes(),
+            FauteDeRenvoi::Forme,
+        ),
+        (
+            format!(r#"{{{s},{a},"inconnue":3}}"#).into_bytes(),
+            FauteDeRenvoi::Forme,
+        ),
+        (
+            format!(r#"{{"service":3,{a}}}"#).into_bytes(),
+            FauteDeRenvoi::Forme,
+        ),
+        (
+            format!(r#"{{"annuaire":3,{s}}}"#).into_bytes(),
+            FauteDeRenvoi::Forme,
+        ),
+        // `service` absent, ou pas un `s-…` : on ne sait pas ce qu'on lit.
+        (format!("{{{a}}}").into_bytes(), FauteDeRenvoi::Service),
+        (format!("{{{a},{ad}}}").into_bytes(), FauteDeRenvoi::Service),
+        (
+            format!(r#"{{"service":"{TITULAIRE}",{a}}}"#).into_bytes(),
+            FauteDeRenvoi::Service,
+        ),
+        (
+            format!(r#"{{{s},"annuaire":"{SERVICE}"}}"#).into_bytes(),
+            FauteDeRenvoi::Annuaire,
+        ),
+        // La forme réduite ne porte ni identité sans adresse, ni rien sans
+        // annuaire.
+        (
+            format!("{{{s},{a},{id}}}").into_bytes(),
+            FauteDeRenvoi::Forme,
+        ),
+        (format!("{{{s}}}").into_bytes(), FauteDeRenvoi::Forme),
+        // La forme complète est relue par le lecteur de renvoi, en entier.
+        (
+            format!(r#"{{{s},{a},"adresses":[]}}"#).into_bytes(),
+            FauteDeRenvoi::SansAdresse,
+        ),
+        (
+            format!(r#"{{{s},{a},"adresses":["pas une adresse"]}}"#).into_bytes(),
+            FauteDeRenvoi::Adresse,
+        ),
+        (
+            format!(r#"{{{s},{a},{ad},"identites":"{TITULAIRE} {SECOND}"}}"#).into_bytes(),
+            FauteDeRenvoi::Forme,
+        ),
+    ];
+    for (corps, attendue) in cas {
+        assert_eq!(
+            AnnuaireResolu::lire(&corps),
+            Err(attendue),
+            "{}",
+            String::from_utf8_lossy(&corps)
+        );
+    }
+}
+
+#[test]
+fn le_nom_reserve_est_celui_du_serveur() {
+    assert_eq!(asl_client::renvoi::ASL_DIRECTORY, "asl-directory");
+}

@@ -101,10 +101,12 @@ impl Issue {
             // DISTINGUER** (C10) : « ce service n'existe pas » et « il existe et
             // vous n'y avez pas droit » rendent le même code, exprès — un `403`
             // dirait à qui essaie que la cible existe.
-            Self::Refuse(404) => "404 — introuvable, ou hors de ce à quoi vous avez droit.\n\
+            Self::Refuse(404) => {
+                "404 — introuvable, parti, ou hors de ce à quoi vous avez droit.\n\
                  L'annuaire ne fait pas la différence : la faire révélerait\n\
                  l'existence de ce qu'on ne vous laisse pas voir."
-                .to_owned(),
+                    .to_owned()
+            }
             Self::Refuse(501) => {
                 "501 — cette route existe dans les spécifications, et pas encore\n\
                  dans le serveur."
@@ -155,6 +157,13 @@ COMMANDS
     where <service>                   Every instance of this name your account
                                       may see — yours, and those granted to you.
 
+    where <n-…> asl-directory         Where to reach this local directory, named
+                                      by its holder's n-…: each member's address
+                                      with the identity to expect there. The
+                                      `voir` right alone: that it exists and
+                                      is alive, without any address.
+
+
     machines [u-…]                    The machines of this user your account may
                                       see: yours if it is you, else what they
                                       granted you. Without argument: yours.
@@ -173,7 +182,8 @@ COMMANDS
     roots                             The list of root directories, asked of a
                                       root and CHECKED: every key must yield
                                       its n-… identifier, or the whole list is
-                                      refused.
+                                      refused. Refreshes the roots cache, and
+                                      shows where each locator comes from.
 
     identity                          Who this machine is and whom it acts for,
                                       without connecting.
@@ -189,7 +199,10 @@ OPTIONS
                              several addresses yields them all; IPv6 is tried
                              first. Default: ASL_DIRECTORY, comma-separated;
                              else the two root directories embedded in this
-                             binary, by their addresses and keys — no DNS.
+                             binary, by their addresses and keys — no DNS —,
+                             with the locators learned from GET /v1/racines
+                             tried first (the `racines` file next to the
+                             identity, re-read once a day).
     --state <dir>            Where this machine's identity lives.
                              Default: ASL_STATE, then $XDG_CONFIG_HOME/asl,
                              then ~/.config/asl (on macOS, the Service Locator
@@ -213,6 +226,7 @@ EXAMPLES
     asl announce depot tcp:8080 udp:9000
     asl where m-7F3A9C2E5B1D4068ABCDEFGHJK depot
     asl where depot
+    asl where n-7MSV5RPCXBZH25PQM4ZPE5X87P asl-directory
     asl machines u-5884A5EE7THEKHBQ3BT0VPGJKN
     asl machines
     asl enrolled
@@ -280,6 +294,10 @@ async fn conduire(invocation: &Invocation) -> Sortie {
         Commande::Ou { machine, service } => {
             let identite = identite(&dossier)?;
             commandes::ou(invocation, &identite, *machine, service).await
+        }
+        Commande::OuAnnuaire { annuaire } => {
+            let identite = identite(&dossier)?;
+            commandes::ou_annuaire(invocation, &identite, *annuaire).await
         }
         Commande::Machines { compte } => {
             let identite = identite(&dossier)?;

@@ -349,3 +349,203 @@ async fn un_membre_qui_presente_la_cle_de_l_autre_est_refuse() {
         "la clé d'un autre membre ne fait pas croire celui-ci"
     );
 }
+
+// ── `asl-directory` et le cache des racines (0.21.0) ────────────────────────
+
+/// Une racine qui résout l'`asl-directory` de deux annuaires : l'un en entier
+/// (`localiser`), l'autre en forme réduite (`voir` seul) ; tout le reste est
+/// `404`, comme la racine le rend sous C9.
+struct AslDirectory {
+    complet: Identifiant,
+    reduit: Identifiant,
+}
+
+impl ams_h3::Service for AslDirectory {
+    fn serve<'o>(
+        &mut self,
+        tete: &ams_proto_http::RequestHead<'_>,
+        corps: &[u8],
+        sortie: &'o mut [u8],
+    ) -> ams_h3::Reponse<'o> {
+        let chemin = |annuaire: Identifiant| format!("/v1/ou/{}/asl-directory", annuaire.texte());
+        let rendu = if !matches!(tete.method(), Method::Get) {
+            None
+        } else if tete.path() == chemin(self.complet).as_bytes() {
+            Some(format!(
+                r#"{{"service":"s-294B4BA9XHXFZ5DQ8Q7T35M7PY","annuaire":"{}","adresses":["[2001:db8::51]:6631","192.0.2.52:6630"],"identites":"{} n-4EQRD1VWYQQB1Y9C3T49Z8F8Z9"}}"#,
+                self.complet.texte(),
+                self.complet.texte()
+            ))
+        } else if tete.path() == chemin(self.reduit).as_bytes() {
+            Some(format!(
+                r#"{{"service":"s-294B4BA9XHXFZ5DQ8Q7T35M7PY","annuaire":"{}"}}"#,
+                self.reduit.texte()
+            ))
+        } else {
+            None
+        };
+        match rendu {
+            Some(texte) => {
+                let place = sortie.get_mut(..texte.len()).unwrap_or_default();
+                place.copy_from_slice(texte.as_bytes());
+                ams_h3::Reponse::new(StatusCode::OK, place)
+            }
+            None => FauxAnnuaire.serve(tete, corps, sortie),
+        }
+    }
+}
+
+#[tokio::test]
+async fn l_asl_directory_se_resout_en_entier_en_forme_reduite_ou_pas_du_tout() {
+    use asl_client::renvoi::AnnuaireResolu;
+    let racine = CleSecrete::depuis_entropie([0x31; 32]);
+    let (certificat, secrete) = materiel_d_identite(&racine);
+    let complet = Identifiant::analyser("n-7MSV5RPCXBZH25PQM4ZPE5X87P").expect("le titulaire");
+    let reduit = Identifiant::depuis_entropie(Genre::Annuaire, [0x32; 16]);
+    let inconnu = Identifiant::depuis_entropie(Genre::Annuaire, [0x33; 16]);
+    let (ecoute, tache) = lever(certificat, secrete, AslDirectory { complet, reduit }).await;
+    let confiance = Confiance::par_identites(&[identite_de(&racine)]);
+    let mut connexion = Connexion::ouvrir_confiance(ecoute, "127.0.0.1", &confiance, &alea)
+        .await
+        .expect("la racine attendue");
+
+    let corps = connexion.ou_annuaire(complet).await.expect("localiser");
+    let resolu = AnnuaireResolu::lire(&corps).expect("la forme du 421, plus service");
+    assert_eq!(
+        resolu.service().texte().as_str(),
+        "s-294B4BA9XHXFZ5DQ8Q7T35M7PY"
+    );
+    let membres: Vec<(String, String)> = resolu
+        .renvoi()
+        .expect("des adresses")
+        .membres()
+        .map(|(adresse, identite)| (adresse.to_owned(), identite.texte().as_str().to_owned()))
+        .collect();
+    assert_eq!(
+        membres,
+        [
+            (
+                "[2001:db8::51]:6631".to_owned(),
+                "n-7MSV5RPCXBZH25PQM4ZPE5X87P".to_owned()
+            ),
+            (
+                "192.0.2.52:6630".to_owned(),
+                "n-4EQRD1VWYQQB1Y9C3T49Z8F8Z9".to_owned()
+            ),
+        ]
+    );
+    // **LES MEMBRES SE JOIGNENT COMME CEUX D'UN `421`** : chacun sous SA clé.
+    let joignables = asl_client_tokio::membres_du_renvoi(resolu.renvoi().unwrap()).await;
+    assert_eq!(joignables.len(), 2);
+    assert_eq!(joignables[0].adresse.port(), 6631);
+
+    let corps = connexion.ou_annuaire(reduit).await.expect("voir seul");
+    let resolu = AnnuaireResolu::lire(&corps).expect("la forme réduite");
+    assert_eq!(resolu.annuaire(), reduit);
+    assert!(resolu.renvoi().is_none());
+
+    // **UN SEUL `404`** : introuvable, parti ou hors du cercle (C9).
+    assert!(matches!(
+        connexion.ou_annuaire(inconnu).await,
+        Err(Faute::Statut(404))
+    ));
+    let _ = connexion.fermer().await;
+    tache.abort();
+}
+
+#[tokio::test]
+async fn la_liste_apprise_ne_change_que_les_locateurs_des_racines_embarquees() {
+    use asl_client::racines::RACINES;
+    use asl_client_tokio::{LocateursAppris, Provenance, racines_a_essayer};
+
+    // La liste que rendrait une racine : les deux embarquées — l'une sur un
+    // autre port —, et une troisième que ce binaire ne connaît pas.
+    let etrangere = CleSecrete::depuis_entropie([0x34; 32]);
+    let rendues: Vec<(Identifiant, [u8; 32], Vec<&str>)> = vec![
+        (
+            RACINES[0].identite().unwrap(),
+            RACINES[0].cle,
+            vec![
+                "[2001:41d0:20a:900::1dd4]:7000",
+                "178.32.16.250:7000",
+                "nitrogen.air-desktop.org:7000",
+            ],
+        ),
+        (
+            RACINES[1].identite().unwrap(),
+            RACINES[1].cle,
+            vec!["[2001:41d0:20a:900::1d32]:6630", "178.32.16.249:6630"],
+        ),
+        (
+            identite_de(&etrangere),
+            etrangere.publique().octets(),
+            vec!["[2001:db8::99]:6630"],
+        ),
+    ];
+    let mut corps = vec![b'['];
+    for (rang, (annuaire, cle, locateurs)) in rendues.iter().enumerate() {
+        if rang > 0 {
+            corps.push(b',');
+        }
+        let mut tampon = vec![0_u8; 512];
+        let combien = RacineRendue {
+            annuaire: *annuaire,
+            cle: *cle,
+            locateurs,
+        }
+        .encoder(&mut tampon)
+        .expect("une racine s'encode");
+        corps.extend_from_slice(&tampon[..combien]);
+    }
+    corps.push(b']');
+
+    let racine = CleSecrete::depuis_entropie([0x35; 32]);
+    let (certificat, secrete) = materiel_d_identite(&racine);
+    let (ecoute, tache) = lever(certificat, secrete, Liste(corps)).await;
+    let confiance = Confiance::par_identites(&[identite_de(&racine)]);
+    let mut connexion = Connexion::ouvrir_confiance(ecoute, "127.0.0.1", &confiance, &alea)
+        .await
+        .expect("la racine attendue");
+    let apprises = apprendre_les_racines(&mut connexion)
+        .await
+        .expect("une liste juste");
+    let _ = connexion.fermer().await;
+    tache.abort();
+
+    let (appris, ignorees) = LocateursAppris::depuis_la_liste(&apprises, 42);
+    assert_eq!(
+        ignorees,
+        vec![identite_de(&etrangere)],
+        "l'inconnue est ignorée"
+    );
+    // Le cache se relit tel qu'il s'écrit, et l'ordre d'essai met les appris
+    // devant, famille par famille, les embarqués en secours derrière.
+    let relu = LocateursAppris::lire(&appris.ecrire()).expect("relisible");
+    let ordre: Vec<(String, Provenance)> = racines_a_essayer(Some(&relu))
+        .into_iter()
+        .map(|(annuaire, provenance)| (annuaire.adresse.to_string(), provenance))
+        .collect();
+    assert_eq!(
+        ordre,
+        vec![
+            (
+                "[2001:41d0:20a:900::1dd4]:7000".to_owned(),
+                Provenance::Appris
+            ),
+            (
+                "[2001:41d0:20a:900::1d32]:6630".to_owned(),
+                Provenance::ApprisEtEmbarque
+            ),
+            (
+                "[2001:41d0:20a:900::1dd4]:6630".to_owned(),
+                Provenance::Embarque
+            ),
+            ("178.32.16.250:7000".to_owned(), Provenance::Appris),
+            (
+                "178.32.16.249:6630".to_owned(),
+                Provenance::ApprisEtEmbarque
+            ),
+            ("178.32.16.250:6630".to_owned(), Provenance::Embarque),
+        ]
+    );
+}

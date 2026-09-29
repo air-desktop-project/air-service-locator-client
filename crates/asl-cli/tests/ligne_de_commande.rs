@@ -452,3 +452,54 @@ fn un_annuaire_qui_ne_repond_pas_rend_quatre() {
         "la borne est celle qu'on a posée"
     );
 }
+
+// ── `asl where n-… asl-directory` et le cache des racines (0.21.0) ──────────
+
+#[test]
+fn un_annuaire_ne_se_resout_que_par_asl_directory_et_le_refus_le_dit() {
+    // Refusé à la lecture de la ligne — code 1, rien n'a été essayé.
+    let sortie = asl(&["where", "n-7MSV5RPCXBZH25PQM4ZPE5X87P", "depot"]);
+    assert_eq!(code(&sortie), Some(1), "{}", texte(&sortie.stderr));
+    let dit = texte(&sortie.stderr);
+    assert!(dit.contains("asl where <n-…> asl-directory"), "{dit}");
+}
+
+#[test]
+fn le_diagnostic_dit_d_ou_vient_chaque_locateur_et_ignore_un_cache_corrompu() {
+    let bac = Bac::neuf("cache-racines");
+    let etat = bac.chemin().to_string_lossy().into_owned();
+    // Un locateur appris pour nitrogen, sur un autre port : il passe en tête
+    // des IPv6, et se dit « appris » ; les embarqués suivent en secours.
+    std::fs::write(
+        bac.chemin().join("racines"),
+        format!(
+            "appris_a = {}\nracine = n-0PWT8HZD80QMSPPDZ5CQXXYHQC [2001:db8::1]:7000\n",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        ),
+    )
+    .expect("poser le cache");
+    let sortie = asl(&["--state", &etat, "diagnose"]);
+    let dit = texte(&sortie.stdout);
+    let premiere = dit
+        .lines()
+        .find(|ligne| ligne.trim_start().starts_with("1."))
+        .expect("une première ligne d'ordre");
+    assert!(premiere.contains("[2001:db8::1]:7000"), "{dit}");
+    assert!(premiere.contains("(IPv6, appris)"), "{dit}");
+    assert!(dit.contains("(IPv6, embarqué)"), "{dit}");
+    assert!(dit.contains("appris il y a 0 h"), "{dit}");
+
+    // **CORROMPU : IGNORÉ, DIT, JAMAIS UNE PANNE DE CONFIGURATION** — les
+    // racines embarquées seules, dans leur ordre d'usine.
+    std::fs::write(bac.chemin().join("racines"), "ceci n'est pas un cache\n")
+        .expect("corrompre le cache");
+    let sortie = asl(&["--state", &etat, "diagnose"]);
+    assert_ne!(code(&sortie), Some(2), "{}", texte(&sortie.stderr));
+    let dit = texte(&sortie.stdout);
+    assert!(dit.contains("ILLISIBLE, ignoré"), "{dit}");
+    assert!(!dit.contains("appris)"), "{dit}");
+    assert!(dit.contains("2001:41d0:20a:900::1dd4"), "{dit}");
+}

@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use asl_client::Identite;
 use asl_client_tokio::{
-    Annuaire, Connexion, Faute as FauteReseau, Reglages, confiance_de, joindre, racines_embarquees,
+    Annuaire, Connexion, Faute as FauteReseau, LocateursAppris, Provenance, Reglages, confiance_de,
+    est_une_racine_embarquee, joindre, racines_a_essayer,
 };
 use asl_proto::{NomService, PointEcoute};
 
@@ -79,9 +80,14 @@ fn reglages(invocation: &Invocation) -> Result<Reglages, Issue> {
         Some(invocation.annuaires.clone())
     };
     // **SANS RIEN DIRE, LES RACINES EMBARQUÉES** — leurs adresses, leurs
-    // identités : aucun résolveur (C20).
+    // identités : aucun résolveur (C20) —, **précédées des locateurs appris**
+    // que le cache garde pour elles (décision 85).
     let Some(cibles) = cibles else {
-        return Reglages::nouveaux(racines_embarquees(), PLAFOND_MS)
+        let racines = racines_par_defaut(invocation)
+            .into_iter()
+            .map(|(annuaire, _)| annuaire)
+            .collect();
+        return Reglages::nouveaux(racines, PLAFOND_MS)
             .map_err(|quoi| Issue::Configuration(quoi.to_string()));
     };
 
@@ -190,6 +196,98 @@ fn avertir_d_asl_roots() {
     }
 }
 
+/// Les racines qu'on joint sans rien dire, chaque adresse avec sa provenance :
+/// les locateurs appris d'abord, les embarqués en secours.
+///
+/// **UN CACHE ILLISIBLE EST UN CACHE ABSENT** : on joint les racines
+/// embarquées, et `asl diagnose` dit pourquoi. Jamais une panne.
+fn racines_par_defaut(invocation: &Invocation) -> Vec<(Annuaire, Provenance)> {
+    let dossier = etat::repertoire(invocation.etat.as_deref());
+    match etat::lire_le_cache(&dossier) {
+        etat::Cache::Lu(appris) => racines_a_essayer(Some(&appris)),
+        etat::Cache::Absent | etat::Cache::Illisible(_) => racines_a_essayer(None),
+    }
+}
+
+/// Ce que la relecture de `GET /v1/racines` a donné.
+enum Relecture {
+    /// Le cache a moins d'un jour : rien à relire.
+    Inutile,
+    /// L'annuaire joint n'est pas une racine embarquée : sa liste ne se garde
+    /// pas.
+    PasUneRacine,
+    /// La liste a été relue, vérifiée et gardée.
+    Relue {
+        /// Les racines embarquées dont on garde des locateurs.
+        gardees: usize,
+        /// Les racines de la liste que ce binaire ne connaît pas.
+        ignorees: Vec<asl_id::Identifiant>,
+    },
+    /// La relecture n'a pas abouti — ce n'est pas l'échec de la commande.
+    Ratee(String),
+}
+
+/// Relit la liste des racines sur une connexion qu'on vient d'ouvrir, si le
+/// cache est absent, illisible, ou plus vieux que
+/// [`asl_client_tokio::RELIRE_APRES_S`] — ou toujours, avec `toujours`.
+///
+/// # SEULEMENT SUR UNE RACINE EMBARQUÉE
+///
+/// La liste n'a pas d'autre signature que la connexion (décision 56) : on ne
+/// la garde que si l'annuaire joint a été jugé sous la clé d'une racine que
+/// ce binaire embarque. Un annuaire local, ou un banc nommé par
+/// `--directory`, ne réécrit rien.
+///
+/// **SANS BRUIT** : une relecture ratée laisse le cache tel qu'il était, et
+/// la commande continue — ce n'est pas ce qu'on lui a demandé.
+async fn relire_les_racines(
+    invocation: &Invocation,
+    reglages: &Reglages,
+    connexion: &mut Connexion,
+    toujours: bool,
+) -> Relecture {
+    let jointe = connexion.distante().ok().and_then(|ou| {
+        reglages
+            .annuaires()
+            .iter()
+            .find(|quoi| quoi.adresse == ou)
+            .map(|quoi| quoi.identite)
+    });
+    if !jointe.is_some_and(est_une_racine_embarquee) {
+        return Relecture::PasUneRacine;
+    }
+    let dossier = etat::repertoire(invocation.etat.as_deref());
+    let maintenant = etat::maintenant();
+    if !toujours
+        && let etat::Cache::Lu(appris) = etat::lire_le_cache(&dossier)
+        && !appris.a_relire(maintenant)
+    {
+        return Relecture::Inutile;
+    }
+    let racines = match asl_client_tokio::apprendre_les_racines(connexion).await {
+        Ok(racines) => racines,
+        Err(quoi) => return Relecture::Ratee(quoi.to_string()),
+    };
+    let (appris, ignorees) = LocateursAppris::depuis_la_liste(&racines, maintenant);
+    if let Err(quoi) = etat::ecrire_le_cache(&dossier, &appris) {
+        return Relecture::Ratee(format!("le cache ne s'écrit pas : {quoi}"));
+    }
+    Relecture::Relue {
+        gardees: appris.racines().len(),
+        ignorees,
+    }
+}
+
+/// Ouvre une connexion, puis relit la liste des racines s'il est temps.
+async fn ouvrir_et_relire(
+    invocation: &Invocation,
+    reglages: &Reglages,
+) -> Result<Connexion, Issue> {
+    let mut connexion = ouvrir(reglages).await?;
+    let _ = relire_les_racines(invocation, reglages, &mut connexion, false).await;
+    Ok(connexion)
+}
+
 /// Ouvre une connexion, avec la patience d'une personne et non d'un daemon.
 async fn ouvrir(reglages: &Reglages) -> Result<Connexion, Issue> {
     let secondes = patience();
@@ -270,7 +368,7 @@ fn ailleurs_que(
 /// derrière soi.
 pub async fn enrole(invocation: &Invocation, dossier: &Path, code: &str) -> Sortie {
     let reglages = reglages(invocation)?;
-    let mut connexion = ouvrir(&reglages).await?;
+    let mut connexion = ouvrir_et_relire(invocation, &reglages).await?;
 
     // **LA GRAINE EST GARDÉE DE CÔTÉ, ET N'EST ÉCRITE QU'APRÈS L'ACCORD.** Une
     // machine refusée ne doit pas laisser derrière elle une identité que
@@ -364,7 +462,7 @@ pub async fn annonce(
                     continue;
                 }
             },
-            None => ouvrir(&reglages).await?,
+            None => ouvrir_et_relire(invocation, &reglages).await?,
         };
 
         // **L'ADRESSE LOCALE EST CELLE QUI A SERVI À JOINDRE L'ANNUAIRE.** C'est
@@ -438,7 +536,7 @@ pub async fn ou(
     service: &str,
 ) -> Sortie {
     let reglages = reglages(invocation)?;
-    let mut connexion = ouvrir(&reglages).await?;
+    let mut connexion = ouvrir_et_relire(invocation, &reglages).await?;
     connexion
         .authentifier(identite)
         .await
@@ -465,6 +563,38 @@ pub async fn ou(
     Ok(())
 }
 
+/// Demande où joindre un annuaire local — `asl where n-… asl-directory`
+/// (`annuaires.md` §2 quinquies ; serveur 0.38.0).
+///
+/// # TROIS ISSUES, ET LA TROISIÈME NE SE DÉTAILLE PAS
+///
+/// Avec `localiser`, chaque adresse et l'identité qu'on doit y trouver ;
+/// avec `voir` seul, qu'il existe et qu'il est vivant, **sans adresses** ;
+/// sinon `404` — introuvable, parti ou hors de vos droits, que la racine ne
+/// distingue pas (C9), et que ce verbe ne cherche pas à distinguer.
+pub async fn ou_annuaire(
+    invocation: &Invocation,
+    identite: &Identite,
+    annuaire: asl_id::Identifiant,
+) -> Sortie {
+    let reglages = reglages(invocation)?;
+    let mut connexion = ouvrir_et_relire(invocation, &reglages).await?;
+    connexion
+        .authentifier(identite)
+        .await
+        .map_err(refus_de_l_annuaire)?;
+    let corps = connexion
+        .ou_annuaire(annuaire)
+        .await
+        .map_err(refus_de_l_annuaire)?;
+    let _ = connexion.fermer().await;
+    print!(
+        "{}",
+        rendu::annuaire_local(annuaire, &corps).map_err(Issue::Injoignable)?
+    );
+    Ok(())
+}
+
 // ── `asl machines` ──────────────────────────────────────────────────────────
 
 /// Les machines d'un utilisateur que ce compte a le droit de voir.
@@ -482,7 +612,7 @@ pub async fn machines(
     compte: Option<asl_id::Identifiant>,
 ) -> Sortie {
     let reglages = reglages(invocation)?;
-    let mut connexion = ouvrir(&reglages).await?;
+    let mut connexion = ouvrir_et_relire(invocation, &reglages).await?;
     connexion
         .authentifier(identite)
         .await
@@ -526,7 +656,7 @@ pub async fn enroles(
     }
 
     let reglages = reglages(invocation)?;
-    let mut connexion = ouvrir(&reglages).await?;
+    let mut connexion = ouvrir_et_relire(invocation, &reglages).await?;
     connexion
         .authentifier(&fiche.identite)
         .await
@@ -567,6 +697,13 @@ fn compte_etranger(demande: asl_id::Identifiant, notre: asl_id::Identifiant) -> 
 /// signe la liste ; la liste l'est ensuite entrée par entrée : **une seule clé
 /// qui ne donne pas son `n-…` la refuse entière**. `GET /v1/racines` n'exige
 /// aucune preuve : cette commande marche sur une machine non enrôlée.
+///
+/// # ELLE REMET LE CACHE À JOUR, ET MONTRE CE QU'ELLE EN GARDE
+///
+/// Quelle que soit l'âge du cache : c'est ce qu'on tape pour voir la liste
+/// d'aujourd'hui. Chaque locateur dit s'il est gardé, et pourquoi pas sinon
+/// (un nom, une racine inconnue de ce binaire) ; puis l'ordre dans lequel
+/// les racines seront essayées, chaque adresse avec sa provenance.
 pub async fn racines_apprises(invocation: &Invocation) -> Sortie {
     let reglages = reglages(invocation)?;
     let mut connexion = ouvrir(&reglages).await?;
@@ -577,6 +714,17 @@ pub async fn racines_apprises(invocation: &Invocation) -> Sortie {
         Some(forme) => println!("confiance      {forme}"),
         None => println!("confiance      inconnue"),
     }
+    let jointe = connexion.distante().ok().and_then(|ou| {
+        reglages
+            .annuaires()
+            .iter()
+            .find(|quoi| quoi.adresse == ou)
+            .map(|quoi| quoi.identite)
+    });
+    let _ = connexion.fermer().await;
+
+    let maintenant = etat::maintenant();
+    let (appris, _) = LocateursAppris::depuis_la_liste(&racines, maintenant);
     println!("racines        {} — liste vérifiée", racines.len());
     for racine in &racines {
         let cle: String = racine
@@ -584,14 +732,123 @@ pub async fn racines_apprises(invocation: &Invocation) -> Sortie {
             .iter()
             .map(|octet| format!("{octet:02x}"))
             .collect();
-        println!("  {}", racine.identifiant.texte().as_str());
+        let gardes = appris
+            .racines()
+            .iter()
+            .find(|(identite, _)| *identite == racine.identifiant)
+            .map(|(_, adresses)| adresses.as_slice())
+            .unwrap_or_default();
+        if est_une_racine_embarquee(racine.identifiant) {
+            println!("  {}   embarquée", racine.identifiant.texte().as_str());
+        } else {
+            println!(
+                "  {}   INCONNUE de ce binaire — ignorée : une racine nouvelle exige une\n\
+                 \x20                                  nouvelle version du client",
+                racine.identifiant.texte().as_str()
+            );
+        }
         println!("    clé        {cle}");
         for locateur in &racine.locateurs {
-            println!("    locateur   {locateur}");
+            let garde = locateur
+                .parse::<std::net::SocketAddr>()
+                .is_ok_and(|adresse| gardes.contains(&adresse));
+            let note = if garde {
+                "gardé"
+            } else if !est_une_racine_embarquee(racine.identifiant) {
+                "ignoré"
+            } else if locateur.parse::<std::net::SocketAddr>().is_err() {
+                "non gardé — un nom : on ne résout rien sans le dire (C20)"
+            } else {
+                "non gardé"
+            };
+            println!("    locateur   {locateur:<45} {note}");
         }
     }
-    let _ = connexion.fermer().await;
+
+    // **LE CACHE N'APPREND QUE D'UNE RACINE EMBARQUÉE** : la liste n'a pas
+    // d'autre signature que la connexion qui l'a portée.
+    let dossier = etat::repertoire(invocation.etat.as_deref());
+    let fichier = dossier.join(etat::CACHE_DES_RACINES);
+    println!();
+    if jointe.is_some_and(est_une_racine_embarquee) {
+        match etat::ecrire_le_cache(&dossier, &appris) {
+            Ok(()) => println!("cache          {} — écrit", fichier.display()),
+            Err(quoi) => println!("cache          NON ÉCRIT — {quoi}"),
+        }
+    } else {
+        println!(
+            "cache          non écrit — l'annuaire joint n'est pas une racine embarquée,\n\
+             \x20              et sa liste n'a pas d'autre signature que la connexion"
+        );
+    }
+    println!();
+    println!("racines, dans l'ordre où elles seront essayées sans --directory");
+    let adresses: Vec<(Annuaire, Option<Provenance>)> = racines_par_defaut(invocation)
+        .into_iter()
+        .map(|(annuaire, provenance)| (annuaire, Some(provenance)))
+        .collect();
+    afficher_l_ordre(&adresses);
     Ok(())
+}
+
+/// Les annuaires, dans l'ordre où la tournée les essaiera — IPv6 d'abord —,
+/// chacun avec l'identité qu'on doit trouver au bout et, pour une racine,
+/// **d'où vient son locateur** : appris, embarqué, ou les deux.
+fn afficher_l_ordre(annuaires: &[(Annuaire, Option<Provenance>)]) {
+    let adresses: Vec<std::net::SocketAddr> =
+        annuaires.iter().map(|(quoi, _)| quoi.adresse).collect();
+    for rang in 0..adresses.len() {
+        let Some(place) = asl_client::place_en_ordre(&adresses, rang) else {
+            break;
+        };
+        let Some((quoi, provenance)) = annuaires.get(place) else {
+            break;
+        };
+        // **CE QU'ON CROIT AU BOUT** : l'identité, et rien d'autre.
+        let attendu = format!("identité : {}", quoi.identite.texte().as_str());
+        let famille = if quoi.adresse.is_ipv6() {
+            "IPv6"
+        } else {
+            "IPv4"
+        };
+        let origine = provenance.map_or_else(String::new, |provenance| format!(", {provenance}"));
+        println!(
+            "  {}. {:<45} {attendu}   ({famille}{origine})",
+            rang.saturating_add(1),
+            quoi.adresse.to_string(),
+        );
+    }
+}
+
+/// Dit l'état du cache des racines, pour un diagnostic.
+fn dire_le_cache(invocation: &Invocation) {
+    let dossier = etat::repertoire(invocation.etat.as_deref());
+    let fichier = dossier.join(etat::CACHE_DES_RACINES);
+    match etat::lire_le_cache(&dossier) {
+        etat::Cache::Absent => println!(
+            "cache          {} — absent : rien d'appris encore",
+            fichier.display()
+        ),
+        etat::Cache::Illisible(quoi) => {
+            println!("cache          {} — ILLISIBLE, ignoré", fichier.display());
+            println!("               {quoi}");
+            println!(
+                "               les racines embarquées répondent ; il se réécrit à la connexion."
+            );
+        }
+        etat::Cache::Lu(appris) => {
+            let heures = etat::maintenant().saturating_sub(appris.appris_a()) / 3_600;
+            println!(
+                "cache          {} — appris il y a {heures} h{}",
+                fichier.display(),
+                if appris.a_relire(etat::maintenant()) {
+                    ", à relire"
+                } else {
+                    ""
+                }
+            );
+        }
+    }
 }
 
 // ── `asl replication` ───────────────────────────────────────────────────────
@@ -627,7 +884,7 @@ pub async fn racines_apprises(invocation: &Invocation) -> Sortie {
 /// requête, et la main rendue.
 pub async fn replication(invocation: &Invocation, identite: &Identite) -> Sortie {
     let reglages = reglages(invocation)?;
-    let mut connexion = ouvrir(&reglages).await?;
+    let mut connexion = ouvrir_et_relire(invocation, &reglages).await?;
     connexion
         .authentifier(identite)
         .await
@@ -748,33 +1005,43 @@ pub async fn diagnostic(invocation: &Invocation, dossier: &Path) -> Sortie {
     let reglages = reglages(invocation)?;
 
     println!("annuaires, dans l'ordre où ils seront essayés");
-    let adresses: Vec<std::net::SocketAddr> = reglages
-        .annuaires()
-        .iter()
-        .map(|quoi| quoi.adresse)
-        .collect();
-    for rang in 0..adresses.len() {
-        let Some(place) = asl_client::place_en_ordre(&adresses, rang) else {
-            break;
-        };
-        let quoi = &reglages.annuaires()[place];
-        // **CE QU'ON CROIT AU BOUT** : l'identité, et rien d'autre.
-        let attendu = format!("identité : {}", quoi.identite.texte().as_str());
-        println!(
-            "  {}. {:<45} {attendu}   ({})",
-            rang.saturating_add(1),
-            quoi.adresse.to_string(),
-            if quoi.adresse.is_ipv6() {
-                "IPv6"
-            } else {
-                "IPv4"
-            }
-        );
+    // **D'OÙ VIENT CHAQUE LOCATEUR** (décision 85) : pour les racines qu'on
+    // joint sans rien dire, appris ou embarqué ; ce qu'on a nommé soi-même
+    // n'a pas d'autre provenance que la ligne de commande.
+    let par_defaut = invocation.annuaires.is_empty() && std::env::var("ASL_DIRECTORY").is_err();
+    let annuaires: Vec<(Annuaire, Option<Provenance>)> = if par_defaut {
+        racines_par_defaut(invocation)
+            .into_iter()
+            .map(|(annuaire, provenance)| (annuaire, Some(provenance)))
+            .collect()
+    } else {
+        reglages
+            .annuaires()
+            .iter()
+            .map(|annuaire| (annuaire.clone(), None))
+            .collect()
+    };
+    afficher_l_ordre(&annuaires);
+    if par_defaut {
+        dire_le_cache(invocation);
     }
-
     println!();
     let mut connexion = ouvrir(&reglages).await?;
     println!("connexion      établie");
+    match relire_les_racines(invocation, &reglages, &mut connexion, false).await {
+        Relecture::Inutile => println!("liste racines  le cache a moins d'un jour : pas relue"),
+        Relecture::PasUneRacine => {}
+        Relecture::Relue { gardees, ignorees } => {
+            println!("liste racines  relue, vérifiée : {gardees} racine(s) embarquée(s) gardée(s)");
+            for inconnue in ignorees {
+                println!(
+                    "               {} ignorée — inconnue de ce binaire",
+                    inconnue.texte().as_str()
+                );
+            }
+        }
+        Relecture::Ratee(quoi) => println!("liste racines  NON RELUE — {quoi}"),
+    }
     // **LA FORME QUI A SERVI** (décision 58) : il n'en reste qu'une, et on la
     // dit quand même — c'est ce qu'on a cru, et un diagnostic le montre.
     match connexion.forme() {

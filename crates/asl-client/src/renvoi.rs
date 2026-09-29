@@ -37,6 +37,12 @@
 //! ([`Aiguillage`]). Sans une entrée-sortie, éprouvées sur des listes
 //! littérales, comme [`crate::Tournee`].
 //!
+//! **Et la réponse d'`asl-directory`** ([`AnnuaireResolu`], 0.21.0) : depuis
+//! le serveur 0.38.0, un annuaire local se résout comme un service,
+//! `GET /v1/ou/{n-…}/asl-directory` (`annuaires.md` §2 quinquies), et la
+//! racine rend **le corps du `421` plus `service`** — le même lecteur, la même
+//! épingle, identité par identité.
+//!
 //! **Pas ici** : la résolution des noms, la confiance TLS et les sockets —
 //! `asl-client-tokio` obéit.
 //!
@@ -84,6 +90,9 @@ pub enum FauteDeRenvoi {
     TropDAdresses,
     /// Une adresse n'est pas `hôte:port`.
     Adresse,
+    /// La réponse d'`asl-directory` ne porte pas de `service`, ou ce n'est
+    /// pas un `s-…` ([`AnnuaireResolu::lire`]).
+    Service,
 }
 
 /// Le séparateur de `identites` : une seule espace entre deux `n-…`.
@@ -358,6 +367,162 @@ impl<'a> Lecture<'a> {
                 _ => return Err(FauteDeRenvoi::Forme),
             }
         }
+    }
+}
+
+// ── L'`asl-directory` ───────────────────────────────────────────────────────
+
+/// Le nom réservé du service qu'est un annuaire local (`annuaires.md`
+/// §2 quinquies, décision 73).
+///
+/// **LE SEUL NOM QUI SE RÉSOUT SOUS UN `n-…`** : `GET /v1/ou/{n-…}/asl-directory`
+/// nomme l'annuaire logique par son titulaire, là où tout autre service se
+/// résout sous la machine qui le porte. Aucun daemon ne peut l'annoncer.
+pub const ASL_DIRECTORY: &str = "asl-directory";
+
+/// Ce que `GET /v1/ou/{n-…}/asl-directory` rend, lu (décisions 75 et 80).
+///
+/// # LE CORPS DU `421`, PLUS `service`
+///
+/// La racine rend exactement ce qu'elle rendrait en `421` — `annuaire`,
+/// `adresses`, `identites` —, précédé du `s-…` dérivé du titulaire. Le
+/// lecteur de renvoi saute déjà une clé inconnue dont la valeur est une
+/// chaîne : la forme complète se lit donc par [`Renvoi::lire`], avec le même
+/// code et la même épingle, identité par identité.
+///
+/// # DEUX RÉPONSES, SELON LE DROIT, ET UNE SEULE ABSENCE
+///
+/// `localiser` donne les adresses ; `voir` seul (ou `administrer`, qui
+/// n'emporte pas `localiser`, décision 87) ne donne que le fait qu'il existe
+/// et qu'il est vivant — **les champs sont absents, pas vides**. Tout le reste
+/// est un `404` que la racine ne distingue pas (C9), et qui n'arrive donc
+/// jamais jusqu'ici.
+///
+/// **UNE STRUCTURE, ET NON UNE ÉNUMÉRATION À DEUX BRANCHES** : la forme
+/// complète porte un renvoi de trois cents octets, la réduite deux
+/// identifiants ; [`AnnuaireResolu::renvoi`] rend `None` pour la seconde.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnnuaireResolu<'a> {
+    /// Le `s-…` de l'`asl-directory`.
+    service: Identifiant,
+    /// L'annuaire : son titulaire.
+    annuaire: Identifiant,
+    /// Avec `localiser` : où joindre chaque membre vivant, et l'identité
+    /// qu'on doit trouver au bout de chaque adresse. `None` avec `voir` seul.
+    renvoi: Option<Renvoi<'a>>,
+}
+
+impl<'a> AnnuaireResolu<'a> {
+    /// Lit la réponse `200` de `GET /v1/ou/{n-…}/asl-directory`.
+    ///
+    /// # LA FORME ACCEPTÉE
+    ///
+    /// Celle de [`Renvoi::lire`] — mêmes chaînes sans échappement, même
+    /// borne, même règle pour une clé inconnue —, avec **`service` exigé**.
+    /// `adresses` présente : la forme complète, relue en entier par
+    /// [`Renvoi::lire`], qui vérifie chaque adresse et le décompte des
+    /// identités. `adresses` absente : la forme réduite, qui ne doit alors
+    /// porter ni `identites` — une identité sans adresse n'a pas de sens —
+    /// ni rien d'autre que `annuaire` pour être crue.
+    ///
+    /// # Errors
+    ///
+    /// [`FauteDeRenvoi::Service`] sans `service` lisible ; les autres, comme
+    /// [`Renvoi::lire`].
+    pub fn lire(corps: &'a [u8]) -> Result<Self, FauteDeRenvoi> {
+        let texte = core::str::from_utf8(corps).map_err(|_| FauteDeRenvoi::Forme)?;
+        let mut lu = Lecture { texte, place: 0 };
+        let mut service = None;
+        let mut annuaire = None;
+        let mut avec_adresses = false;
+        let mut avec_identites = false;
+        let mut sautees = [""; ADRESSES_MAX];
+
+        lu.attendre(b'{')?;
+        loop {
+            let cle = lu.chaine()?;
+            lu.attendre(b':')?;
+            match cle {
+                "service" if service.is_none() => {
+                    let valeur = lu.chaine()?;
+                    service = Some(
+                        Identifiant::analyser_genre(Genre::Service, valeur)
+                            .map_err(|_| FauteDeRenvoi::Service)?,
+                    );
+                }
+                "annuaire" if annuaire.is_none() => {
+                    let valeur = lu.chaine()?;
+                    annuaire = Some(
+                        Identifiant::analyser_genre(Genre::Annuaire, valeur)
+                            .map_err(|_| FauteDeRenvoi::Annuaire)?,
+                    );
+                }
+                "adresses" if !avec_adresses => {
+                    lu.liste(&mut sautees)?;
+                    avec_adresses = true;
+                }
+                "identites" if !avec_identites => {
+                    lu.chaine()?;
+                    avec_identites = true;
+                }
+                "service" | "annuaire" | "adresses" | "identites" => {
+                    return Err(FauteDeRenvoi::Forme);
+                }
+                // **UNE CLÉ INCONNUE SE SAUTE**, si sa valeur est une chaîne —
+                // la règle du renvoi, pour la même raison.
+                _ => {
+                    lu.chaine()?;
+                }
+            }
+            match lu.suivant()? {
+                b',' => {}
+                b'}' => break,
+                _ => return Err(FauteDeRenvoi::Forme),
+            }
+        }
+        if lu.blancs() != texte.len() {
+            return Err(FauteDeRenvoi::Forme);
+        }
+
+        let service = service.ok_or(FauteDeRenvoi::Service)?;
+        if avec_adresses {
+            let renvoi = Renvoi::lire(corps)?;
+            return Ok(Self {
+                service,
+                annuaire: renvoi.annuaire(),
+                renvoi: Some(renvoi),
+            });
+        }
+        if avec_identites {
+            return Err(FauteDeRenvoi::Forme);
+        }
+        Ok(Self {
+            service,
+            annuaire: annuaire.ok_or(FauteDeRenvoi::Forme)?,
+            renvoi: None,
+        })
+    }
+
+    /// Le `s-…` de l'`asl-directory`.
+    #[must_use]
+    pub const fn service(&self) -> Identifiant {
+        self.service
+    }
+
+    /// L'annuaire — son titulaire, qui le nomme.
+    #[must_use]
+    pub const fn annuaire(&self) -> Identifiant {
+        self.annuaire
+    }
+
+    /// Le renvoi — où joindre chaque membre —, quand la réponse le porte
+    /// (`localiser`).
+    ///
+    /// `None` pour la forme réduite (`voir` seul) : **pas « personne ne
+    /// répond »**, mais « pas pour vous ».
+    #[must_use]
+    pub const fn renvoi(&self) -> Option<&Renvoi<'a>> {
+        self.renvoi.as_ref()
     }
 }
 

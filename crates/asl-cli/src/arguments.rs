@@ -19,6 +19,7 @@
 //! une décision sort. Le reste ouvre des sockets et lit des fichiers. Les essais
 //! de ce module sont donc les seuls qui puissent être exhaustifs, et ils le sont.
 
+use asl_client::renvoi::ASL_DIRECTORY;
 use asl_id::{Genre, Identifiant};
 use asl_proto::{PointEcoute, Port, Protocole};
 
@@ -44,6 +45,12 @@ pub enum Commande {
         machine: Option<Identifiant>,
         /// Le nom du service.
         service: String,
+    },
+    /// Demander où joindre un annuaire local — son `asl-directory`, résolu
+    /// sous le `n-…` de son titulaire (`annuaires.md` §2 quinquies).
+    OuAnnuaire {
+        /// L'annuaire : le `n-…` de son titulaire.
+        annuaire: Identifiant,
     },
     /// Les machines d'un utilisateur que ce compte a le droit de voir.
     Machines {
@@ -137,6 +144,10 @@ pub enum Faute {
     MachineIllisible(String),
     /// Cet identifiant d'utilisateur ne se lit pas.
     UtilisateurIllisible(String),
+    /// Un annuaire (`n-…`) suivi d'un autre nom qu'`asl-directory`.
+    AutreNomSousUnAnnuaire(String),
+    /// `asl-directory` sous autre chose que le `n-…` d'un annuaire.
+    AslDirectorySansAnnuaire,
 }
 
 impl core::fmt::Display for Faute {
@@ -173,6 +184,18 @@ impl core::fmt::Display for Faute {
             Self::UtilisateurIllisible(quoi) => {
                 write!(f, "`{quoi}` n'est pas un utilisateur (u-…)")
             }
+            // **SOUS UN `n-…`, UN SEUL NOM SE RÉSOUT** (décision 73) : un
+            // annuaire n'annonce pas de services, il en est un.
+            Self::AutreNomSousUnAnnuaire(nom) => write!(
+                f,
+                "sous un annuaire (n-…), seul `asl-directory` se résout, pas `{nom}` : \
+                 `asl where <n-…> asl-directory` ; un service se résout sous sa machine (m-…)"
+            ),
+            Self::AslDirectorySansAnnuaire => write!(
+                f,
+                "`asl-directory` se résout sous le n-… d'un annuaire local — celui de son \
+                 titulaire : `asl where <n-…> asl-directory`"
+            ),
         }
     }
 }
@@ -322,21 +345,43 @@ where
                 commande: "where",
                 quoi: "un nom de service, ou une machine et un nom de service",
             })?;
-            match suite.next() {
-                Some(service) => {
+            // **UN `n-…` N'EST ADMIS QUE DEVANT `asl-directory`** (décision
+            // 73) : c'est le seul nom qui se résout sous un annuaire, et le
+            // seul qui ne se résout sous rien d'autre.
+            let annuaire = Identifiant::analyser_genre(Genre::Annuaire, &premier).ok();
+            match (suite.next(), annuaire) {
+                (Some(service), Some(annuaire)) if service == ASL_DIRECTORY => {
+                    Commande::OuAnnuaire { annuaire }
+                }
+                (Some(service), Some(_)) => return Err(Faute::AutreNomSousUnAnnuaire(service)),
+                (Some(service), None) => {
                     let machine = Identifiant::analyser_genre(Genre::Machine, &premier)
                         .map_err(|_| Faute::MachineIllisible(premier.clone()))?;
+                    if service == ASL_DIRECTORY {
+                        return Err(Faute::AslDirectorySansAnnuaire);
+                    }
                     Commande::Ou {
                         machine: Some(machine),
                         service,
                     }
                 }
-                None => {
+                (None, Some(_)) => {
+                    return Err(Faute::ArgumentManquant {
+                        commande: "where",
+                        quoi: "`asl-directory` après l'annuaire",
+                    });
+                }
+                (None, None) => {
                     if Identifiant::analyser_genre(Genre::Machine, &premier).is_ok() {
                         return Err(Faute::ArgumentManquant {
                             commande: "where",
                             quoi: "un nom de service après la machine",
                         });
+                    }
+                    // Aucune recherche générale ne rend un annuaire (décision
+                    // 84) : on le résout par son `n-…`.
+                    if premier == ASL_DIRECTORY {
+                        return Err(Faute::AslDirectorySansAnnuaire);
                     }
                     Commande::Ou {
                         machine: None,
@@ -556,6 +601,50 @@ mod essais {
                 machine: Some(machine),
                 service: "depot".to_owned()
             }
+        );
+    }
+
+    #[test]
+    fn un_annuaire_ne_se_resout_que_par_asl_directory() {
+        let annuaire = "n-7MSV5RPCXBZH25PQM4ZPE5X87P";
+        assert_eq!(
+            lire(&["where", annuaire, "asl-directory"])
+                .unwrap()
+                .commande,
+            Commande::OuAnnuaire {
+                annuaire: Identifiant::analyser_genre(Genre::Annuaire, annuaire).unwrap()
+            }
+        );
+        // **UN AUTRE NOM SOUS UN `n-…` EST REFUSÉ CLAIREMENT**, et le refus
+        // dit la forme qui se tape.
+        let refus = lire(&["where", annuaire, "depot"]);
+        assert_eq!(
+            refus,
+            Err(Faute::AutreNomSousUnAnnuaire("depot".to_owned()))
+        );
+        let texte = refus.unwrap_err().to_string();
+        assert!(texte.contains("asl where <n-…> asl-directory"), "{texte}");
+        // Un annuaire seul : c'est `asl-directory` qui manque.
+        assert_eq!(
+            lire(&["where", annuaire]),
+            Err(Faute::ArgumentManquant {
+                commande: "where",
+                quoi: "`asl-directory` après l'annuaire"
+            })
+        );
+        // `asl-directory` sous une machine, ou sans rien : pas un annuaire.
+        let machine = Identifiant::depuis_entropie(Genre::Machine, [7; 16]);
+        for ligne in [
+            &["where", machine.texte().as_str(), "asl-directory"][..],
+            &["where", "asl-directory"][..],
+        ] {
+            let refus = lire(ligne);
+            assert_eq!(refus, Err(Faute::AslDirectorySansAnnuaire), "{ligne:?}");
+            assert!(refus.unwrap_err().to_string().contains("n-…"));
+        }
+        assert_eq!(
+            lire(&["where", annuaire, "asl-directory", "encore"]),
+            Err(Faute::ArgumentEnTrop("encore".to_owned()))
         );
     }
 
