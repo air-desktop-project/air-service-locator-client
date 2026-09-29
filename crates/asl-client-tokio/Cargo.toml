@@ -8,8 +8,13 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+# `asl-api` et `asl-echo` POUR L'ÉCHO : le corps de `POST /v1/echo/jetons`,
+# et la règle qui trie la socket partagée au premier octet. Toutes deux
+# étaient déjà dans le graphe, par `asl-client`.
+asl-api.workspace = true
 asl-client.workspace = true
 asl-cle.workspace = true
+asl-echo.workspace = true
 asl-id.workspace = true
 asl-proto.workspace = true
 
@@ -32,7 +37,6 @@ rustls.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
-asl-api.workspace = true
 # **LE SERVEUR D'EN FACE EST LE VRAI.** Un faux serveur dirait ce que nous
 # croyons qu'un annuaire dit ; celui-ci refuse une trame hors de son flux, une
 # section qui ne fait pas une requête, un ALPN qui n'est pas le nôtre.

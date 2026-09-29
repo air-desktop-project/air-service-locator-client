@@ -11,6 +11,7 @@ cran sur une entrée que personne n'a imaginée. C'est la contrainte C3.
 |---|---|---|
 | `fuzz_asl_client_reprise` | `reprise` | **Le mécanisme de haute disponibilité du produit.** L'état vivant n'est pas répliqué entre les annuaires racines : c'est la reconnexion du client qui reconstruit tout. Un délai nul fait tourner une boucle serrée ; un délai qui ne croît pas fait marteler l'annuaire par mille daemons à la seconde où il se relève. |
 | `fuzz_asl_client_renvoi` | `renvoi` | **Le corps d'un `421`, choisi par qui répond.** Le lire ne doit jamais paniquer, et ce qu'on en garde doit être vérifié ; l'aiguillage qui le suit ne fait qu'un saut, et son retour aux racines se paie d'un recul — sinon racine, `421` et annuaire local muet deviendraient une boucle serrée. **Et la réponse d'`asl-directory`** (0.21.0), le même corps plus `service` : sa forme complète est le renvoi que les mêmes octets donnent, la réduite n'a aucune adresse. |
+| `fuzz_asl_client_echo` | `echo` | **Le port de l'écho, que n'importe qui peut viser.** N'importe quelle suite de datagrammes, d'heures et de sources présentée au répondeur d'`asl echo` : rien ne panique, une réponse n'existe que pour 384 octets et en fait 132, des octets quelconques ne font rien signer, un défi ne sert qu'une fois, le débit total tient. Et le sondeur d'`asl ping` ne conclut à la preuve que pour l'un de ses défis. |
 
 ## Lancer
 
