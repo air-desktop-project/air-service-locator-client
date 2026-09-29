@@ -603,7 +603,7 @@ async fn un_domaine_se_trouve_par_son_alias_puis_se_lit_avec_ses_machines() {
     // **LE CHEMIN D'`asl domain <alias>`**, requête par requête : la
     // recherche (l'alias pourcent-encodé — le banc ne répond qu'à
     // l'écriture exacte), le détail, puis les services d'une machine à soi
-    // et ceux d'une machine d'autrui, que l'annuaire rend vides.
+    // et ceux des machines d'autrui, selon le droit sur leur domaine.
     let (identite_attendue, cert, cle) = materiel("domaines");
     let (adresse, tache) = lever(cert, cle, FauxAnnuaire).await;
 
@@ -612,7 +612,9 @@ async fn un_domaine_se_trouve_par_son_alias_puis_se_lit_avec_ses_machines() {
         .expect("la poignée de main");
 
     let visibles = connexion.domaines().await.expect("la liste");
-    assert_eq!(visibles.len(), 1);
+    assert_eq!(visibles.len(), 2);
+    assert_eq!(visibles[1].domaine, banc::domaine_vu());
+    assert_eq!(visibles[1].droits, ["voir"]);
     assert_eq!(visibles[0].domaine, banc::domaine());
     assert_eq!(visibles[0].alias.as_deref(), Some("Maison été"));
 
@@ -650,13 +652,54 @@ async fn un_domaine_se_trouve_par_son_alias_puis_se_lit_avec_ses_machines() {
     // L'objet d'annonce est gardé intact : il se relit en `Reponse`.
     let mut tampons = asl_proto::cadrage::TamponsReponse::nouveaux();
     asl_proto::Reponse::decoder(annonce, &mut tampons).expect("l'annonce se relit");
+
+    // **LES SERVICES D'AUTRUI (serveur 0.40.0)**, selon le droit que leur
+    // domaine nous donne. `localiser` : la liste complète, l'annonce entière.
+    let localises = connexion
+        .services_de_machine(banc::machine_d_autrui())
+        .await
+        .expect("ses services");
+    assert_eq!(localises, services, "avec `localiser`, tout");
+
+    // `voir` seul : la liste, un service vivant sans adresses.
+    let detail_vu = connexion
+        .domaine(banc::domaine_vu())
+        .await
+        .expect("le détail du domaine vu");
+    assert_eq!(detail_vu.machines.len(), 1);
+    assert_eq!(detail_vu.machines[0].machine, banc::machine_vue());
+    assert!(detail_vu.domaine.voit_ses_machines());
+    assert!(!detail_vu.domaine.peut("localiser"));
+    let vus = connexion
+        .services_de_machine(banc::machine_vue())
+        .await
+        .expect("ses services");
+    assert_eq!(vus.len(), 2);
+    assert_eq!(vus[0].nom, "imprimante");
+    assert_eq!(
+        vus[0].etat,
+        asl_client_tokio::domaines::EtatDeService::Annonce(b"{}".to_vec()),
+        "vivant, sans adresses"
+    );
+    assert!(
+        asl_proto::Reponse::decoder(b"{}", &mut tampons).is_err(),
+        "un objet vide n'est pas une annonce à résoudre"
+    );
+    assert_eq!(
+        vus[1].etat,
+        asl_client_tokio::domaines::EtatDeService::Parti {
+            volontaire: Some(true)
+        }
+    );
+
+    // Sans droit : `[]`.
     assert!(
         connexion
-            .services_de_machine(banc::machine_d_autrui())
+            .services_de_machine(banc::machine_hors_de_vos_droits())
             .await
             .expect("une liste")
             .is_empty(),
-        "la machine d'un autre compte : rien"
+        "une machine d'autrui qu'on ne voit pas : rien"
     );
 
     // Un domaine inconnu : `404`, que l'annuaire ne distingue pas d'un refus.

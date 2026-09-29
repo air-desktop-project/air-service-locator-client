@@ -18,10 +18,18 @@
 //!   pas la capacité `lecture`, pas que le compte n'a rien.
 //! - **`machines` vide sans `voir`** : on ne voit pas ce qui est rangé — ce
 //!   n'est pas qu'il n'y a rien.
-//! - **les services d'une machine d'un autre compte** : l'annuaire ne les
-//!   sert à personne d'autre que son propriétaire, même à qui voit le domaine
-//!   (`protocole.md` §3, « à trancher » côté serveur). On le dit, et l'on ne
-//!   demande rien.
+//! - **les services d'une machine d'un autre compte, sans `voir`** : l'annuaire
+//!   rend `[]` à qui ne voit pas le domaine où elle est rangée. On ne demande
+//!   donc rien, et on le dit.
+//!
+//! # UN SERVICE ANNONCÉ, SANS ADRESSE
+//!
+//! Depuis le serveur 0.40.0 (décisions 103–104), qui a `voir` sur le domaine
+//! lit les services des machines d'autrui qui y sont rangées, **sans leurs
+//! adresses** : un service vivant y porte `"annonce":{}`. Il se dit
+//! « annoncé », sans candidat ; avec `--where`, il se résout si le domaine
+//! donne `localiser`, et la ligne « adresse : hors de vos droits » le dit
+//! sinon.
 
 use asl_client_tokio::domaines::{
     Autorite, Domaine, DomaineDetaille, DomaineTrouve, EtatDeService, ServiceDeMachine,
@@ -47,8 +55,8 @@ pub const HORS_DE_VOS_DROITS: &str = "domaine introuvable ou hors de vos droits.
 /// Ce qu'on sait des services d'une machine rangée dans le domaine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServicesVus {
-    /// La machine est à un autre compte : l'annuaire ne sert ses services
-    /// qu'à son propriétaire, et l'on n'a rien demandé.
+    /// La machine est à un autre compte, et le domaine ne nous donne pas
+    /// `voir` : l'annuaire rendrait `[]`, et l'on n'a rien demandé.
     Autrui,
     /// La demande n'a pas abouti — ce qu'on en sait, en toutes lettres.
     Echec(String),
@@ -285,7 +293,10 @@ pub fn detail(vue: &VueDeDomaine) -> String {
         ));
         match vue.services.get(rang) {
             None | Some(ServicesVus::Autrui) => {
-                dire("      services : non visibles (machine d'un autre compte)".to_owned());
+                dire(
+                    "      services : non visibles (machine d'un autre compte, sans `voir`)"
+                        .to_owned(),
+                );
             }
             Some(ServicesVus::Echec(quoi)) => {
                 dire(format!("      services : NON LUS — {quoi}"));
@@ -625,7 +636,7 @@ mod essais {
         assert!(texte.contains("« Le Grenier »"), "{texte}");
         assert!(texte.contains("à vous"), "{texte}");
         assert!(
-            texte.contains("services : non visibles (machine d'un autre compte)"),
+            texte.contains("services : non visibles (machine d'un autre compte, sans `voir`)"),
             "{texte}"
         );
         assert!(texte.contains("aucun service déclaré"), "{texte}");
@@ -678,6 +689,55 @@ mod essais {
             ligne.find(" s-").expect("l'identifiant")
         };
         assert_eq!(colonne("depot"), colonne("nas-de-la-maison"), "{texte}");
+    }
+
+    /// Ce que le serveur 0.40.0 rend à qui a `voir` seul sur le domaine d'une
+    /// machine d'autrui : un service vivant, `"annonce":{}`, et un parti.
+    fn vue_d_autrui_avec_voir(ou: bool) -> VueDeDomaine {
+        let mut vue = vue_complete();
+        vue.detail.domaine.droits = vec!["voir".to_owned()];
+        vue.detail.machines.truncate(2);
+        let adresse = |a: AdresseVue| ou.then_some(a);
+        vue.services = vec![
+            ServicesVus::Liste(Vec::new()),
+            ServicesVus::Liste(vec![
+                ServiceVu {
+                    service: service("imprimante", 11, EtatDeService::Annonce(b"{}".to_vec())),
+                    adresse: adresse(AdresseVue::HorsDeVosDroits),
+                },
+                ServiceVu {
+                    service: service("scanner", 12, EtatDeService::Parti { volontaire: None }),
+                    adresse: adresse(AdresseVue::HorsDeVosDroits),
+                },
+            ]),
+        ];
+        vue
+    }
+
+    #[test]
+    fn avec_voir_les_services_d_autrui_se_disent_annonces_sans_adresse() {
+        let texte = detail(&vue_d_autrui_avec_voir(false));
+        let ligne = texte
+            .lines()
+            .find(|ligne| ligne.trim_start().starts_with("imprimante"))
+            .expect("le service d'autrui est listé");
+        assert!(ligne.ends_with("   annoncé"), "{texte}");
+        assert!(texte.contains("scanner"), "{texte}");
+        assert!(!texte.contains("non visibles"), "{texte}");
+        // Sans `--where`, ni candidat ni ligne d'adresse.
+        assert!(!texte.contains("adresse"), "{texte}");
+        assert!(!texte.contains("1. "), "{texte}");
+
+        // Avec `--where` et sans `localiser` : la ligne le dit.
+        let texte = detail(&vue_d_autrui_avec_voir(true));
+        assert_eq!(
+            texte
+                .matches("adresse : hors de vos droits (`localiser`)")
+                .count(),
+            2,
+            "{texte}"
+        );
+        assert!(!texte.contains("ne se lit pas"), "{texte}");
     }
 
     #[test]

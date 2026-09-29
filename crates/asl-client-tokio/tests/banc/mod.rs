@@ -489,9 +489,48 @@ pub fn machine_d_autrui() -> asl_id::Identifiant {
     asl_id::Identifiant::depuis_entropie(asl_id::Genre::Machine, [0x4F; 16])
 }
 
+/// Un domaine de l'autre compte, où ce compte n'a que `voir`.
+pub fn domaine_vu() -> asl_id::Identifiant {
+    asl_id::Identifiant::depuis_entropie(asl_id::Genre::Domaine, [0x46; 16])
+}
+
+/// La machine de l'autre compte rangée dans [`domaine_vu`] : ses services se
+/// lisent, sans adresses.
+pub fn machine_vue() -> asl_id::Identifiant {
+    asl_id::Identifiant::depuis_entropie(asl_id::Genre::Machine, [0x50; 16])
+}
+
+/// Une machine de l'autre compte rangée dans aucun domaine qu'on voit.
+pub fn machine_hors_de_vos_droits() -> asl_id::Identifiant {
+    asl_id::Identifiant::depuis_entropie(asl_id::Genre::Machine, [0x51; 16])
+}
+
+/// La liste de services de [`machine`], ou de [`machine_d_autrui`] que le
+/// domaine du banc laisse `localiser` : complète, l'annonce entière.
+fn services_complets() -> String {
+    let annonce = String::from_utf8(reponse_d_annonce()).expect("de l'UTF-8");
+    format!(
+        r#"[{{"service":"{}","nom":"depot","etat":"annonce","annonce":{annonce}}},{{"service":"{}","nom":"nas","etat":"parti","volontaire":null}}]"#,
+        asl_id::Identifiant::depuis_entropie(asl_id::Genre::Service, [0x2B; 16])
+            .texte()
+            .as_str(),
+        asl_id::Identifiant::depuis_entropie(asl_id::Genre::Service, [0x2C; 16])
+            .texte()
+            .as_str()
+    )
+}
+
 /// Ce que le faux annuaire rend pour les verbes des domaines — **dans la
-/// forme exacte que le serveur 0.39.0 écrit** (`asl_api::domaine`,
+/// forme exacte que le serveur 0.40.0 écrit** (`asl_api::domaine`,
 /// `asl_api::corps::ServiceRendu`) —, ou rien pour un autre chemin.
+///
+/// # LES SERVICES D'AUTRUI, SELON LE DROIT SUR LE DOMAINE (0.40.0)
+///
+/// Le banc ne tient aucun registre : chaque machine d'autrui porte ici le
+/// droit que son domaine nous donne. [`machine_d_autrui`], dans le domaine
+/// du banc (`localiser`) : la liste complète. [`machine_vue`], dans
+/// [`domaine_vu`] (`voir` seul) : la liste sans adresses, `"annonce":{}`.
+/// [`machine_hors_de_vos_droits`] — et toute autre — : `[]`.
 fn domaines_du_banc(chemin: &[u8]) -> Option<String> {
     let d = domaine().texte();
     let u = proprietaire().texte();
@@ -501,8 +540,13 @@ fn domaines_du_banc(chemin: &[u8]) -> Option<String> {
         d.as_str(),
         u.as_str()
     );
+    let vu = format!(
+        r#"{{"domaine":"{}","proprietaire":"{}","heberge_par":"racines","droits":["voir"]"#,
+        domaine_vu().texte().as_str(),
+        autre_compte().texte().as_str()
+    );
     if chemin == b"/v1/domaines" {
-        return Some(format!("[{objet}}}]"));
+        return Some(format!("[{objet}}},{vu}}}]"));
     }
     // L'alias arrive pourcent-encodé ; deux domaines le portent.
     if chemin == b"/v1/domaines?alias=Maison%20%C3%A9t%C3%A9" {
@@ -528,20 +572,37 @@ fn domaines_du_banc(chemin: &[u8]) -> Option<String> {
             autre_compte().texte().as_str()
         ));
     }
-    if chemin == format!("/v1/machines/{}/services", m.as_str()).as_bytes() {
-        let annonce = String::from_utf8(reponse_d_annonce()).expect("de l'UTF-8");
+    if chemin == format!("/v1/domaines/{}", domaine_vu().texte().as_str()).as_bytes() {
         return Some(format!(
-            r#"[{{"service":"{}","nom":"depot","etat":"annonce","annonce":{annonce}}},{{"service":"{}","nom":"nas","etat":"parti","volontaire":null}}]"#,
-            asl_id::Identifiant::depuis_entropie(asl_id::Genre::Service, [0x2B; 16])
+            r#"{},"groupes":[],"machines":[{{"machine":"{}","proprietaire":"{}","nom":"atelier"}}]}}"#,
+            vu,
+            machine_vue().texte().as_str(),
+            autre_compte().texte().as_str()
+        ));
+    }
+    let services_de = |machine: asl_id::Identifiant| {
+        format!("/v1/machines/{}/services", machine.texte().as_str())
+    };
+    // **À MOI, OU `localiser` SUR LE DOMAINE : TOUT.**
+    if chemin == services_de(machine()).as_bytes()
+        || chemin == services_de(machine_d_autrui()).as_bytes()
+    {
+        return Some(services_complets());
+    }
+    // **`voir` SEUL : LA LISTE, SANS ADRESSES.**
+    if chemin == services_de(machine_vue()).as_bytes() {
+        return Some(format!(
+            r#"[{{"service":"{}","nom":"imprimante","etat":"annonce","annonce":{{}}}},{{"service":"{}","nom":"scanner","etat":"parti","volontaire":true}}]"#,
+            asl_id::Identifiant::depuis_entropie(asl_id::Genre::Service, [0x2D; 16])
                 .texte()
                 .as_str(),
-            asl_id::Identifiant::depuis_entropie(asl_id::Genre::Service, [0x2C; 16])
+            asl_id::Identifiant::depuis_entropie(asl_id::Genre::Service, [0x2E; 16])
                 .texte()
                 .as_str()
         ));
     }
-    // **LA MACHINE D'UN AUTRE : `[]`**, comme le vrai annuaire le rend à
-    // qui n'en est pas le propriétaire.
+    // **SANS DROIT : `[]`**, comme le vrai annuaire le rend à qui ne voit
+    // pas le domaine de la machine.
     if chemin.starts_with(b"/v1/machines/") && chemin.ends_with(b"/services") {
         return Some("[]".to_owned());
     }

@@ -715,7 +715,8 @@ pub async fn domaines(invocation: &Invocation, identite: &Identite) -> Sortie {
     Ok(())
 }
 
-/// Un domaine, ses machines, et les services de celles qui sont à nous.
+/// Un domaine, ses machines, et les services de celles qu'on a le droit de
+/// voir.
 ///
 /// # DANS L'ORDRE, ET POURQUOI
 ///
@@ -728,12 +729,16 @@ pub async fn domaines(invocation: &Invocation, identite: &Identite) -> Sortie {
 ///    capacité `lecture` qui manque, et cela vaut d'être dit à part.
 /// 3. **Qui je suis** (`GET /v1/moi`) : c'est ce qui sépare une machine à
 ///    moi d'une machine d'autrui.
-/// 4. **Les services de chaque machine à moi** — et d'aucune autre :
-///    l'annuaire ne les sert qu'au propriétaire, et une requête pour une
-///    machine d'autrui ne rendrait qu'un `[]` qu'on prendrait pour « rien ».
+/// 4. **Les services de chaque machine qu'on voit** : les nôtres, et —
+///    depuis le serveur 0.40.0 (décisions 103–104) — celles d'autrui dès
+///    que le domaine nous donne `voir`. L'annuaire les rend alors **sans
+///    adresses** (un service vivant y porte `"annonce":{}`), et complètes
+///    avec `localiser`. Sans `voir`, on ne demande rien : la réponse serait
+///    un `[]` qu'on prendrait pour « rien ».
 /// 5. Avec `--where`, **chaque service annoncé se résout** comme `asl where`
 ///    le ferait (`GET /v1/ou/{m}/{nom}`), si l'on tient `localiser` — sur la
-///    machine, parce qu'elle est à nous, ou sur le domaine.
+///    machine, parce qu'elle est à nous, ou sur le domaine, qui atteint
+///    toutes ses machines. Sinon, la ligne le dit, sans rien demander.
 ///
 /// Un échec à l'étape 4 ou 5 n'arrête pas le verbe : il se dit sur la ligne
 /// de la machine ou du service, et le reste s'affiche.
@@ -805,11 +810,17 @@ async fn lire_un_domaine(
         .await
         .map_err(refus_de_l_annuaire)?
         .proprietaire;
+    let voit_le_domaine = detail.domaine.voit_ses_machines();
     let localise_le_domaine = detail.domaine.peut("localiser");
 
     let mut services = Vec::with_capacity(detail.machines.len());
     for machine in &detail.machines {
-        if machine.proprietaire != moi {
+        let a_moi = machine.proprietaire == moi;
+        // **SANS `voir`, ON NE DEMANDE PAS** : l'annuaire rendrait `[]` pour
+        // la machine d'autrui, qu'on ne distinguerait pas d'une machine sans
+        // service. (Il ne liste d'ailleurs pas les machines sans `voir` ;
+        // cette branche garde le verbe honnête si cela change.)
+        if !a_moi && !voit_le_domaine {
             services.push(ServicesVus::Autrui);
             continue;
         }
@@ -824,10 +835,12 @@ async fn lire_un_domaine(
         for service in lus {
             let adresse = if ou {
                 // **À MOI, JE LA LOCALISE** : le propriétaire tient tous les
-                // droits sur sa machine ; `localiser` sur le domaine l'emporte
-                // aussi pour les machines d'autrui, le jour où l'on en verra
-                // les services.
-                let localise = localise_le_domaine || machine.proprietaire == moi;
+                // droits sur sa machine ; `localiser` sur le domaine atteint
+                // toutes celles qui y sont rangées, d'autrui comprises
+                // (décision 104). Avec `voir` seul, le service reste
+                // « annoncé », sans adresse, et `resoudre` le dit sans rien
+                // demander.
+                let localise = localise_le_domaine || a_moi;
                 Some(resoudre(connexion, machine.machine, &service, localise).await)
             } else {
                 None
