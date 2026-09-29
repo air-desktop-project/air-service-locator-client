@@ -1,4 +1,5 @@
-//! Embarque le commit git dans le binaire, pour `asl --version`.
+//! Embarque le commit git dans le binaire, pour `asl --version` — et, sur
+//! macOS, un `Info.plist` dans le binaire lui-même.
 //!
 //! # POURQUOI LE COMMIT, ALORS QUE LA VERSION SUFFIT À NOMMER UNE LIVRAISON
 //!
@@ -18,8 +19,31 @@
 //!
 //! Un arbre modifié porte un `+` derrière le commit : un binaire construit sur
 //! un arbre sale n'est pas ce commit, et le dire évite de croire un banc à jour.
+//!
+//! # SUR MACOS, UN `Info.plist` DANS `__TEXT,__info_plist`
+//!
+//! Sur macOS, `asl` est livré dans l'application Mac
+//! (`Air Service Locator.app/Contents/Helpers/asl`), **en bac à sable** (Mac
+//! App Store). Un exécutable nu n'a pas de paquet autour de lui pour dire qui
+//! il est ; or le bac à sable en a besoin pour lui attribuer son conteneur
+//! (`~/Library/Containers/org.airdesktop.servicelocator.asl`). **Sans cet
+//! `Info.plist`, un `asl` signé avec le droit `app-sandbox` meurt au démarrage**
+//! (SIGILL dans `sandbox.cold`, essai réel sur macOS 15.7.9) ; avec lui, il
+//! démarre, lit le conteneur de groupe et joint les racines.
+//!
+//! La section est écrite par l'éditeur de liens (`-sectcreate`), depuis un
+//! fichier généré ici dans `OUT_DIR` à partir de la version du crate : la
+//! version affichée par le Finder et celle d'`asl --version` ne peuvent pas
+//! diverger. **Hors macOS, rien** — ni fichier, ni argument d'édition de liens.
+//! La cible se lit dans `CARGO_CFG_TARGET_OS` et non par `cfg!` : un script de
+//! construction est compilé pour l'HÔTE, et c'est la CIBLE qui décide.
 
+use std::path::Path;
 use std::process::Command;
+
+/// L'identifiant de paquet d'`asl` : celui que la signature du projet Mac
+/// porte, et celui qui nomme son conteneur de bac à sable.
+const IDENTIFIANT: &str = "org.airdesktop.servicelocator.asl";
 
 /// Lance `git` avec ces arguments depuis le dépôt, et rend sa sortie nettoyée.
 fn git(arguments: &[&str]) -> Option<String> {
@@ -55,4 +79,55 @@ fn main() {
         None => String::new(),
     };
     println!("cargo:rustc-env=ASL_COMMIT={commit}");
+
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        integrer_l_info_plist();
+    }
+}
+
+/// Écrit l'`Info.plist` d'`asl` dans `OUT_DIR` et demande à l'éditeur de liens
+/// de le poser dans `__TEXT,__info_plist` — pour le binaire `asl` seulement,
+/// pas pour les essais ni pour une autre cible.
+///
+/// # POURQUOI `CFBundleVersion` = LA VERSION DU CRATE
+///
+/// `CFBundleShortVersionString` est la version montrée aux gens,
+/// `CFBundleVersion` celle que le système compare. Ce dépôt n'a qu'un numéro,
+/// qui change à chaque PR et ne recule jamais (`check-version.sh`) : il fait
+/// l'un et l'autre, et aucun second compteur n'est à tenir.
+fn integrer_l_info_plist() {
+    let version = env!("CARGO_PKG_VERSION");
+    let contenu = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>{IDENTIFIANT}</string>
+	<key>CFBundleName</key>
+	<string>asl</string>
+	<key>CFBundleShortVersionString</key>
+	<string>{version}</string>
+	<key>CFBundleVersion</key>
+	<string>{version}</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+</dict>
+</plist>
+"#
+    );
+    // `OUT_DIR` est toujours posé par Cargo pour un script de construction ;
+    // son absence serait un Cargo cassé, pas un cas à traiter.
+    let dossier = std::env::var("OUT_DIR").expect("Cargo pose OUT_DIR");
+    let chemin = Path::new(&dossier).join("Info.plist");
+    std::fs::write(&chemin, contenu).expect("OUT_DIR est inscriptible");
+    // `-sectcreate` prend ses arguments séparés par des virgules : un chemin
+    // qui en porterait une serait coupé en deux, et l'édition de liens
+    // échouerait sur un message obscur. On le dit ici plutôt.
+    let chemin = chemin.display().to_string();
+    assert!(
+        !chemin.contains(','),
+        "le chemin de l'Info.plist ne doit pas contenir de virgule : {chemin}"
+    );
+    println!("cargo:rustc-link-arg-bin=asl=-Wl,-sectcreate,__TEXT,__info_plist,{chemin}");
 }

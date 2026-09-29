@@ -239,8 +239,14 @@ OPTIONS
                              SB7H9B6TY8.org.airdesktop.servicelocator/Library/
                              Application Support/asl), then the app's former
                              container (with a warning: launch the app to
-                             migrate it). Differing identities in two places
+                             migrate it). With no identity anywhere, `enroll`
+                             writes to the group container if the app is
+                             installed. Differing identities in two places
                              are reported on stderr, at every command.
+                             The asl shipped inside the macOS app is
+                             sandboxed: --state and ASL_STATE can only name
+                             folders it may reach — its own container or the
+                             group container.
     --name <name>            The name sent as `:authority`, when it differs
                              from the host. It proves nothing.
     --help                   This.

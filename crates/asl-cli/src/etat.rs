@@ -82,8 +82,15 @@ impl core::fmt::Display for Faute {
     }
 }
 
+/// Le dossier du groupe d'applications Service Locator, relatif au répertoire
+/// du compte : le système le crée pour une application qui porte le droit
+/// `application-groups`. Qu'il existe dit que l'application est là — et qu'un
+/// `asl` en bac à sable peut y écrire.
+const RACINE_DU_GROUPE: &str = "Library/Group Containers/SB7H9B6TY8.org.airdesktop.servicelocator";
+
 /// Le conteneur de groupe de l'application Service Locator et de son agent,
-/// relatif au répertoire du compte (`protocole.md`, décision 93, E11 révisé).
+/// relatif au répertoire du compte (`protocole.md`, décision 93, E11 révisé) :
+/// le dossier d'`asl` dans [`RACINE_DU_GROUPE`].
 const GROUPE: &str = "Library/Group Containers/SB7H9B6TY8.org.airdesktop.servicelocator/Library/Application Support/asl";
 
 /// L'ancien conteneur de l'application, d'avant le bac à sable partagé : ce
@@ -158,9 +165,20 @@ pub fn repertoire(demande: Option<&str>) -> PathBuf {
 ///   Library/Application Support/asl/`), l'ancien conteneur de l'application
 ///   (`~/Library/Containers/org.airdesktop.servicelocator.mac/Data/Library/
 ///   Application Support/asl/`, avec un avertissement), puis
-///   `$XDG_CONFIG_HOME/asl`, sinon `~/.config/asl` — qui est aussi le
-///   répertoire rendu quand aucun ne porte d'identité, et donc celui où
-///   `asl enroll` écrit.
+///   `$XDG_CONFIG_HOME/asl`, sinon `~/.config/asl`. Quand aucun ne porte
+///   d'identité — c'est là qu'`asl enroll` écrit —, le conteneur de groupe si
+///   le dossier du groupe existe (l'application est installée), sinon
+///   `$XDG_CONFIG_HOME/asl`, sinon `~/.config/asl`.
+///
+/// # POURQUOI `asl enroll` ÉCRIT DANS LE GROUPE QUAND IL EXISTE, SUR MAC
+///
+/// Livré dans l'application (`Contents/Helpers/asl`), `asl` tourne en bac à
+/// sable : il ne voit du compte que son propre conteneur et le groupe. Un
+/// `~/.config/asl` lui est **invisible** — il y écrirait (ou échouerait à y
+/// écrire) une identité que ni lui à la commande suivante, ni l'application,
+/// ni son agent ne liraient. Le groupe est le seul dossier que tous trois
+/// partagent. Sans application (un `asl` construit à la main sur un Mac nu),
+/// le groupe n'existe pas et rien ne change.
 ///
 /// # POURQUOI L'APPLICATION PASSE AVANT `~/.config/asl`, SUR MAC
 ///
@@ -187,10 +205,11 @@ pub fn chercher(demande: Option<&str>) -> Etat {
 ///
 /// Dans un bac à sable, `HOME` désigne le conteneur propre du processus
 /// (`~/Library/Containers/<identifiant>/Data`), et les chemins du protocole
-/// sont relatifs au répertoire du COMPTE. `asl` n'est pas en bac à sable ;
-/// mais le jour où son code tourne dans l'agent de l'application, un `HOME`
-/// de conteneur ferait chercher l'identité dans un dossier qui ne la porte
-/// jamais. On remonte donc d'un tel conteneur jusqu'au compte.
+/// sont relatifs au répertoire du COMPTE. **`asl` livré dans l'application
+/// est en bac à sable** (`Contents/Helpers/asl`) : son `HOME` est
+/// `~/Library/Containers/org.airdesktop.servicelocator.asl/Data`, qui ne
+/// porte jamais l'identité. On remonte donc d'un tel conteneur jusqu'au
+/// compte, d'où le groupe se trouve.
 ///
 /// **Pourquoi pas `getpwuid` directement** : ce binaire interdit `unsafe`, et
 /// n'a pas de liaison au système. `std::env::home_dir` le fait pour nous quand
@@ -259,10 +278,17 @@ fn resoudre(
         (Origine::AncienConteneur, maison.join(ANCIEN_CONTENEUR)),
         (Origine::Utilisateur, utilisateur),
     ];
+    let groupe_present = maison.join(RACINE_DU_GROUPE).is_dir();
     let (origine, dossier) = candidats
         .iter()
         .find(|(_, dossier)| dossier.join(FICHIER).exists())
-        .or_else(|| candidats.last())
+        .or_else(|| {
+            if groupe_present {
+                candidats.first()
+            } else {
+                candidats.last()
+            }
+        })
         .cloned()
         .unwrap_or((Origine::Utilisateur, PathBuf::from(".")));
 
@@ -776,7 +802,10 @@ mod essais {
                 usuel: racine.join(".config").join("asl"),
                 racine,
             };
-            for ou in [&maison.groupe, &maison.ancien, &maison.usuel] {
+            // **PAS LE GROUPE** : son dossier dit que l'application est
+            // installée, et change où `asl enroll` écrit. Un essai le crée
+            // quand il en parle ; `poser` le crée en y écrivant.
+            for ou in [&maison.ancien, &maison.usuel] {
                 fs::create_dir_all(ou).expect("un dossier d'état");
             }
             maison
@@ -807,7 +836,8 @@ mod essais {
     fn sur_mac_le_groupe_puis_l_ancien_conteneur_puis_l_usuel() {
         let maison = Maison::neuve("ordre");
 
-        // Rien nulle part : l'usuel, pour que `asl enroll` y écrive.
+        // Rien nulle part, pas d'application : l'usuel, pour que `asl
+        // enroll` y écrive.
         let etat = maison.sur_mac();
         assert_eq!(etat.dossier, maison.usuel);
         assert_eq!(etat.origine, Origine::Utilisateur);
@@ -846,8 +876,10 @@ mod essais {
         fs::remove_file(maison.groupe.join(FICHIER)).expect("effacé");
         assert_eq!(maison.sur_mac().origine, Origine::AncienConteneur);
 
-        // `$XDG_CONFIG_HOME` remplace `~/.config`, au quatrième rang seulement.
+        // `$XDG_CONFIG_HOME` remplace `~/.config`, au quatrième rang seulement
+        // — et sans application, sinon c'est le groupe qui recevrait.
         fs::remove_file(maison.ancien.join(FICHIER)).expect("effacé");
+        fs::remove_dir_all(maison.racine.join(RACINE_DU_GROUPE)).expect("effacé");
         let xdg = maison.racine.join("xdg");
         let etat = resoudre(
             None,
@@ -869,6 +901,76 @@ mod essais {
             true,
         );
         assert_eq!(etat.origine, Origine::Groupe);
+    }
+
+    /// Aucune identité nulle part, mais l'application installée : `asl enroll`
+    /// écrit dans le groupe, le seul dossier qu'un `asl` en bac à sable, l'
+    /// application et son agent voient tous trois — et la commande suivante
+    /// l'y lit.
+    #[test]
+    fn sur_mac_sans_identite_le_groupe_recoit_s_il_existe() {
+        let maison = Maison::neuve("enrolement");
+        fs::create_dir_all(maison.racine.join(RACINE_DU_GROUPE)).expect("le groupe");
+
+        let etat = maison.sur_mac();
+        assert_eq!(
+            (etat.dossier.clone(), etat.origine),
+            (maison.groupe.clone(), Origine::Groupe)
+        );
+        assert!(etat.avertissements.is_empty(), "{:?}", etat.avertissements);
+        // `$XDG_CONFIG_HOME` n'y change rien : il ne vient qu'après.
+        let etat = resoudre(None, None, Some("/tmp/xdg"), &maison.racine, true);
+        assert_eq!(etat.dossier, maison.groupe);
+
+        // Ce qu'`asl enroll` fait : écrire là, dossier créé au passage — puis
+        // la commande suivante relit au même endroit.
+        let machine = Maison::poser(&etat.dossier, 0x71);
+        let etat = maison.sur_mac();
+        assert_eq!(etat.origine, Origine::Groupe);
+        assert_eq!(
+            machine_nommee(&etat.dossier).as_deref(),
+            Some(machine.as_str())
+        );
+
+        // Une identité ailleurs l'emporte toujours sur « le groupe existe » :
+        // la règle de lecture ne bouge pas.
+        fs::remove_file(maison.groupe.join(FICHIER)).expect("effacé");
+        Maison::poser(&maison.usuel, 0x72);
+        assert_eq!(maison.sur_mac().origine, Origine::Utilisateur);
+
+        // Linux ne connaît pas le groupe, même présent.
+        fs::remove_file(maison.usuel.join(FICHIER)).expect("effacé");
+        let etat = resoudre(None, None, None, &maison.racine, false);
+        assert_eq!(etat.dossier, maison.usuel);
+    }
+
+    /// `asl` livré dans l'application, en bac à sable : son `HOME` est SON
+    /// conteneur, `org.airdesktop.servicelocator.asl`. Le groupe se cherche
+    /// depuis le compte, et s'y trouve.
+    #[test]
+    fn le_home_du_bac_a_sable_d_asl_trouve_le_groupe() {
+        let maison = Maison::neuve("bac-a-sable");
+        let home = maison
+            .racine
+            .join("Library/Containers/org.airdesktop.servicelocator.asl/Data");
+        fs::create_dir_all(&home).expect("le conteneur d'asl");
+        assert_eq!(hors_du_bac_a_sable(&home), maison.racine);
+
+        let machine = Maison::poser(&maison.groupe, 0x81);
+        let etat = resoudre(None, None, None, &hors_du_bac_a_sable(&home), true);
+        assert_eq!(
+            (etat.dossier.clone(), etat.origine),
+            (maison.groupe.clone(), Origine::Groupe)
+        );
+        assert_eq!(
+            machine_nommee(&etat.dossier).as_deref(),
+            Some(machine.as_str())
+        );
+    }
+
+    #[test]
+    fn le_groupe_est_sous_la_racine_du_groupe() {
+        assert!(Path::new(GROUPE).starts_with(RACINE_DU_GROUPE));
     }
 
     #[test]
@@ -963,6 +1065,14 @@ mod essais {
         assert_eq!(
             hors_du_bac_a_sable(Path::new(
                 "/Users/thierry/Library/Containers/org.airdesktop.servicelocator.mac/Data"
+            )),
+            PathBuf::from("/Users/thierry")
+        );
+        // Le conteneur d'`asl` lui-même, livré dans l'application en bac à
+        // sable : le chemin exact que macOS met dans son `HOME`.
+        assert_eq!(
+            hors_du_bac_a_sable(Path::new(
+                "/Users/thierry/Library/Containers/org.airdesktop.servicelocator.asl/Data"
             )),
             PathBuf::from("/Users/thierry")
         );
