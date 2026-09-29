@@ -184,6 +184,7 @@ dependencies = [
  "asl-id",
  "asl-proto",
  "asl-upnp",
+ "socket2",
  "tokio",
 ]
 

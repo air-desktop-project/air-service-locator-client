@@ -141,6 +141,14 @@ ams-quic = { git = "https://github.com/air-desktop-project/air-mail-server.git",
 ams-quic-tls = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "6f0ea51b6" }
 ams-tls = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "6f0ea51b6" }
 
+# `socket2` POUR UNE OPTION DE SOCKET, ET UNE SEULE : `IPV6_MULTICAST_IF`,
+# que la bibliothèque standard et tokio n'exposent pas. Le `M-SEARCH` IPv6
+# de la passerelle d'`asl echo` part vers un groupe de lien local, et macOS
+# ne le laisse partir que sur l'interface qu'on lui nomme ainsi. **Rien de neuf
+# dans le graphe** : tokio la tire déjà (`net`), à cette version ; Rust pur,
+# `libc` pour les déclarations (admise par `check-sans-c.sh`).
+socket2 = { version = "0.6", default-features = false }
+
 # `rustls` POUR LA CONFIGURATION CLIENTE, et rien d'autre : les racines à qui
 # l'on fait confiance, et le nom qu'on exige du certificat. Le chiffrement, lui,
 # vient du fournisseur d'`ams-tls`, en Rust pur.

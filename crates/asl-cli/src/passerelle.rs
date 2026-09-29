@@ -845,10 +845,7 @@ impl Tache {
             for destination in visees {
                 let hote = hote_ssdp(*destination);
                 for cible in ssdp::CIBLES {
-                    match socket
-                        .send_to(&ssdp::recherche(cible, &hote), destination)
-                        .await
-                    {
+                    match envoyer(&socket, &ssdp::recherche(cible, &hote), *destination).await {
                         Ok(_) => {
                             if let SocketAddr::V6(v6) = destination
                                 && vers_le_groupe_v6(destination)
@@ -974,6 +971,25 @@ fn groupes(interfaces: &[u32]) -> Vec<SocketAddr> {
         .collect()
 }
 
+/// Envoie un datagramme — **et, vers un groupe IPv6 nommé par sa portée,
+/// sur l'interface de cette portée** : `IPV6_MULTICAST_IF` d'abord, puis
+/// l'envoi. Linux se contente de la portée dans l'adresse ; macOS non (voir
+/// [`interfaces_du_lien`]). Les envois d'une socket se suivent dans la même
+/// tâche : l'option posée est celle de l'envoi qui suit.
+async fn envoyer(
+    socket: &UdpSocket,
+    octets: &[u8],
+    destination: SocketAddr,
+) -> std::io::Result<usize> {
+    if let SocketAddr::V6(v6) = destination
+        && v6.ip().is_multicast()
+        && v6.scope_id() != 0
+    {
+        socket2::SockRef::from(socket).set_multicast_if_v6(v6.scope_id())?;
+    }
+    socket.send_to(octets, destination).await
+}
+
 /// Le `M-SEARCH` vers `destination` part-il vers le groupe IPv6, sur une
 /// interface qu'on essaie peut-être à l'aveugle ?
 fn vers_le_groupe_v6(destination: &SocketAddr) -> bool {
@@ -1010,13 +1026,15 @@ fn bilan_du_groupe_v6(sur: &[u32], refus: Option<&(SocketAddr, std::io::Error)>)
 /// première : juste sur une machine à une interface, n'importe laquelle sur
 /// une machine qui en a plusieurs — un pont de conteneurs, un tunnel, le
 /// Wi-Fi à côté de l'Ethernet. Le code d'avant 0.24.1 nommait l'interface
-/// de notre adresse IPv6 sous Linux, et aucune ailleurs. **On nomme
-/// donc l'interface**, par l'index dans l'adresse de destination
-/// (`sin6_scope_id`) : c'est ce que `IPV6_MULTICAST_IF` ferait pour toute la
-/// socket, sans l'option que la bibliothèque standard n'expose pas.
+/// de notre adresse IPv6 sous Linux, et aucune ailleurs. **On nomme donc
+/// l'interface, de deux façons** ([`envoyer`]) : l'index dans l'adresse de
+/// destination (`sin6_scope_id`), qui suffit à Linux, et `IPV6_MULTICAST_IF`
+/// sur la socket, que macOS exige — posé par `socket2`, que tokio tire déjà,
+/// sans une ligne de C ni d'`unsafe` ici.
 ///
 /// Reste à connaître les index. `getifaddrs` et `if_nametoindex` sont du C
-/// (C4), et les appeler demanderait `unsafe`. Alors :
+/// (C4), qu'aucune crate du graphe n'enveloppe, et les appeler d'ici
+/// demanderait `unsafe`. Alors :
 ///
 /// - **Linux** les dit dans `/proc/net/if_inet6` : une ligne par adresse,
 ///   l'adresse en hexadécimal puis l'index de son interface. On garde les
@@ -1024,8 +1042,8 @@ fn bilan_du_groupe_v6(sur: &[u32], refus: Option<&(SocketAddr, std::io::Error)>)
 ///   elle, pas de multicast de lien — et le M-SEARCH part sur chacune ;
 /// - **ailleurs** (macOS, ou un `/proc` qu'on ne lit pas), **les index 1 à
 ///   [`INDEX_MAX`], tous** : un index sans interface, ou une interface sans
-///   IPv6, refuse l'envoi sur-le-champ (`ENXIO`, `ENETUNREACH`,
-///   `EADDRNOTAVAIL`), et ce refus est attendu, donc tu. Les index se donnent
+///   IPv6, refuse l'option ou l'envoi sur-le-champ (`EINVAL`, `ENXIO`,
+///   `EADDRNOTAVAIL`, `ENETUNREACH`), et ce refus est attendu, donc tu. Les index se donnent
 ///   à partir de 1, dans l'ordre où les interfaces apparaissent, et macOS
 ///   redonne le même à une interface qui revient (`utun`, un pont de VM) : une
 ///   machine de bureau reste loin de trente-deux. C'est soixante-quatre appels
@@ -1190,10 +1208,11 @@ mod tests {
     use std::net::{IpAddr, SocketAddr, SocketAddrV6};
 
     use asl_upnp::ssdp;
+    use tokio::net::UdpSocket;
 
     use super::{
-        INDEX_MAX, adresses_ssdp, bilan_du_groupe_v6, connait_la_passerelle, groupes, hote_ssdp,
-        interfaces_du_lien, port_tire, vers_le_groupe_v6,
+        INDEX_MAX, adresses_ssdp, bilan_du_groupe_v6, connait_la_passerelle, envoyer, groupes,
+        hote_ssdp, interfaces_du_lien, port_tire, vers_le_groupe_v6,
     };
 
     /// `/proc/net/if_inet6` d'une machine à Ethernet, Wi-Fi et pont de
@@ -1290,8 +1309,8 @@ fe80 02 40 20 80   court
                 "[ff02::c%12]:1900".parse().unwrap(),
             ]
         );
-        // La portée est dans l'adresse elle-même : c'est elle qui choisit
-        // l'interface de sortie, sans `IPV6_MULTICAST_IF`.
+        // La portée est dans l'adresse elle-même : c'est elle qui nomme
+        // l'interface de sortie, et `envoyer` la pose en `IPV6_MULTICAST_IF`.
         let portees: Vec<u32> = destinations
             .iter()
             .filter_map(|destination| match destination {
@@ -1348,31 +1367,34 @@ fe80 02 40 20 80   court
     }
 
     /// **SUR LE VRAI NOYAU** — c'est l'essai qui compte sous macOS, où la
-    /// portée zéro rendait `No route to host` : au moins une des interfaces
-    /// que [`interfaces_du_lien`] rend prend un envoi de lien local nommé par
-    /// son index. Sous macOS, `lo0` (index 1, `fe80::1`, multicast) le prend
-    /// toujours ; sous Linux, toute interface qui a un lien local.
+    /// portée zéro rendait `No route to host`, et la portée seule aussi : au
+    /// moins une des interfaces que [`interfaces_du_lien`] rend prend un
+    /// envoi de lien local par [`envoyer`]. Sous macOS, `lo0` (index 1,
+    /// `fe80::1`, multicast) est toujours là ; sous Linux, toute interface qui
+    /// a un lien local.
     ///
     /// Pour ne rien demander à personne, le datagramme ne va PAS au groupe
     /// SSDP : il va à `ff02::114` (RFC 4727, réservé aux expériences), port
     /// 9 (`discard`), qu'aucune box n'écoute.
-    #[test]
-    fn un_envoi_de_lien_local_nomme_par_son_index_part() {
+    #[tokio::test]
+    async fn un_envoi_de_lien_local_nomme_par_son_index_part() {
         let table = std::fs::read_to_string("/proc/net/if_inet6").ok();
         let interfaces = interfaces_du_lien(table.as_deref());
         if interfaces.is_empty() {
             // Un Linux sans IPv6 : rien à éprouver ici.
             return;
         }
-        let socket = std::net::UdpSocket::bind("[::]:0").expect("une socket IPv6");
+        let socket = UdpSocket::bind("[::]:0").await.expect("une socket IPv6");
         let experience = "ff02::114".parse().unwrap();
-        let (prises, refus): (Vec<_>, Vec<_>) = interfaces
-            .iter()
-            .map(|index| {
-                let envoi = socket.send_to(b"asl", SocketAddrV6::new(experience, 9, 0, *index));
-                (*index, envoi.map_err(|quoi| quoi.to_string()))
-            })
-            .partition(|(_, envoi)| envoi.is_ok());
+        let mut prises = Vec::new();
+        let mut refus = Vec::new();
+        for index in &interfaces {
+            let destination = SocketAddr::V6(SocketAddrV6::new(experience, 9, 0, *index));
+            match envoyer(&socket, b"asl", destination).await {
+                Ok(_) => prises.push(*index),
+                Err(quoi) => refus.push((*index, quoi.to_string())),
+            }
+        }
         assert!(
             !prises.is_empty(),
             "aucune interface ne prend l'envoi : {refus:?}"
