@@ -1366,22 +1366,37 @@ fe80 02 40 20 80   court
         );
     }
 
-    /// **SUR LE VRAI NOYAU** — c'est l'essai qui compte sous macOS, où la
-    /// portée zéro rendait `No route to host`, et la portée seule aussi : au
-    /// moins une des interfaces que [`interfaces_du_lien`] rend prend un
-    /// envoi de lien local par [`envoyer`]. Sous macOS, `lo0` (index 1,
-    /// `fe80::1`, multicast) est toujours là ; sous Linux, toute interface qui
-    /// a un lien local.
+    /// **SUR LE VRAI NOYAU** — l'essai qui compte sous macOS, où l'IPv4
+    /// trouvait la box et l'IPv6 rendait `No route to host` : **là où un
+    /// envoi multicast IPv4 part, un envoi de lien local IPv6 part aussi**,
+    /// par [`envoyer`], sur au moins une des interfaces que
+    /// [`interfaces_du_lien`] rend. Sous macOS, `lo0` (index 1, `fe80::1`,
+    /// multicast) est toujours là ; sous Linux, toute interface qui a un lien
+    /// local.
     ///
-    /// Pour ne rien demander à personne, le datagramme ne va PAS au groupe
-    /// SSDP : il va à `ff02::114` (RFC 4727, réservé aux expériences), port
-    /// 9 (`discard`), qu'aucune box n'écoute.
+    /// **Si l'IPv4 elle-même ne part pas, l'essai ne juge rien** : c'est le
+    /// système qui refuse tout multicast à ce processus — sous macOS 15, la
+    /// confidentialité du réseau local, qui répond `No route to host` à un
+    /// programme que ni le Terminal ni l'utilisateur n'ont lancé (un runner
+    /// de CI). Il le dit, et s'arrête.
+    ///
+    /// Pour ne rien demander à personne, rien ne va aux groupes SSDP : l'IPv4
+    /// va à `239.255.255.114`, l'IPv6 à `ff02::114` (RFC 4727, expériences),
+    /// port 9 (`discard`), qu'aucune box n'écoute.
     #[tokio::test]
     async fn un_envoi_de_lien_local_nomme_par_son_index_part() {
         let table = std::fs::read_to_string("/proc/net/if_inet6").ok();
         let interfaces = interfaces_du_lien(table.as_deref());
         if interfaces.is_empty() {
             // Un Linux sans IPv6 : rien à éprouver ici.
+            return;
+        }
+        let quatre = UdpSocket::bind("0.0.0.0:0").await.expect("une socket IPv4");
+        quatre.set_multicast_ttl_v4(1).expect("un saut");
+        if let Err(quoi) = quatre.send_to(b"asl", "239.255.255.114:9").await {
+            eprintln!(
+                "le multicast IPv4 ne part pas ({quoi}) : le système le refuse à ce processus, rien à juger"
+            );
             return;
         }
         let socket = UdpSocket::bind("[::]:0").await.expect("une socket IPv6");
