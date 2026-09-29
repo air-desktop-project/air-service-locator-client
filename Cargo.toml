@@ -58,7 +58,7 @@ members = [
 exclude = ["fuzz"]
 
 [workspace.package]
-version = "0.24.0"
+version = "0.24.1"
 edition = "2024"
 # PAS DE `rust-version`, ET C'EST DÉLIBÉRÉ.
 #
@@ -74,10 +74,10 @@ authors = ["air-service-locator contributors"]
 repository = "https://github.com/air-desktop-project/air-service-locator-client"
 
 [workspace.dependencies]
-asl-client = { path = "crates/asl-client", version = "0.24.0" }
-asl-client-tokio = { path = "crates/asl-client-tokio", version = "0.24.0" }
-asl-client-ffi = { path = "crates/asl-client-ffi", version = "0.24.0" }
-asl-upnp = { path = "crates/asl-upnp", version = "0.24.0" }
+asl-client = { path = "crates/asl-client", version = "0.24.1" }
+asl-client-tokio = { path = "crates/asl-client-tokio", version = "0.24.1" }
+asl-client-ffi = { path = "crates/asl-client-ffi", version = "0.24.1" }
+asl-upnp = { path = "crates/asl-upnp", version = "0.24.1" }
 
 # La grammaire, tirée du dépôt qui porte les spécifications.
 #
@@ -140,6 +140,14 @@ ams-proto-quic = { git = "https://github.com/air-desktop-project/air-mail-server
 ams-quic = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "6f0ea51b6" }
 ams-quic-tls = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "6f0ea51b6" }
 ams-tls = { git = "https://github.com/air-desktop-project/air-mail-server.git", rev = "6f0ea51b6" }
+
+# `socket2` POUR UNE OPTION DE SOCKET, ET UNE SEULE : `IPV6_MULTICAST_IF`,
+# que la bibliothèque standard et tokio n'exposent pas. Le `M-SEARCH` IPv6
+# de la passerelle d'`asl echo` part vers un groupe de lien local, et macOS
+# ne le laisse partir que sur l'interface qu'on lui nomme ainsi. **Rien de neuf
+# dans le graphe** : tokio la tire déjà (`net`), à cette version ; Rust pur,
+# `libc` pour les déclarations (admise par `check-sans-c.sh`).
+socket2 = { version = "0.6", default-features = false }
 
 # `rustls` POUR LA CONFIGURATION CLIENTE, et rien d'autre : les racines à qui
 # l'on fait confiance, et le nom qu'on exige du certificat. Le chiffrement, lui,
