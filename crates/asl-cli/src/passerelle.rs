@@ -11,8 +11,11 @@
 //! 2. **elle cherche la box** — SSDP sur le lien local, IPv4 et IPv6 —, lit
 //!    sa description, et lui demande **la redirection UDP du port de l'écho,
 //!    et de lui seul** : `AddAnyPortMapping` (IGD v2) ou `AddPortMapping`
-//!    (IGD v1 ; le même port d'abord, trois ports tirés au hasard sur
-//!    conflit), bail d'une heure, permanent seulement si la box l'exige ;
+//!    (IGD v1 ; le même port externe que le port interne d'abord, puis
+//!    [`TIRAGES`] ports externes tirés au hasard sur `718
+//!    ConflictInMappingEntry` — **hors de la plage de l'écho**, où un voisin
+//!    de la même box tient peut-être le sien), bail d'une heure, permanent
+//!    seulement si la box l'exige ;
 //!    puis `GetExternalIPAddress`, et le trou IPv6 (`AddPinhole`) si la box
 //!    le propose et le permet ;
 //! 3. **elle recommence** toutes les trente minutes — le bail d'une heure est
@@ -98,6 +101,11 @@ const TIRAGES: u8 = 3;
 /// Le premier port qu'on tire au hasard après un conflit : en dessous, les
 /// ports sont ceux des services connus.
 const PREMIER_PORT_TIRE: u16 = 1_024;
+
+/// Combien de ports la plage de l'écho occupe (6631–6639) : un port externe
+/// tiré les saute, pour ne pas prendre — ni redemander — celui de l'écho d'un
+/// voisin de la même box (essai réel, 2026-09-30).
+const PORTS_DE_L_ECHO: u16 = crate::echo::DERNIER_PORT - crate::echo::PREMIER_PORT + 1;
 
 /// Le préfixe du fichier qui retient ce que l'écho a ouvert.
 const MEMOIRE: &str = "upnp-";
@@ -568,7 +576,7 @@ impl Tache {
             return;
         };
         let avant = self.redirection.clone();
-        match self.rediriger(controle, service, *client).await {
+        match self.rediriger(controle, service, *client, constats).await {
             Ok(mut obtenue) => {
                 if let Some(avant) = &avant
                     && avant.externe != obtenue.externe
@@ -613,11 +621,30 @@ impl Tache {
     }
 
     /// Demande la redirection UDP du port de l'écho.
+    ///
+    /// # LE PORT EXTERNE N'EST PAS LE PORT INTERNE (essai réel, 2026-09-30)
+    ///
+    /// On demande d'abord le port de l'écho comme port externe — c'est le
+    /// plus lisible, et une box qui l'accorde donne les deux fois le même
+    /// nombre. Mais **derrière une même box, un autre écho le tient
+    /// peut-être** : speedy a tiré 6637 alors qu'oxygen avait déjà fait
+    /// rediriger 6637, et la Livebox a refusé par `718
+    /// ConflictInMappingEntry`. Neuf ports pour toutes les machines d'une
+    /// maison : ce n'est pas un cas de bord. **On garde alors le port interne
+    /// et l'on demande un AUTRE port externe** ([`TIRAGES`] essais), puisque
+    /// c'est le port externe qui part dans `passerelle` et que l'annuaire
+    /// sonde `adresse externe:port externe`.
+    ///
+    /// **Même quand la box se dit IGD v2** : `AddAnyPortMapping` devrait
+    /// choisir elle-même un port libre plutôt que refuser, et certaines
+    /// refusent quand même — un `718` sur cette action fait donc passer à la
+    /// voie de la v1, avec un port tiré, au lieu de renoncer.
     async fn rediriger(
         &self,
         controle: &Url,
         service: &'static str,
         client: Ipv4Addr,
+        constats: &mut Vec<String>,
     ) -> Result<Redirection, Echec> {
         // On redemande le port qu'on tient déjà — c'est ainsi qu'on
         // renouvelle —, sinon le port de l'écho lui-même.
@@ -634,25 +661,34 @@ impl Tache {
             permanente,
             adresse_externe: None,
         };
+        let mut externe = voulu;
+        let mut tirages = 0_u8;
         if service == WAN_IP_2 {
-            let action = soap::ajouter_n_importe_lequel(voulu, self.port, client, BAIL_S);
+            let action = soap::ajouter_n_importe_lequel(externe, self.port, client, BAIL_S);
             match demander(controle, service, &action).await {
                 Ok(retour) => {
-                    let externe = retour
+                    let reserve = retour
                         .valeur("NewReservedPort")
                         .and_then(soap::port)
-                        .unwrap_or(voulu);
-                    return Ok(accordee(externe, false));
+                        .unwrap_or(externe);
+                    return Ok(accordee(reserve, false));
                 }
                 // Une box qui se dit v2 sans savoir `AddAnyPortMapping` :
-                // la voie de la v1.
+                // la voie de la v1, sur le même port externe.
                 Err(Echec::Refus(code::ACTION_INCONNUE, _)) => {}
+                // **UNE BOX v2 QUI REFUSE QUAND MÊME** : elle aurait dû
+                // choisir un port libre ; on en tire un, et l'on continue par
+                // `AddPortMapping`.
+                Err(Echec::Refus(code::CONFLIT, _)) => {
+                    let neuf = port_tire();
+                    constats.push(ligne_de_conflit(externe, neuf, self.port));
+                    externe = neuf;
+                    tirages = 1;
+                }
                 Err(autre) => return Err(autre),
             }
         }
-        let mut externe = voulu;
         let mut bail = BAIL_S;
-        let mut tirages = 0_u8;
         loop {
             let action = soap::ajouter(externe, self.port, client, bail);
             match demander(controle, service, &action).await {
@@ -660,9 +696,23 @@ impl Tache {
                 // **LE PERMANENT SEULEMENT SI LA BOX L'EXIGE** (E18) — et
                 // c'est alors à nous de le retirer.
                 Err(Echec::Refus(code::PERMANENT_SEULEMENT, _)) if bail != 0 => bail = 0,
+                // **UN PORT EXTERNE DÉJÀ PRIS SE REMPLACE** : le port interne
+                // ne change pas, lui — la box redirige vers l'écho.
                 Err(Echec::Refus(code::CONFLIT, _)) if tirages < TIRAGES => {
                     tirages = tirages.saturating_add(1);
-                    externe = port_tire();
+                    let neuf = port_tire();
+                    constats.push(ligne_de_conflit(externe, neuf, self.port));
+                    externe = neuf;
+                }
+                // **TOUT CE QU'ON A ESSAYÉ EST PRIS** : on renonce, et l'on
+                // dit combien de ports ont été essayés — sans cela, un `718`
+                // seul laisse croire que rien n'a été retenté.
+                Err(Echec::Refus(code::CONFLIT, texte)) => {
+                    constats.push(format!(
+                        "la box refuse tout port externe : udp {voulu} et {tirages} port(s) \
+                         tiré(s) sont déjà pris (718) — pas de redirection cette fois"
+                    ));
+                    return Err(Echec::Refus(code::CONFLIT, texte));
                 }
                 Err(autre) => return Err(autre),
             }
@@ -1367,8 +1417,27 @@ fn port_libre(port: u16) -> bool {
 /// Un port tiré au hasard, de 1024 à 65535.
 fn port_tire() -> u16 {
     let tirage = etat::hasard::<2>().map_or(0, u16::from_le_bytes);
-    let etendue = u16::MAX.saturating_sub(PREMIER_PORT_TIRE);
-    PREMIER_PORT_TIRE.saturating_add(tirage.checked_rem(etendue).unwrap_or(0))
+    let etendue = u16::MAX
+        .saturating_sub(PREMIER_PORT_TIRE)
+        .saturating_sub(PORTS_DE_L_ECHO);
+    let rang = PREMIER_PORT_TIRE.saturating_add(tirage.checked_rem(etendue).unwrap_or(0));
+    // La plage de l'écho est sautée, et non retirée après coup : chaque port
+    // rendu a la même chance, et aucun n'est celui d'un voisin.
+    if rang >= crate::echo::PREMIER_PORT {
+        rang.saturating_add(PORTS_DE_L_ECHO)
+    } else {
+        rang
+    }
+}
+
+/// Ce qu'on dit quand un port externe est déjà pris, et qu'on en tire un
+/// autre — **toujours**, et pas seulement en mode bavard : c'est ce qui
+/// explique qu'un port externe ne soit pas le port de l'écho.
+fn ligne_de_conflit(pris: u16, neuf: u16, interne: u16) -> String {
+    format!(
+        "la box a déjà une redirection pour udp {pris} (un autre appareil) — nouveau port \
+         externe demandé : udp {neuf} → udp {interne}"
+    )
 }
 
 /// Écrit un fichier en `0600`, par un renommage : on ne lit jamais une
@@ -1600,10 +1669,28 @@ async fn echanger(url: &Url, requete: &[u8]) -> Result<(http::Reponse, SocketAdd
 /// refuse tout champ inconnu.
 pub const VERSION_PASSERELLE: (u64, u64, u64) = (0, 44, 0);
 
+/// La version d'annuaire qui connaît `passerelle.externe` (serveur 0.45.0,
+/// décision 107) : un membre d'annuaire local plus ancien refuserait
+/// l'annonce entière.
+pub const VERSION_EXTERNE: (u64, u64, u64) = (0, 45, 0);
+
 /// Cette version d'annuaire accepte-t-elle `passerelle` ? Une version qui ne
 /// se lit pas ne l'accepte pas : dans le doute, on n'envoie rien.
 #[must_use]
 pub fn connait_la_passerelle(version: &str) -> bool {
+    au_moins(version, VERSION_PASSERELLE)
+}
+
+/// Cette version d'annuaire accepte-t-elle `passerelle.externe` ? La même
+/// prudence.
+#[must_use]
+pub fn connait_l_externe(version: &str) -> bool {
+    au_moins(version, VERSION_EXTERNE)
+}
+
+/// La version, lue strictement (`M.m.p`, des chiffres seulement), est-elle
+/// au moins `voulue` ?
+fn au_moins(version: &str, voulue: (u64, u64, u64)) -> bool {
     let mut morceaux = version.trim().split('.').map(|morceau| {
         morceau
             .bytes()
@@ -1618,7 +1705,7 @@ pub fn connait_la_passerelle(version: &str) -> bool {
         morceaux.next(),
     ) {
         (Some(Some(majeure)), Some(Some(mineure)), Some(Some(corrective)), None) => {
-            (majeure, mineure, corrective) >= VERSION_PASSERELLE
+            (majeure, mineure, corrective) >= voulue
         }
         _ => false,
     }
@@ -1657,10 +1744,10 @@ mod tests {
     use tokio::net::UdpSocket;
 
     use super::{
-        Accord, Boite, Echec, Faits, INDEX_MAX, Reglage, Retour, Tache, Voeu, adresses_ssdp,
-        bilan_du_groupe_v6, connait_la_passerelle, decider, echanger, envoyer, groupes, hote_ssdp,
-        http, interfaces_du_lien, les_deux, liens_du_lien, port_tire, sans_passerelle,
-        vers_le_groupe_v6,
+        Accord, Boite, Echec, Faits, INDEX_MAX, Reglage, Retour, TIRAGES, Tache, Voeu,
+        adresses_ssdp, bilan_du_groupe_v6, connait_l_externe, connait_la_passerelle, decider,
+        echanger, envoyer, groupes, hote_ssdp, http, interfaces_du_lien, les_deux, liens_du_lien,
+        port_tire, sans_passerelle, vers_le_groupe_v6,
     };
 
     /// `/proc/net/if_inet6` d'une machine à Ethernet, Wi-Fi et pont de
@@ -1691,6 +1778,16 @@ fe80 02 40 20 80   court
             "0.43.9", "0.43.0", "0.2.0", "", "0.44", "0.44.0.1", "0.44.x", "0.+44.0", "v0.44.0",
         ] {
             assert!(!connait_la_passerelle(non), "{non}");
+        }
+    }
+
+    #[test]
+    fn seul_un_annuaire_0_45_0_ou_plus_recoit_l_adresse_externe() {
+        for oui in ["0.45.0", "0.45.1", "0.46.0", "1.0.0"] {
+            assert!(connait_l_externe(oui), "{oui}");
+        }
+        for non in ["0.44.2", "0.44.0", "", "0.45", "v0.45.0"] {
+            assert!(!connait_l_externe(non), "{non}");
         }
     }
 
@@ -1995,9 +2092,16 @@ fe80 02 40 20 80   court
     }
 
     #[test]
-    fn un_port_tire_evite_les_ports_connus() {
-        for _ in 0..64 {
-            assert!(port_tire() >= 1_024);
+    fn un_port_tire_evite_les_ports_connus_et_la_plage_de_l_echo() {
+        for _ in 0..1_024 {
+            let port = port_tire();
+            assert!(port >= 1_024, "{port}");
+            // La plage de l'écho est sautée : le port externe d'un voisin de
+            // la même box ne se reprend pas (essai réel, 2026-09-30).
+            assert!(
+                !(crate::echo::PREMIER_PORT..=crate::echo::DERNIER_PORT).contains(&port),
+                "{port} est dans la plage de l'écho"
+            );
         }
     }
 
@@ -2236,7 +2340,17 @@ fe80 02 40 20 80   court
         trou_accorde: bool,
         /// `AddPortMapping` refusé (`606`).
         redirection_refusee: bool,
-        /// Les actions reçues.
+        /// Les ports externes que la box dit déjà pris : `AddPortMapping`
+        /// les refuse par `718`, comme la Livebox l'a fait pour le port que
+        /// l'écho d'une autre machine tenait (essai réel, 2026-09-30).
+        ports_pris: Vec<u16>,
+        /// Tout port externe est refusé par `718` : on épuise les essais.
+        conflit_toujours: bool,
+        /// `AddAnyPortMapping` refusé — par `718` s'il est vrai, par `401`
+        /// (action inconnue) sinon : les deux existent en vrai.
+        any_en_conflit: Option<bool>,
+        /// Les actions reçues, avec le port externe demandé quand il y en a
+        /// un : `AddPortMapping 51234`.
         actions: Vec<String>,
     }
 
@@ -2256,7 +2370,7 @@ fe80 02 40 20 80   court
                 tokio::spawn(async move {
                     let mut lus = Vec::new();
                     let mut morceau = [0_u8; 4_096];
-                    let tete = loop {
+                    let (tete, corps_recu) = loop {
                         let Ok(combien) = flux.read(&mut morceau).await else {
                             return;
                         };
@@ -2277,7 +2391,7 @@ fe80 02 40 20 80   court
                                 .and_then(|longueur| longueur.trim().parse().ok())
                                 .unwrap_or(0);
                             if corps.len() >= longueur {
-                                break tete.to_owned();
+                                break (tete.to_owned(), corps.to_owned());
                             }
                         }
                     };
@@ -2300,20 +2414,37 @@ fe80 02 40 20 80   court
                     } else {
                         super::description::WAN_IP_1
                     };
+                    // Le port externe demandé, tel que le corps SOAP le
+                    // porte — ce qui permet à la fausse box de dire qu'il est
+                    // déjà pris.
+                    let demande = corps_recu
+                        .split_once("<NewExternalPort>")
+                        .and_then(|(_, reste)| reste.split_once("</NewExternalPort>"))
+                        .and_then(|(nombre, _)| nombre.trim().parse::<u16>().ok());
                     let (statut, corps) = {
                         let mut etat = comportement.lock().unwrap();
-                        etat.actions.push(action.clone());
+                        etat.actions.push(match demande {
+                            Some(port) => format!("{action} {port}"),
+                            None => action.clone(),
+                        });
                         let reussi = |valeurs: &str| {
                             format!(
                                 "<?xml version=\"1.0\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
                              <u:{action}Response xmlns:u=\"{service}\">{valeurs}</u:{action}Response></s:Body></s:Envelope>"
                             )
                         };
-                        let refus = "<?xml version=\"1.0\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
-                         <s:Fault><faultcode>s:Client</faultcode><faultstring>UPnPError</faultstring><detail>\
-                         <UPnPError xmlns=\"urn:schemas-upnp-org:control-1-0\"><errorCode>606</errorCode>\
-                         <errorDescription>Action not authorized</errorDescription></UPnPError></detail></s:Fault></s:Body></s:Envelope>"
-                        .to_owned();
+                        let refuse = |code: u16, quoi: &str| {
+                            format!(
+                                "<?xml version=\"1.0\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
+                                 <s:Fault><faultcode>s:Client</faultcode><faultstring>UPnPError</faultstring><detail>\
+                                 <UPnPError xmlns=\"urn:schemas-upnp-org:control-1-0\"><errorCode>{code}</errorCode>\
+                                 <errorDescription>{quoi}</errorDescription></UPnPError></detail></s:Fault></s:Body></s:Envelope>"
+                            )
+                        };
+                        let refus = refuse(606, "Action not authorized");
+                        let conflit = refuse(718, "ConflictInMappingEntry");
+                        let pris = etat.conflit_toujours
+                            || demande.is_some_and(|port| etat.ports_pris.contains(&port));
                         let (statut, corps) = match action.as_str() {
                             "GetFirewallStatus" => (
                                 "200 OK",
@@ -2326,6 +2457,24 @@ fe80 02 40 20 80   court
                                 ("200 OK", reussi("<UniqueID>7</UniqueID>"))
                             }
                             "UpdatePinhole" if etat.trou_accorde => ("200 OK", reussi("")),
+                            // **UN PORT EXTERNE DÉJÀ PRIS** : `718`, comme la
+                            // Livebox pour le port d'un autre écho.
+                            "AddPortMapping" | "AddAnyPortMapping" if pris => {
+                                ("500 Internal Server Error", conflit)
+                            }
+                            "AddAnyPortMapping" => match etat.any_en_conflit {
+                                Some(true) => ("500 Internal Server Error", conflit),
+                                Some(false) => {
+                                    ("500 Internal Server Error", refuse(401, "Invalid Action"))
+                                }
+                                None => (
+                                    "200 OK",
+                                    reussi(&format!(
+                                        "<NewReservedPort>{}</NewReservedPort>",
+                                        demande.unwrap_or(0)
+                                    )),
+                                ),
+                            },
                             "AddPortMapping" if !etat.redirection_refusee => ("200 OK", reussi("")),
                             "GetExternalIPAddress" => (
                                 "200 OK",
@@ -2377,11 +2526,214 @@ fe80 02 40 20 80   court
 
     /// Un tour contre `boite`, vu depuis `vu` : ce qu'il conclut.
     async fn un_tour(tache: &mut Tache, boite: &Boite, vu: &str) -> Accord {
+        un_tour_dit(tache, boite, vu).await.0
+    }
+
+    /// Le même, avec ce qu'il a dit — les constats de la redirection.
+    async fn un_tour_dit(tache: &mut Tache, boite: &Boite, vu: &str) -> (Accord, Vec<String>) {
         tache.vu = Some(vu.parse().unwrap());
         let mut constats = Vec::new();
         tache.tour_de_redirection(boite, &mut constats).await;
         tache.tour_de_trou(boite, &mut constats).await;
-        tache.conclure()
+        (tache.conclure(), constats)
+    }
+
+    /// Une fausse box qui se comporte ainsi, et la `Boite` qui la désigne sous
+    /// ce service — v1 ou v2.
+    async fn box_reglee(
+        service: &'static str,
+        regler: impl FnOnce(&mut Comportement),
+    ) -> (Boite, std::sync::Arc<std::sync::Mutex<Comportement>>) {
+        let mut comportement = Comportement::default();
+        regler(&mut comportement);
+        let comportement = std::sync::Arc::new(std::sync::Mutex::new(comportement));
+        let (redirection, pare_feu) =
+            box_qui_refuse_le_trou(std::sync::Arc::clone(&comportement)).await;
+        (
+            Boite {
+                redirection: Some((redirection, service, v4("127.0.0.1"))),
+                pare_feu: Some(pare_feu),
+                hote: IpAddr::V4(v4("127.0.0.1")),
+            },
+            comportement,
+        )
+    }
+
+    /// Un répertoire d'état pour un essai, à lui.
+    fn dossier_d_essai(quoi: &str) -> std::path::PathBuf {
+        let dossier =
+            std::env::temp_dir().join(format!("asl-passerelle-{quoi}-{}", std::process::id()));
+        std::fs::create_dir_all(&dossier).unwrap();
+        dossier
+    }
+
+    /// Les ports externes que la fausse box a vu demander, dans l'ordre.
+    fn ports_demandes(
+        comportement: &std::sync::Arc<std::sync::Mutex<Comportement>>,
+        action: &str,
+    ) -> Vec<u16> {
+        comportement
+            .lock()
+            .unwrap()
+            .actions
+            .iter()
+            .filter_map(|ligne| {
+                let (nom, port) = ligne.split_once(' ')?;
+                (nom == action).then(|| port.parse().ok())?
+            })
+            .collect()
+    }
+
+    /// **LE DÉFAUT DU 30/09, SUR SPEEDY** : le port de l'écho était déjà
+    /// redirigé par la box pour l'écho d'oxygen, et l'on renonçait sur un
+    /// seul `718`. On garde le port interne, et l'on demande un autre port
+    /// externe — hors de la plage de l'écho, où vit celui du voisin.
+    #[tokio::test]
+    async fn un_port_externe_deja_pris_fait_demander_un_autre_port_externe() {
+        let (boite, comportement) = box_reglee(super::description::WAN_IP_1, |regle| {
+            regle.ports_pris = vec![PORT];
+        })
+        .await;
+        let (mut tache, _accords) = tache(dossier_d_essai("718-v1"));
+        let (accord, dits) = un_tour_dit(&mut tache, &boite, "203.0.113.7").await;
+
+        let externe = accord.port.expect("la redirection est obtenue ailleurs");
+        assert_ne!(externe, PORT, "un autre port externe");
+        assert!(
+            !(crate::echo::PREMIER_PORT..=crate::echo::DERNIER_PORT).contains(&externe),
+            "hors de la plage de l'écho : {externe}"
+        );
+        // Le port INTERNE, lui, ne bouge pas : la box redirige vers l'écho.
+        assert_eq!(tache.port, PORT);
+        assert_eq!(
+            ports_demandes(&comportement, "AddPortMapping"),
+            vec![PORT, externe],
+            "le port de l'écho d'abord, puis le port tiré"
+        );
+        assert!(
+            dits.iter().any(|dit| *dit
+                == format!(
+                    "la box a déjà une redirection pour udp {PORT} (un autre appareil) — \
+                     nouveau port externe demandé : udp {externe} → udp {PORT}"
+                )),
+            "le journal le dit : {dits:?}"
+        );
+        assert!(
+            dits.iter()
+                .any(|dit| dit.contains(&format!("box 203.0.113.7:{externe}"))),
+            "la redirection obtenue est dite : {dits:?}"
+        );
+    }
+
+    /// Tous les ports essayés sont pris : on renonce **proprement**, on le
+    /// dit, et l'on n'essaie pas indéfiniment.
+    #[tokio::test]
+    async fn un_conflit_sur_tous_les_ports_renonce_et_le_dit() {
+        let (boite, comportement) = box_reglee(super::description::WAN_IP_1, |regle| {
+            regle.conflit_toujours = true;
+        })
+        .await;
+        let (mut tache, _accords) = tache(dossier_d_essai("718-partout"));
+        let (accord, dits) = un_tour_dit(&mut tache, &boite, "203.0.113.7").await;
+
+        assert_eq!(accord.port, None, "rien n'est annoncé");
+        assert!(tache.redirection.is_none());
+        assert_eq!(
+            ports_demandes(&comportement, "AddPortMapping").len(),
+            usize::from(TIRAGES) + 1,
+            "le port de l'écho, puis TIRAGES ports tirés, et pas un de plus"
+        );
+        assert!(
+            dits.iter().any(|dit| dit.contains(&format!(
+                "la box refuse tout port externe : udp {PORT} et {TIRAGES} port(s) tiré(s) sont \
+                 déjà pris (718)"
+            ))),
+            "le renoncement est dit : {dits:?}"
+        );
+    }
+
+    /// **UNE BOX IGD v2 QUI REFUSE QUAND MÊME** : `AddAnyPortMapping` aurait
+    /// dû choisir un port libre ; sur `718`, on passe à `AddPortMapping` avec
+    /// un port tiré, au lieu de renoncer.
+    #[tokio::test]
+    async fn une_box_v2_en_conflit_passe_a_add_port_mapping() {
+        let (boite, comportement) = box_reglee(super::description::WAN_IP_2, |regle| {
+            regle.any_en_conflit = Some(true);
+        })
+        .await;
+        let (mut tache, _accords) = tache(dossier_d_essai("718-v2"));
+        let (accord, dits) = un_tour_dit(&mut tache, &boite, "203.0.113.7").await;
+
+        let externe = accord.port.expect("la redirection est obtenue ailleurs");
+        assert_ne!(externe, PORT);
+        assert_eq!(
+            ports_demandes(&comportement, "AddAnyPortMapping"),
+            vec![PORT]
+        );
+        assert_eq!(
+            ports_demandes(&comportement, "AddPortMapping"),
+            vec![externe],
+            "la v1 reprend au port tiré, pas au port déjà refusé"
+        );
+        assert!(
+            dits.iter()
+                .any(|dit| dit
+                    .starts_with(&format!("la box a déjà une redirection pour udp {PORT}"))),
+            "{dits:?}"
+        );
+    }
+
+    /// Une box qui se dit v2 **sans savoir** `AddAnyPortMapping` (`401`) :
+    /// la voie de la v1, sur le même port externe que le port de l'écho.
+    #[tokio::test]
+    async fn une_box_v2_sans_add_any_port_mapping_reprend_la_v1() {
+        let (boite, comportement) = box_reglee(super::description::WAN_IP_2, |regle| {
+            regle.any_en_conflit = Some(false);
+        })
+        .await;
+        let (mut tache, _accords) = tache(dossier_d_essai("401-v2"));
+        let accord = un_tour(&mut tache, &boite, "203.0.113.7").await;
+
+        assert_eq!(accord.port, Some(PORT), "le port de l'écho a suffi");
+        assert_eq!(
+            ports_demandes(&comportement, "AddAnyPortMapping"),
+            vec![PORT]
+        );
+        assert_eq!(ports_demandes(&comportement, "AddPortMapping"), vec![PORT]);
+    }
+
+    /// **CE QU'ON RETIRE, ET CE QU'ON RETIENT, EST LE PORT EXTERNE** — et non
+    /// le port de l'écho : c'est lui que la box connaît.
+    #[tokio::test]
+    async fn le_retrait_et_la_memoire_portent_le_port_externe() {
+        let (boite, comportement) = box_reglee(super::description::WAN_IP_1, |regle| {
+            regle.ports_pris = vec![PORT];
+        })
+        .await;
+        let dossier = dossier_d_essai("718-memoire");
+        let (mut tache, _accords) = tache(dossier.clone());
+        let accord = un_tour(&mut tache, &boite, "203.0.113.7").await;
+        let externe = accord.port.expect("obtenue ailleurs");
+        tache.retenir();
+
+        let retenu = std::fs::read_to_string(dossier.join(format!("upnp-{PORT}"))).unwrap();
+        assert!(
+            retenu.contains(&format!("redirection {externe} ")),
+            "la mémoire retient le port externe : {retenu}"
+        );
+        assert!(
+            !retenu.contains(&format!("redirection {PORT} ")),
+            "et non le port de l'écho : {retenu}"
+        );
+
+        tache.boite = Some(boite.clone());
+        tache.retirer_tout().await;
+        assert_eq!(
+            ports_demandes(&comportement, "DeletePortMapping"),
+            vec![externe],
+            "on retire le port externe"
+        );
+        let _ = std::fs::remove_dir_all(&dossier);
     }
 
     /// **LA LIVEBOX, SUR LA BOUCLE LOCALE** — le pare-feu IPv6 actif et les

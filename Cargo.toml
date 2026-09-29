@@ -58,7 +58,7 @@ members = [
 exclude = ["fuzz"]
 
 [workspace.package]
-version = "0.25.0"
+version = "0.26.0"
 edition = "2024"
 # PAS DE `rust-version`, ET C'EST DÉLIBÉRÉ.
 #
@@ -74,10 +74,10 @@ authors = ["air-service-locator contributors"]
 repository = "https://github.com/air-desktop-project/air-service-locator-client"
 
 [workspace.dependencies]
-asl-client = { path = "crates/asl-client", version = "0.25.0" }
-asl-client-tokio = { path = "crates/asl-client-tokio", version = "0.25.0" }
-asl-client-ffi = { path = "crates/asl-client-ffi", version = "0.25.0" }
-asl-upnp = { path = "crates/asl-upnp", version = "0.25.0" }
+asl-client = { path = "crates/asl-client", version = "0.26.0" }
+asl-client-tokio = { path = "crates/asl-client-tokio", version = "0.26.0" }
+asl-client-ffi = { path = "crates/asl-client-ffi", version = "0.26.0" }
+asl-upnp = { path = "crates/asl-upnp", version = "0.26.0" }
 
 # La grammaire, tirée du dépôt qui porte les spécifications.
 #
@@ -97,22 +97,25 @@ asl-upnp = { path = "crates/asl-upnp", version = "0.25.0" }
 # l'annuaire pousse quand la signature a tenu ;
 # puis `d537c6f` (0.44.0, merge de la PR serveur #78) : le champ `passerelle`
 # de l'annonce `asl-echo` (`Annonce::avec_passerelle`, décision 97).
-asl-id = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "d537c6f" }
-asl-proto = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "d537c6f" }
-asl-cle = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "d537c6f" }
-asl-api = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "d537c6f" }
+# puis `f984ae8` (0.45.0, merge de la PR serveur #81) : `passerelle.externe`,
+# l'adresse externe de la box que l'écho confirme chez un annuaire local
+# (décision 107).
+asl-id = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "f984ae8" }
+asl-proto = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "f984ae8" }
+asl-cle = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "f984ae8" }
+asl-api = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "f984ae8" }
 # `asl-racines` (serveur 0.31.0, décision 59) : la liste embarquée des racines
 # et la moitié pure de la règle « clé = identité », une fois pour les deux
 # dépôts — la 0.17.0 les avait recopiées. **SHA d'une branche non mergée**
 # (`identite-par-membre`, PR serveur #57) : à avancer au SHA de merge.
-asl-racines = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "d537c6f" }
+asl-racines = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "f984ae8" }
 # `asl-echo` (serveur 0.41.0, décisions 89 à 91) : les trois datagrammes de
 # l'écho et le jeton, lus, écrits et vérifiés hors ligne — le codec que
 # l'annuaire emploie pour sonder, et `asl echo` / `asl ping` pour répondre et
 # vérifier. Une grammaire, écrite une fois pour les deux dépôts, comme les
 # autres ; `no_std`, sans entrée-sortie, et rien de neuf dans le graphe
 # (`asl-cle` et `asl-id` y étaient déjà).
-asl-echo = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "d537c6f" }
+asl-echo = { git = "https://github.com/air-desktop-project/air-service-locator-server", rev = "f984ae8" }
 
 # ── LA PILE QUIC ET HTTP/3, EMPRUNTÉE À `air-mail-server` (C15) ─────────────
 #

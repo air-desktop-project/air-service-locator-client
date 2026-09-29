@@ -44,6 +44,17 @@
 //! l'autre, et n'en revient que sur un trou obtenu, une redirection perdue,
 //! un double NAT révélé — ou un annuaire muet en IPv4.
 //!
+//! # CHEZ UN ANNUAIRE LOCAL : L'ADRESSE DE LA BOX, CONFIRMÉE (décision 107)
+//!
+//! Quand le bail va à un annuaire local — un renvoi —, la bascule ne sert à
+//! rien : le membre est sur le réseau de la maison, et ne verrait jamais
+//! l'adresse de la box. L'écho reste en IPv6, et **confirme** l'adresse
+//! externe que la box lui a dite (`passerelle.externe`, `GetExternalIPAddress`
+//! — celle que le double NAT lit déjà), avec le port redirigé ; les racines,
+//! qui voient l'adresse IPv4 de la box du membre, sondent la redirection du
+//! dehors si les deux concordent. Seulement vers un membre en 0.45.0 au
+//! moins : un plus ancien refuserait le champ, et l'annonce avec lui.
+//!
 //! **La même socket, et c'est pourquoi elle est à double pile, posée
 //! explicitement** ([`lier_dans`]) : le port local est celui que la box
 //! redirige, et le mapping que le keepalive tient est celui de cette socket
@@ -234,6 +245,9 @@ struct Famille {
     /// Ce qu'on a dit la dernière fois qu'une bascule voulue n'a pas pu se
     /// faire : on ne le redit pas à chaque accord.
     empechement: Option<Empechement>,
+    /// L'adresse externe et le port qu'on a dit confirmer à un annuaire
+    /// local (décision 107) : on ne le redit qu'au changement.
+    confirmee: Option<(Ipv4Addr, u16)>,
 }
 
 /// Ce qui empêche une bascule en IPv4 que la passerelle demande.
@@ -273,18 +287,24 @@ enum Jugement {
     VersIpv6(Retour),
     /// La passerelle voudrait l'IPv4, et c'est impossible d'ici.
     Empeche(Empechement),
+    /// **Chez un annuaire local** (décision 107) : rester en IPv6, et
+    /// confirmer l'adresse externe de la box avec le port redirigé.
+    Confirmer { externe: Ipv4Addr, port: u16 },
 }
 
 /// **CE QUE L'ÉCHO FAIT D'UN VŒU** — une fonction, éprouvée à part.
 ///
-/// - `Ipv4` : basculer, si le bail n'y est pas déjà et que rien ne l'empêche ;
+/// - `Ipv4` : basculer, si le bail n'y est pas déjà et que rien ne l'empêche
+///   — **sauf chez un annuaire local** (`local`), où l'on reste en IPv6 et
+///   l'on confirme l'adresse externe de la box (décision 107) ;
 /// - `Ipv6` : revenir, **seulement d'une bascule que l'écho a faite** — un
 ///   bail IPv4 subi (une machine sans IPv6, un annuaire injoignable en IPv6)
 ///   n'a nulle part où revenir, et la passerelle ne sait pas la différence ;
 /// - `Rester` : rien.
-fn juger(voeu: Voeu, en_ipv4: bool, empechement: Option<Empechement>) -> Jugement {
+fn juger(voeu: Voeu, en_ipv4: bool, local: bool, empechement: Option<Empechement>) -> Jugement {
     match voeu {
         Voeu::Ipv4 { .. } if en_ipv4 => Jugement::Rester,
+        Voeu::Ipv4 { externe, port } if local => Jugement::Confirmer { externe, port },
         Voeu::Ipv4 { externe, port } => match empechement {
             Some(empeche) => Jugement::Empeche(empeche),
             None => Jugement::VersIpv4 { externe, port },
@@ -466,6 +486,8 @@ async fn tenir_l_echo(
             sans: annonce,
             annoncee: None,
             accepte: false,
+            accepte_externe: false,
+            externe_tue: false,
         };
         apres_l_annonce(
             &mut connexion,
@@ -496,6 +518,7 @@ async fn tenir_l_echo(
             passerelle,
             &mut annonce_tenue,
             &mut famille,
+            !racine,
             empechement,
         )
         .await;
@@ -518,7 +541,7 @@ async fn tenir_l_echo(
                 let _ = connexion.fermer().await;
                 continue;
             }
-            Jugement::Rester | Jugement::Empeche(_) => {}
+            Jugement::Rester | Jugement::Empeche(_) | Jugement::Confirmer { .. } => {}
         }
 
         if arret.load(Ordering::Acquire) {
@@ -608,6 +631,7 @@ async fn tenir(
     passerelle: &mut Option<TacheDePasserelle>,
     annonce: &mut AnnonceTenue<'_>,
     famille: &mut Famille,
+    local: bool,
     empechement: Option<Empechement>,
 ) -> Jugement {
     while connexion.vivante() && !arret.load(Ordering::Acquire) {
@@ -615,8 +639,8 @@ async fn tenir(
             break;
         }
         if let Some(accord) = passerelle.as_mut().and_then(TacheDePasserelle::accord) {
-            match juger(accord.voeu, famille.ipv4.is_some(), empechement) {
-                Jugement::Rester => {}
+            let a_annoncer = match juger(accord.voeu, famille.ipv4.is_some(), local, empechement) {
+                Jugement::Rester => accord.port.map(|port| (port, None)),
                 Jugement::Empeche(empeche) => {
                     if famille.empechement != Some(empeche) {
                         println!(
@@ -625,10 +649,25 @@ async fn tenir(
                         );
                         famille.empechement = Some(empeche);
                     }
+                    accord.port.map(|port| (port, None))
+                }
+                Jugement::Confirmer { externe, port } => {
+                    if famille.confirmee != Some((externe, port)) {
+                        println!(
+                            "passerelle     la box ne perce pas son pare-feu IPv6 et redirige udp \
+                             {port} de {externe} :\n\
+                             \x20              le bail reste chez l'annuaire local, en IPv6 ; \
+                             l'adresse de la box est confirmée,\n\
+                             \x20              et les racines sonderont {externe}:{port} si elles \
+                             voient l'annuaire local depuis elle"
+                        );
+                        famille.confirmee = Some((externe, port));
+                    }
+                    Some((port, Some(externe)))
                 }
                 bascule => return bascule,
-            }
-            reannoncer(connexion, annonce, accord.port).await;
+            };
+            reannoncer(connexion, annonce, a_annoncer).await;
         }
         for (datagramme, source) in connexion.echos() {
             let maintenant = maintenant_ms();
@@ -781,10 +820,15 @@ fn dire_le_bail(annuaire: Option<asl_id::Identifiant>, distante: Option<SocketAd
 struct AnnonceTenue<'a> {
     /// L'annonce, sans `passerelle`.
     sans: asl_proto::Annonce<'a>,
-    /// Le port de `passerelle` que cette connexion a annoncé, s'il y en a un.
-    annoncee: Option<u16>,
+    /// Le port de `passerelle` que cette connexion a annoncé, et l'adresse
+    /// externe qu'il confirmait, s'il y en a un.
+    annoncee: Option<(u16, Option<Ipv4Addr>)>,
     /// L'annuaire de cette connexion connaît `passerelle` (0.44.0 ou plus).
     accepte: bool,
+    /// Il connaît aussi `passerelle.externe` (0.45.0 ou plus, décision 107).
+    accepte_externe: bool,
+    /// On a déjà dit qu'il ne la connaît pas.
+    externe_tue: bool,
 }
 
 /// **CE QUI SUIT LA PREMIÈRE ANNONCE** (décision 97 ; E21) : lire la
@@ -813,6 +857,9 @@ async fn apres_l_annonce(
     annonce.accepte = version
         .as_deref()
         .is_some_and(passerelle::connait_la_passerelle);
+    annonce.accepte_externe = version
+        .as_deref()
+        .is_some_and(passerelle::connait_l_externe);
     if !annonce.accepte {
         let (a, b, c) = passerelle::VERSION_PASSERELLE;
         println!(
@@ -830,19 +877,36 @@ async fn apres_l_annonce(
 /// **LE CHAMP EST ÉCRIT PAR `asl-proto`** (`Annonce::avec_passerelle`,
 /// serveur 0.44.0) : la même grammaire que celle que l'annuaire lit, et qui
 /// refuse le champ sur toute autre annonce que `asl-echo`.
+///
+/// **Une adresse externe ne part que vers un annuaire en 0.45.0 au moins**
+/// (décision 107) : sinon rien ne part — un port redirigé en IPv4 annoncé
+/// sans elle, sur un bail IPv6, ferait sonder l'IPv6 à ce port.
 async fn reannoncer(
     connexion: &mut Connexion,
     annonce: &mut AnnonceTenue<'_>,
-    accord: Option<u16>,
+    accord: Option<(u16, Option<Ipv4Addr>)>,
 ) {
     if accord == annonce.annoncee || !annonce.accepte {
         return;
     }
+    if accord.is_some_and(|(_, externe)| externe.is_some()) && !annonce.accepte_externe {
+        if !annonce.externe_tue {
+            let (a, b, c) = passerelle::VERSION_EXTERNE;
+            println!(
+                "passerelle     l'annuaire local ne connaît pas encore `passerelle.externe` \
+                 ({a}.{b}.{c}) :\n\
+                 \x20              l'adresse de la box ne lui sera pas confirmée"
+            );
+            annonce.externe_tue = true;
+        }
+        return;
+    }
     let corps = match accord {
-        Some(port) => {
+        Some((port, externe)) => {
             let passerelle = Port::depuis_u16(port).map(|port| Passerelle {
                 port,
                 via: ViaPasserelle::Upnp,
+                externe,
             });
             match passerelle.and_then(|passerelle| annonce.sans.avec_passerelle(passerelle)) {
                 Ok(avec) => avec,
@@ -860,8 +924,12 @@ async fn reannoncer(
         Ok(_) => {
             annonce.annoncee = accord;
             match accord {
-                Some(port) => println!(
+                Some((port, None)) => println!(
                     "annonce        réannoncée avec la passerelle : port externe {port} (upnp)"
+                ),
+                Some((port, Some(externe))) => println!(
+                    "annonce        réannoncée avec la passerelle : {externe}:{port} (upnp), \
+                     adresse confirmée"
                 ),
                 None => println!("annonce        réannoncée sans passerelle"),
             }
@@ -1119,7 +1187,7 @@ mod tests {
         let retour = Voeu::Ipv6(Retour::RedirectionPerdue);
         // En IPv6 : basculer, sauf empêchement ; un retour ne veut rien dire.
         assert_eq!(
-            juger(ipv4, false, None),
+            juger(ipv4, false, false, None),
             Jugement::VersIpv4 {
                 externe,
                 port: 6634
@@ -1131,19 +1199,41 @@ mod tests {
             Empechement::Suspendue,
         ] {
             assert_eq!(
-                juger(ipv4, false, Some(empeche)),
+                juger(ipv4, false, false, Some(empeche)),
                 Jugement::Empeche(empeche)
             );
         }
-        assert_eq!(juger(retour, false, None), Jugement::Rester);
-        assert_eq!(juger(Voeu::Rester, false, None), Jugement::Rester);
+        assert_eq!(juger(retour, false, false, None), Jugement::Rester);
+        assert_eq!(juger(Voeu::Rester, false, false, None), Jugement::Rester);
         // En IPv4 par bascule : rester, ou revenir.
-        assert_eq!(juger(ipv4, true, None), Jugement::Rester);
-        assert_eq!(juger(Voeu::Rester, true, None), Jugement::Rester);
+        assert_eq!(juger(ipv4, true, false, None), Jugement::Rester);
+        assert_eq!(juger(Voeu::Rester, true, false, None), Jugement::Rester);
         assert_eq!(
-            juger(retour, true, Some(Empechement::Suspendue)),
+            juger(retour, true, false, Some(Empechement::Suspendue)),
             Jugement::VersIpv6(Retour::RedirectionPerdue)
         );
+    }
+
+    #[test]
+    fn chez_un_annuaire_local_l_echo_confirme_l_adresse_de_la_box_sans_basculer() {
+        let externe = "193.250.159.198".parse().unwrap();
+        let ipv4 = Voeu::Ipv4 {
+            externe,
+            port: 6633,
+        };
+        // Décision 107 : ni bascule ni empêchement — une confirmation.
+        for empechement in [None, Some(Empechement::PasDAnnuaireIpv4)] {
+            assert_eq!(
+                juger(ipv4, false, true, empechement),
+                Jugement::Confirmer {
+                    externe,
+                    port: 6633
+                }
+            );
+        }
+        // Le reste ne change pas chez lui.
+        assert_eq!(juger(Voeu::Rester, false, true, None), Jugement::Rester);
+        assert_eq!(juger(ipv4, true, true, None), Jugement::Rester);
     }
 
     #[test]
