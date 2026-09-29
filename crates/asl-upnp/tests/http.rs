@@ -72,6 +72,16 @@ fn sans_longueur_le_corps_va_jusqu_a_la_fermeture() {
 }
 
 #[test]
+fn une_connexion_fermee_sans_un_octet_n_est_pas_une_reponse_tronquee() {
+    // Rien encore, et la connexion est ouverte : on attend.
+    assert_eq!(lire(b"", false), Ok(Lu::Incomplet));
+    // Rien, et la connexion est fermée : la box n'a rien répondu.
+    assert_eq!(lire(b"", true), Err(FauteHttp::Vide));
+    // Un octet, puis la fermeture : là, c'est coupé.
+    assert_eq!(lire(b"H", true), Err(FauteHttp::Tronquee));
+}
+
+#[test]
 fn une_tete_inachevee_attend_ou_se_dit_tronquee() {
     assert_eq!(lire(b"HTTP/1.1 200 OK\r\n", false), Ok(Lu::Incomplet));
     assert_eq!(lire(b"HTTP/1.1 200 OK\r\n", true), Err(FauteHttp::Tronquee));

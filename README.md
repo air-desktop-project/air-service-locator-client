@@ -565,8 +565,12 @@ passerelle     redirection retirée : udp 6634
 réponse à un `M-SEARCH` vient de l'adresse unicast de la box, alors que la
 requête est partie vers un groupe : pour le pare-feu, c'est une connexion
 entrante, qu'il jette sans rien dire pour un binaire qu'il ne sait pas
-identifier — **un `asl` non signé ne reçoit aucune réponse SSDP**, et l'écho
-dit « aucune réponse SSDP reçue ». Signez-le, ou autorisez-le :
+identifier. **Un `asl` non signé peut donc ne recevoir aucune réponse
+SSDP, selon ce que le pare-feu connaît déjà du binaire** — il le
+reconnaît sans doute aussi par l'identifiant de paquet de l'`Info.plist`
+intégré, et un binaire non signé a reçu les réponses sur le Mac de l'essai
+—, et l'écho dit alors « aucune réponse SSDP reçue ». Signez-le, ou
+autorisez-le :
 
 ```sh
 sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add /chemin/vers/asl

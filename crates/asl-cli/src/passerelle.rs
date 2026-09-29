@@ -220,6 +220,8 @@ enum Echec {
     Illisible(String),
     /// Une faute UPnP : son code, et ce qu'elle dit.
     Refus(u16, String),
+    /// La connexion s'est fermée sans un octet ([`http::FauteHttp::Vide`]).
+    Muette,
 }
 
 impl std::fmt::Display for Echec {
@@ -229,6 +231,7 @@ impl std::fmt::Display for Echec {
             Self::Illisible(quoi) => write!(f, "réponse illisible ({quoi})"),
             Self::Refus(code, description) if description.is_empty() => write!(f, "refus {code}"),
             Self::Refus(code, description) => write!(f, "refus {code} {description}"),
+            Self::Muette => f.write_str("la box n'a rien répondu (connexion fermée sans contenu)"),
         }
     }
 }
@@ -1060,8 +1063,9 @@ fn sans_passerelle(macos: bool, recues: usize, binaire: Option<&Path>) -> String
     let chemin = binaire.map_or_else(|| "<chemin d'asl>".to_owned(), |b| b.display().to_string());
     format!(
         "{base}\n\
-         passerelle     aucune réponse SSDP reçue : sous macOS, le pare-feu applicatif jette les\n\
-         passerelle     réponses d'un binaire `asl` non signé. Signez-le, ou autorisez-le :\n\
+         passerelle     aucune réponse SSDP reçue : sous macOS, le pare-feu applicatif peut jeter\n\
+         passerelle     les réponses d'un binaire `asl` qu'il ne connaît pas (non signé, selon ce\n\
+         passerelle     qu'il sait déjà de lui). Signez-le, ou autorisez-le :\n\
          passerelle       sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add {chemin}\n\
          passerelle       sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp {chemin}"
     )
@@ -1378,6 +1382,7 @@ async fn echanger(url: &Url, requete: &[u8]) -> Result<(http::Reponse, SocketAdd
             match http::lire(&lus, combien == 0) {
                 Ok(Lu::Complet(reponse)) => return Ok((reponse, locale)),
                 Ok(Lu::Incomplet) => {}
+                Err(http::FauteHttp::Vide) => return Err(Echec::Muette),
                 Err(quoi) => return Err(Echec::Illisible(format!("{quoi:?}"))),
             }
         }
@@ -1454,9 +1459,9 @@ mod tests {
     use tokio::net::UdpSocket;
 
     use super::{
-        INDEX_MAX, adresses_ssdp, bilan_du_groupe_v6, connait_la_passerelle, envoyer, groupes,
-        hote_ssdp, interfaces_du_lien, les_deux, liens_du_lien, port_tire, sans_passerelle,
-        vers_le_groupe_v6,
+        Echec, INDEX_MAX, adresses_ssdp, bilan_du_groupe_v6, connait_la_passerelle, echanger,
+        envoyer, groupes, hote_ssdp, http, interfaces_du_lien, les_deux, liens_du_lien, port_tire,
+        sans_passerelle, vers_le_groupe_v6,
     };
 
     /// `/proc/net/if_inet6` d'une machine à Ethernet, Wi-Fi et pont de
@@ -1737,6 +1742,57 @@ fe80 02 40 20 80   court
             "{dit}"
         );
         assert!(sans_passerelle(true, 0, None).contains("--add <chemin d'asl>"));
+    }
+
+    /// **LA BOX QUI ACCEPTE ET SE TAIT** — la Livebox, pour sa description
+    /// en IPv6 : la connexion s'ouvre, et se ferme sans un octet. On le dit
+    /// tel quel ; une réponse partielle, elle, reste « tronquée ».
+    #[tokio::test]
+    async fn une_box_qui_ferme_sans_rien_dire_n_a_rien_repondu() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let muette = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bavarde = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = |ecoute: &tokio::net::TcpListener| {
+            asl_upnp::url::lire(&format!(
+                "http://{}/gatedesc.xml",
+                ecoute.local_addr().unwrap()
+            ))
+            .unwrap()
+        };
+        let (vers_muette, vers_bavarde) = (url(&muette), url(&bavarde));
+        tokio::spawn(async move {
+            // Elle lit la requête — sans quoi le noyau répondrait par un
+            // `RST` — puis ferme proprement, sans rien écrire : `curl` dit
+            // « Empty reply from server ».
+            while let Ok((mut flux, _)) = muette.accept().await {
+                let mut requete = [0_u8; 1_024];
+                let _ = flux.read(&mut requete).await;
+                let _ = flux.shutdown().await;
+            }
+        });
+        tokio::spawn(async move {
+            while let Ok((mut flux, _)) = bavarde.accept().await {
+                let mut requete = [0_u8; 1_024];
+                let _ = flux.read(&mut requete).await;
+                let _ = flux
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 9")
+                    .await;
+                let _ = flux.shutdown().await;
+            }
+        });
+        let rien = echanger(&vers_muette, &http::get(&vers_muette))
+            .await
+            .unwrap_err();
+        assert_eq!(rien, Echec::Muette);
+        assert_eq!(
+            rien.to_string(),
+            "la box n'a rien répondu (connexion fermée sans contenu)"
+        );
+        let coupee = echanger(&vers_bavarde, &http::get(&vers_bavarde))
+            .await
+            .unwrap_err();
+        assert_eq!(coupee, Echec::Illisible("Tronquee".to_owned()));
+        assert_eq!(coupee.to_string(), "réponse illisible (Tronquee)");
     }
 
     #[test]
