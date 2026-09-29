@@ -34,6 +34,11 @@
 //! **`3` et `4` sont la distinction qui compte** : un droit manquant et un câble
 //! débranché se corrigent à des endroits opposés, et un outil qui les rendrait
 //! sous le même code enverrait chercher au mauvais.
+//!
+//! **`asl ping` lit `1` et `2` autrement**, comme `protocole.md` §3 quater
+//! l'écrit : `1` — pas de réponse d'ici ; `2` — quelqu'un d'autre répond à
+//! cette adresse, ou une réponse illisible. `3` et `4` y gardent leur sens :
+//! introuvable (pas d'écho annoncé, ou pas le droit — C9), annuaire injoignable.
 
 #![forbid(unsafe_code)]
 
@@ -42,7 +47,9 @@ use std::process::ExitCode;
 mod arguments;
 mod commandes;
 mod domaines;
+mod echo;
 mod etat;
+mod ping;
 mod rendu;
 
 use arguments::{Commande, Invocation};
@@ -68,6 +75,13 @@ pub enum Issue {
     RefusDit(String),
     /// Personne n'a répondu.
     Injoignable(String),
+    /// `asl ping` : aucun candidat n'a répondu, d'ici.
+    PasDeReponse(String),
+    /// `asl ping` : une réponse bien formée, signée d'une AUTRE clé —
+    /// quelqu'un d'autre répond à cette adresse.
+    AutreCle(String),
+    /// `asl ping` : une réponse qui ne se lit pas.
+    ReponseIllisible(String),
 }
 
 /// Ce que rend une commande.
@@ -77,8 +91,8 @@ impl Issue {
     /// Le code de sortie qui lui correspond.
     const fn code(&self) -> u8 {
         match self {
-            Self::Usage(_) => 1,
-            Self::Configuration(_) => 2,
+            Self::Usage(_) | Self::PasDeReponse(_) => 1,
+            Self::Configuration(_) | Self::AutreCle(_) | Self::ReponseIllisible(_) => 2,
             Self::Refuse(_) | Self::CodeInconnu | Self::RefusDit(_) => 3,
             Self::Injoignable(_) => 4,
         }
@@ -90,7 +104,10 @@ impl Issue {
             Self::Usage(quoi)
             | Self::Configuration(quoi)
             | Self::Injoignable(quoi)
-            | Self::RefusDit(quoi) => quoi.clone(),
+            | Self::RefusDit(quoi)
+            | Self::PasDeReponse(quoi)
+            | Self::AutreCle(quoi)
+            | Self::ReponseIllisible(quoi) => quoi.clone(),
             // **CHAQUE CODE EST TRADUIT**, parce qu'un nombre nu envoie chercher
             // dans une spécification que personne n'a sous la main.
             Self::Refuse(401) => "401 — la clé de cette machine n'a pas été acceptée.\n\
@@ -207,6 +224,32 @@ COMMANDS
                                       each, whether it has applied everything
                                       the other wrote.
 
+    echo                              Answer for this machine. Draws a UDP port,
+                                      announces `asl-echo` on it (one udp point)
+                                      and HOLDS the lease on that same socket, so
+                                      a NAT mapping stays open. Answers signed
+                                      probes only — from the directory holding
+                                      the lease or an embedded root, or from
+                                      `asl ping` with a root's token bound to both
+                                      keys; anything else gets silence. At most 5
+                                      answers a second per source (a /64 in IPv6),
+                                      10 ahead, 50 a second in all; a probe seen
+                                      once is never answered twice. Refuses to run
+                                      as root. Does not return: Ctrl-C or SIGTERM
+                                      closes the lease cleanly.
+
+    ping <m-…|name|alias>             Prove, from here, that a machine answers and
+                                      that it is really it. Resolves its asl-echo,
+                                      asks the root for a token, probes each
+                                      candidate (IPv6 first, 3 sends, 1 s each)
+                                      and checks the signed answer against the key
+                                      the root vouches for. A name or an alias is
+                                      looked up among the machines your account
+                                      sees; several matches are listed, none is
+                                      chosen. Says where the probe left from, and
+                                      how the echo saw it. Needs `lecture` here
+                                      and `localiser` on the target.
+
     roots                             The list of root directories, asked of a
                                       root and CHECKED: every key must yield
                                       its n-… identifier, or the whole list is
@@ -261,6 +304,10 @@ OPTIONS
 
 EXIT CODES
     0 done   1 usage   2 configuration   3 refused by the directory   4 unreachable
+    ping: 0 reachable from here, proof checked   1 no answer from here
+          2 someone else answers there, or an unreadable answer
+          3 not found: no echo announced, or no right to locate it
+          4 directory unreachable
 
 EXAMPLES
     asl enroll 4K9M2-P7R1T
@@ -275,7 +322,10 @@ EXAMPLES
     asl domains
     asl domain 'Maison' --where
     asl domain d-7Q2H4K9M2P7R1T8X3V5W6Y0Z1A
-    asl replication"
+    asl replication
+    asl echo
+    asl ping grenier
+    asl ping m-7F3A9C2E5B1D4068ABCDEFGHJK"
     );
 }
 
@@ -370,6 +420,14 @@ async fn conduire(invocation: &Invocation) -> Sortie {
         Commande::Replication => {
             let identite = identite(&dossier)?;
             commandes::replication(invocation, &identite).await
+        }
+        Commande::Echo => {
+            let identite = identite(&dossier)?;
+            echo::echo(invocation, &identite).await
+        }
+        Commande::Ping { cible } => {
+            let identite = identite(&dossier)?;
+            ping::ping(invocation, &identite, cible).await
         }
         // Sans identité : `GET /v1/racines` n'exige rien.
         Commande::Racines => commandes::racines_apprises(invocation).await,

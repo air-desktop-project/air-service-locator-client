@@ -78,6 +78,15 @@ pub enum Commande {
     },
     /// L'état de la voie entre les deux racines, vu de celle qu'on a jointe.
     Replication,
+    /// L'écho de cette machine : annoncer `asl-echo`, tenir le bail sur la
+    /// socket où il écoute, et répondre aux sondes autorisées
+    /// (`protocole.md` §3 quater).
+    Echo,
+    /// Sonder l'écho d'une machine, d'ici, et vérifier que c'est bien elle.
+    Ping {
+        /// La machine : son `m-…`, ou un nom ou un alias que ce compte voit.
+        cible: CibleDeMachine,
+    },
     /// La liste des racines, demandée à une racine et VÉRIFIÉE : chaque clé
     /// se déduit en son identifiant (décision 56).
     Racines,
@@ -103,6 +112,19 @@ pub enum CibleDeDomaine {
     Identifiant(Identifiant),
     /// Un alias — **sensible à la casse**, comme partout.
     Alias(String),
+}
+
+/// Une machine telle qu'elle a été écrite : son identifiant, ou ce qui la
+/// nomme.
+///
+/// **UN `m-…` VALIDE EST UN IDENTIFIANT, TOUT LE RESTE UN NOM OU UN ALIAS**
+/// (décision 93 ; E12), cherché parmi les machines que ce compte voit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CibleDeMachine {
+    /// La machine, nommée par son identifiant.
+    Identifiant(Identifiant),
+    /// Un nom ou un alias — **sensible à la casse**, comme partout.
+    Nom(String),
 }
 
 /// L'option propre à `asl domain` : résoudre chaque service listé.
@@ -460,6 +482,27 @@ where
         // Sans argument : l'annuaire joint dit lui-même de quelle voie il
         // parle, et le client n'a pas à nommer un pair qu'il ne connaît pas.
         "replication" => Commande::Replication,
+        // **PAS D'OPTION, ET C'EST DÉLIBÉRÉ** : `--no-upnp` viendra avec la
+        // passerelle (décisions 94 à 97). L'accepter avant, sans effet,
+        // laisserait croire qu'on a demandé quelque chose.
+        "echo" => Commande::Echo,
+        "ping" => {
+            let cible = suite.next().ok_or(Faute::ArgumentManquant {
+                commande: "ping",
+                quoi: "une machine : son `m-…`, son nom ou son alias",
+            })?;
+            // Un mot en `--` n'est pas un nom : c'est une option que `ping`
+            // n'a pas. Une machine dont le nom commencerait ainsi se sonde
+            // par son `m-…`.
+            if cible.starts_with("--") {
+                return Err(Faute::OptionInconnue(cible));
+            }
+            let cible = match Identifiant::analyser_genre(Genre::Machine, &cible) {
+                Ok(machine) => CibleDeMachine::Identifiant(machine),
+                Err(_) => CibleDeMachine::Nom(cible),
+            };
+            Commande::Ping { cible }
+        }
         "roots" => Commande::Racines,
         "identity" => Commande::Identite,
         _ => return Err(Faute::CommandeInconnue(commande)),
@@ -964,6 +1007,51 @@ mod essais {
         assert_eq!(
             lire(&["domain", "Maison", "--verbose"]),
             Err(Faute::OptionInconnue("--verbose".to_owned()))
+        );
+    }
+
+    #[test]
+    fn echo_ne_prend_rien_et_pas_encore_no_upnp() {
+        assert_eq!(lire(&["echo"]).unwrap().commande, Commande::Echo);
+        assert_eq!(
+            lire(&["echo", "--no-upnp"]),
+            Err(Faute::ArgumentEnTrop("--no-upnp".to_owned()))
+        );
+    }
+
+    #[test]
+    fn ping_prend_une_machine_un_nom_ou_un_alias() {
+        let machine = Identifiant::depuis_entropie(Genre::Machine, [7; 16]);
+        assert_eq!(
+            lire(&["ping", machine.texte().as_str()]).unwrap().commande,
+            Commande::Ping {
+                cible: CibleDeMachine::Identifiant(machine)
+            }
+        );
+        // **UN AUTRE IDENTIFIANT N'EST PAS UNE MACHINE** : c'est un nom, que
+        // l'annuaire ne connaîtra pas — et asl ping le dira.
+        for mot in ["grenier", "La cave", "u-0PWT8HZD80QMSPPDZ5CQXXYHQC"] {
+            assert_eq!(
+                lire(&["ping", mot]).unwrap().commande,
+                Commande::Ping {
+                    cible: CibleDeMachine::Nom(mot.to_owned())
+                }
+            );
+        }
+        assert_eq!(
+            lire(&["ping"]),
+            Err(Faute::ArgumentManquant {
+                commande: "ping",
+                quoi: "une machine : son `m-…`, son nom ou son alias"
+            })
+        );
+        assert_eq!(
+            lire(&["ping", "--count", "3"]),
+            Err(Faute::OptionInconnue("--count".to_owned()))
+        );
+        assert_eq!(
+            lire(&["ping", "grenier", "cave"]),
+            Err(Faute::ArgumentEnTrop("cave".to_owned()))
         );
     }
 
