@@ -164,9 +164,10 @@ de la même architecture :
 scripts/paquet.sh                    # asl_<version>_<architecture>.deb
 ```
 
-**Le paquet ne pose que `/usr/bin/asl` et sa licence**, et n'a aucun script
-de mainteneur : ni service, ni compte système, rien qui s'exécute en root à
-l'installation. L'identité de la machine est générée par `asl enroll` et vit
+**Le paquet ne pose que `/usr/bin/asl`, sa licence, et l'unité utilisateur
+`asl-echo.service` désactivée** (plus bas, « L'écho comme service »), et n'a
+aucun script de mainteneur : ni service activé, ni compte système, rien qui
+s'exécute en root à l'installation. L'identité de la machine est générée par `asl enroll` et vit
 chez l'utilisateur (`$XDG_CONFIG_HOME/asl`, sinon `~/.config/asl`, ou
 `--state`) : ni l'installation ni le retrait du paquet n'y touchent — `apt
 purge asl` ne révoque rien et n'efface aucune clé.
@@ -449,6 +450,34 @@ verdict        udp:6634     joignable      constaté à 1790000000000
 sonde          jeton    m-40G2081040G2081040G2081040 depuis [2a01:cb00:…]:47031 — preuve rendue
 ```
 
+**L'écho comme service : une unité systemd UTILISATEUR, posée désactivée**
+(0.23.1, décision 93). Le paquet Debian pose
+`/usr/lib/systemd/user/asl-echo.service`, qui lance `/usr/bin/asl echo`, et
+**n'active rien** — aucun script de mainteneur : l'écho répond au nom de la
+clé de cette machine, et c'est à celui qui la porte de le vouloir. `asl
+enroll` le rappelle en une ligne. Sous le compte qui a enrôlé la machine :
+
+```sh
+systemctl --user enable --now asl-echo
+journalctl --user -u asl-echo -f          # ce qu'il dit
+```
+
+**Sur un serveur où personne n'ouvre de session**, le gestionnaire de
+l'utilisateur ne tourne pas, et l'unité ne démarrerait qu'à la première
+connexion — c'est ce qu'on oublie. Une fois, en root, pour ce compte :
+
+```sh
+sudo loginctl enable-linger <compte>
+```
+
+L'unité redémarre sur panne (`Restart=on-failure`, dix secondes, cinq
+départs en dix minutes au plus), **mais pas sur un refus** : une faute de
+configuration (code 2 — pas d'identité, plage prise, lancé en root) ou une
+clé refusée par l'annuaire (code 3) la laissent arrêtée, en échec visible
+dans `systemctl --user status asl-echo`, plutôt qu'en boucle au journal. Une
+unité SYSTÈME (`asl-echo@<compte>`) est écartée en v1 : root déciderait pour
+la clé d'un utilisateur.
+
 `asl ping <m-…|nom|alias>` pose la question « est-ce que je la joins, d'ici,
 maintenant ? » : il résout la cible (un nom ou un alias est cherché parmi les
 machines que ce compte voit ; plusieurs sont listées, aucune n'est choisie),
@@ -482,8 +511,7 @@ jeté. La politique — qui croire, le débit, l'anti-rejeu, le jugement d'une
 réponse — est `asl_client::echo`, sans une entrée-sortie, couverte et
 fuzzée. **Ce qui manque encore, et viendra** : la passerelle UPnP, puis PCP
 et NAT-PMP (décisions 94 à 97) — `--no-upnp` n'existe pas avant elle, pour
-qu'aucune option ne soit acceptée sans effet —, l'unité systemd utilisateur,
-le LaunchAgent du Mac, et l'identité sur macOS dans le conteneur de groupe.
+qu'aucune option ne soit acceptée sans effet —, le LaunchAgent du Mac, et l'identité sur macOS dans le conteneur de groupe.
 Et, faute de `getifaddrs` (C4), l'écho n'annonce qu'une adresse locale par
 famille : celle par laquelle la machine sort vers l'annuaire.
 

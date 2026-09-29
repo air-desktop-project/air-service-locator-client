@@ -10,10 +10,15 @@
 # ── UN OUTIL D'UTILISATEUR, PAS UN SERVICE ──────────────────────────────────
 #
 # `asl` se lance à la main, par quelqu'un, pour quelqu'un. Le paquet pose donc
-# UN binaire et sa licence, et rien d'autre :
+# UN binaire, sa licence, et une unité UTILISATEUR désactivée — rien d'autre :
 #
-#   — aucune unité systemd : `asl announce` tient son annonce au premier plan,
-#     et c'est au porteur du daemon de décider qui la lance et quand ;
+#   — une seule unité systemd, `asl-echo.service`, sous
+#     `/usr/lib/systemd/user/` et DÉSACTIVÉE (`protocole.md` §3 quater,
+#     décision 93) : l'écho répond au nom de la clé de cette machine, et c'est
+#     à celui qui la porte de l'activer (`systemctl --user enable --now
+#     asl-echo`). Aucune unité système : `asl announce` tient son annonce au
+#     premier plan, et c'est au porteur du daemon de décider qui la lance et
+#     quand ;
 #   — aucun compte système, et donc aucun `postinst` : il n'y a rien à créer ;
 #   — aucun état : l'identité d'une machine vit chez l'utilisateur
 #     (`$XDG_CONFIG_HOME/asl`, sinon `~/.config/asl`, ou `--state`), elle est
@@ -42,7 +47,7 @@ while [ $# -gt 0 ]; do
         --sortie) sortie="${2-}"; shift 2 ;;
         --sans-construire) construire=0; shift ;;
         --aide|-h)
-            sed -n '3,25p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         *) echo "paquet.sh : option inconnue : $1" >&2; exit 2 ;;
     esac
@@ -92,6 +97,14 @@ install -d -m 0755 "$arbre/usr/share/doc/asl"
 install -m 0644 LICENSE "$arbre/usr/share/doc/asl/copyright"
 dit "binaire et licence"
 
+# **`/usr/lib/systemd/user`, ET NON `/etc/systemd/user`** : ce dernier est à
+# l'administrateur, et une unité qu'on y poserait — ou un lien sous
+# `default.target.wants` — l'activerait pour tout le monde. Posée ici, elle
+# n'est que proposée ; l'unité est la seule copie, installée telle quelle.
+install -D -m 0644 paquet/asl-echo.service \
+    "$arbre/usr/lib/systemd/user/asl-echo.service"
+dit "unité utilisateur asl-echo.service — posée, pas activée"
+
 titre "dépendances, calculées et non devinées"
 # **`dpkg-shlibdeps` LIT LE BINAIRE.** Écrire `libc6 (>= 2.34)` à la main serait
 # vrai le jour où on l'écrit, et faux à la première mise à jour de la chaîne de
@@ -131,7 +144,9 @@ Description: annoncer, resoudre et diagnostiquer un service air-service-locator
  aupres de son compte, annoncer un service et tenir l'annonce, demander ou
  joindre un service, et diagnostiquer la connexion a l'annuaire.
  .
- Le paquet ne pose que le binaire. L'identite de la machine est generee par
+ Le paquet pose le binaire, et une unite systemd UTILISATEUR asl-echo,
+ desactivee : "systemctl --user enable --now asl-echo" l'active pour celui qui
+ porte la cle de la machine. L'identite de la machine est generee par
  "asl enroll" et vit chez l'utilisateur (~/.config/asl) : ni l'installation ni
  le retrait du paquet n'y touchent.
 CONTROL

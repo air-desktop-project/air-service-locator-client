@@ -9,14 +9,17 @@
 # promesse : rien de ce dépôt ne s'exécute en root chez un inconnu. Aucun essai
 # Rust ne peut la tenir — c'est ici qu'elle se tient.
 #
-# Et il en porte deux autres : que ce qu'il pose soit exactement un binaire et
-# sa licence, rien sous `/etc`, rien dans le répertoire de quiconque ; et que le
-# binaire déballé PARTE, sur l'architecture que le paquet annonce, et connaisse
-# les options et les commandes de la SOURCE.
+# Et il en porte d'autres : que ce qu'il pose soit exactement un binaire, sa
+# licence et l'unité utilisateur de l'écho, rien sous `/etc`, rien dans le
+# répertoire de quiconque ; que cette unité soit posée DÉSACTIVÉE et qu'elle
+# lance bien `/usr/bin/asl echo` ; et que le binaire déballé PARTE, sur
+# l'architecture que le paquet annonce, et connaisse les options et les
+# commandes de la SOURCE.
 #
 # Calqué sur `scripts/check-paquet.sh` du dépôt serveur ; ce qui n'y est pas
-# (l'unité, la posture d'attestation, le purge, les doublures du `postinst`)
-# n'a pas d'objet ici, puisqu'il n'y a ni service ni script de mainteneur.
+# (l'unité système, la posture d'attestation, le purge, les doublures du
+# `postinst`) n'a pas d'objet ici, puisqu'il n'y a ni service système ni script
+# de mainteneur.
 set -euo pipefail
 
 racine=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -94,14 +97,15 @@ grep -qF 'asl enroll' "$essai/control" \
     || rate "la description a perdu « asl enroll » — une substitution dans le here-document ?"
 conclure "$machine, $version — $(sed -n 's/^ Depends: //p' "$essai/control")"
 
-titre "3. il pose un binaire et sa licence, et RIEN d'autre"
+titre "3. il pose un binaire, sa licence et l'unité de l'écho, et RIEN d'autre"
 commencer
 dpkg-deb --contents "$paquet" > "$essai/contenu"
-# **LA LISTE EST FERMÉE.** Un fichier de plus — une unité, une configuration
-# sous `/etc`, un état d'exemple — serait une décision prise à la place de
-# l'utilisateur, et c'est précisément ce que ce paquet s'interdit.
+# **LA LISTE EST FERMÉE.** Un fichier de plus — une unité système, une
+# configuration sous `/etc`, un état d'exemple — serait une décision prise à la
+# place de l'utilisateur, et c'est précisément ce que ce paquet s'interdit.
 awk '$1 !~ /^d/ { print $NF }' "$essai/contenu" | sort > "$essai/fichiers"
-printf '%s\n' ./usr/bin/asl ./usr/share/doc/asl/copyright > "$essai/attendus"
+printf '%s\n' ./usr/bin/asl ./usr/lib/systemd/user/asl-echo.service \
+    ./usr/share/doc/asl/copyright > "$essai/attendus"
 if ! cmp -s "$essai/attendus" "$essai/fichiers"; then
     rate "le paquet ne pose pas exactement ce qu'on attend :
 $(diff "$essai/attendus" "$essai/fichiers" | sed 's/^/    /')"
@@ -114,12 +118,18 @@ grep -qE ' \./(home|root|var)/' "$essai/contenu" \
     && rate "un état posé par le paquet — l'identité est générée par \`asl enroll\`"
 grep -qE '^-rwxr-xr-x root/root .* \./usr/bin/asl$' "$essai/contenu" \
     || rate "/usr/bin/asl n'est pas 0755 root:root"
+grep -qE '^-rw-r--r-- root/root .* \./usr/lib/systemd/user/asl-echo\.service$' "$essai/contenu" \
+    || rate "l'unité asl-echo.service n'est pas 0644 root:root sous /usr/lib/systemd/user"
+# **UNE UNITÉ ACTIVÉE PAR LE PAQUET, C'EST UN LIEN `*.wants/`** : il n'y en a
+# aucun, nulle part.
+grep -q '\.wants/' "$essai/contenu" \
+    && rate "un lien .wants/ — le paquet activerait une unité que personne n'a demandée"
 # **LA RACINE DU PAQUET NE DOIT PAS RESSERRER `/`.** `mktemp -d` crée en 0700 ;
 # une racine expédiée dans ce mode rendrait le système inutilisable.
 racine_mode=$(awk '$NF == "./" { print $1 }' "$essai/contenu")
 [ "$racine_mode" = "drwxr-xr-x" ] \
     || rate "la racine du paquet est en $racine_mode, et non drwxr-xr-x"
-conclure "/usr/bin/asl, /usr/share/doc/asl/copyright"
+conclure "/usr/bin/asl, asl-echo.service (utilisateur), /usr/share/doc/asl/copyright"
 
 titre "4. la licence du paquet est CELLE du dépôt"
 commencer
@@ -128,6 +138,46 @@ dpkg-deb --extract "$paquet" "$essai/deballe"
 cmp -s LICENSE "$essai/deballe/usr/share/doc/asl/copyright" \
     || rate "le copyright empaqueté diffère de LICENSE"
 conclure "MPL-2.0, un seul texte"
+
+titre "4 bis. l'unité de l'écho est CELLE du dépôt, et lance l'écho"
+commencer
+unite="$essai/deballe/usr/lib/systemd/user/asl-echo.service"
+cmp -s paquet/asl-echo.service "$unite" \
+    || rate "l'unité empaquetée diffère de paquet/asl-echo.service"
+# **CE QU'ELLE LANCE, À LA LETTRE** : le binaire du paquet, et la commande
+# `echo` — un autre chemin (`/usr/local/bin`) lancerait autre chose que ce
+# qu'on a installé.
+grep -qx 'ExecStart=/usr/bin/asl echo' "$unite" \
+    || rate "l'unité ne lance pas « /usr/bin/asl echo »"
+grep -qx 'Restart=on-failure' "$unite" \
+    || rate "l'unité ne redémarre pas sur panne (Restart=on-failure)"
+grep -qx 'RestartPreventExitStatus=2 3' "$unite" \
+    || rate "l'unité relancerait en boucle un refus de configuration ou de clé"
+grep -qx 'WantedBy=default.target' "$unite" \
+    || rate "l'unité ne s'active pas dans default.target — enable ne ferait rien"
+grep -qE '^(User|Group)=' "$unite" \
+    && rate "l'unité nomme un compte — une unité utilisateur tourne sous celui qui l'active"
+# **`systemd-analyze` LA LIT COMME SYSTEMD LA LIRA**, là où il est : une clé
+# mal orthographiée n'est qu'un avertissement au chargement, et l'unité
+# démarrerait sans ce qu'on croit lui avoir dit. Absent (macOS, conteneur
+# minimal) : on le dit, sans conclure à sa place.
+if command -v systemd-analyze > /dev/null 2>&1; then
+    # Le binaire que nomme `ExecStart=` doit exister pour que la vérification
+    # passe : on lui présente celui qu'on vient de déballer, au même chemin
+    # relatif, par une copie de l'unité réécrite pour ce chemin.
+    sed "s|^ExecStart=/usr/bin/asl |ExecStart=$essai/deballe/usr/bin/asl |" "$unite" \
+        > "$essai/asl-echo.service"
+    if ! systemd-analyze verify --man=no "$essai/asl-echo.service" > "$essai/verify" 2>&1; then
+        rate "systemd-analyze refuse l'unité :
+$(sed 's/^/    /' "$essai/verify")"
+    elif [ -s "$essai/verify" ]; then
+        rate "systemd-analyze a des remarques sur l'unité :
+$(sed 's/^/    /' "$essai/verify")"
+    fi
+else
+    echo "  (systemd-analyze absent : la syntaxe de l'unité n'est pas relue ici)"
+fi
+conclure "posée désactivée, lance /usr/bin/asl echo, relue par systemd-analyze"
 
 titre "5. AUCUN script de mainteneur"
 commencer
@@ -181,5 +231,6 @@ if [ "$fautes" -ne 0 ]; then
     printf '\nÉCHEC : %s contrôle(s) du paquet n'"'"'ont pas passé.\n' "$fautes" >&2
     exit 1
 fi
-printf '\nOK : le paquet pose un binaire qui part et sa licence, rien d'"'"'autre,\n'
+printf '\nOK : le paquet pose un binaire qui part, sa licence et l'"'"'unité désactivée\n'
+printf '     de l'"'"'écho, rien d'"'"'autre,\n'
 printf '     et rien ne s'"'"'exécute en root à son installation.\n'

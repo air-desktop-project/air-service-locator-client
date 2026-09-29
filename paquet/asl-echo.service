@@ -1,0 +1,77 @@
+# L'unité systemd UTILISATEUR de l'écho — `protocole.md` §3 quater,
+# « L'installation », décision 93 (E10).
+#
+# ── ELLE EST POSÉE, PAS ACTIVÉE ─────────────────────────────────────────────
+#
+# Le paquet la pose sous `/usr/lib/systemd/user/`, et c'est tout : aucun
+# script de mainteneur, aucun lien sous `/etc`, rien qui démarre. L'écho ouvre
+# un port UDP et répond, au nom de la clé de cette machine, aux sondes
+# signées ; c'est à celui qui porte cette clé de le vouloir (décision 93 ;
+# E14) :
+#
+#     systemctl --user enable --now asl-echo
+#
+# Sur un serveur où personne n'ouvre de session, le gestionnaire de
+# l'utilisateur ne tourne pas, et l'unité ne démarrerait qu'à la première
+# connexion. Une fois, en root, pour ce compte :
+#
+#     loginctl enable-linger <compte>
+#
+# ── UTILISATEUR, ET NON SYSTÈME ─────────────────────────────────────────────
+#
+# L'identité vit chez l'utilisateur (`~/.config/asl`, `$XDG_CONFIG_HOME/asl`),
+# et `asl echo` refuse de tourner en root (C8). Une unité système modèle,
+# `asl-echo@<compte>`, ferait décider root pour la clé d'un utilisateur :
+# écartée en v1 (E10, b).
+#
+# ── LE REDÉMARRAGE : SUR PANNE SEULEMENT, ET PAS SUR UN REFUS ───────────────
+#
+# `asl echo` ne rend pas la main de lui-même : un annuaire injoignable, un
+# bail perdu, il les attend et recommence tout seul. S'il sort, c'est :
+#
+#   — 0 : on l'a arrêté (`SIGTERM`, `systemctl --user stop`) — le bail est
+#     fermé ; rien à relancer ;
+#   — 2 : une faute de configuration (pas d'identité, plage 6631–6639 prise,
+#     lancé en root) — relancer ne la corrigerait pas ;
+#   — 3 : l'annuaire refuse la clé (révoquée, effacée) — pareil ;
+#   — autre chose (une panique, un signal) : là, oui, on relance.
+#
+# D'où `on-failure` avec `RestartPreventExitStatus=2 3`, dix secondes
+# d'intervalle, et une limite : cinq départs en dix minutes, puis l'unité
+# reste en échec et `systemctl --user status asl-echo` le montre, plutôt
+# qu'une boucle qui remplirait le journal. (La spécification écrivait
+# `Restart=always` ; `always` relancerait aussi les deux refus ci-dessus, en
+# boucle, et c'est ce qu'on ne veut pas lire au journal.)
+#
+# ── LE JOURNAL ──────────────────────────────────────────────────────────────
+#
+# Ce qu'`asl echo` imprime va au journal de l'utilisateur, sous l'étiquette
+# `asl-echo` :
+#
+#     journalctl --user -u asl-echo -f
+#
+# ── LE DURCISSEMENT ─────────────────────────────────────────────────────────
+#
+# `NoNewPrivileges=` seul. `ProtectSystem=`, `ProtectHome=` et leurs voisins
+# demandent, dans une unité utilisateur, des espaces de noms que toutes les
+# distributions n'ouvrent pas aux utilisateurs : ils restent à éprouver
+# (`protocole.md` §3 quater), et une unité qui ne démarre pas ici ou là serait
+# pire qu'une unité un peu moins fermée.
+
+[Unit]
+Description=asl-echo — l'écho de cette machine (air-service-locator)
+Documentation=https://github.com/air-desktop-project/air-service-locator-client#readme
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/asl echo
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=2 3
+SyslogIdentifier=asl-echo
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target
