@@ -41,7 +41,10 @@ use asl_echo::{
     DefiEcho, Jeton, REPONSE_OCTETS, REQUETE_OCTETS, Reponse, SondeAnnuaire, SondeJeton,
 };
 use asl_id::{Genre, Identifiant};
-use banc::{AnnuaireDEcho, EtatDEcho, cle_de_banc, lever_a_plusieurs_qui_pousse, materiel};
+use banc::{
+    AnnuaireDEcho, EtatDEcho, cle_de_banc, lever_a_plusieurs_qui_pousse,
+    lever_a_plusieurs_qui_pousse_sur, materiel,
+};
 use tokio::net::UdpSocket;
 
 /// Les deux machines de l'essai : l'écho, et celle qui sonde.
@@ -142,6 +145,9 @@ struct Decor {
     sondeur: Bac,
     bac_echo: Bac,
     tache: tokio::task::JoinHandle<()>,
+    /// Le banc de l'autre famille, quand il y en a deux
+    /// ([`Decor::lever_en_deux_familles`]).
+    seconde: Option<tokio::task::JoinHandle<()>>,
     pousser: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
 }
 
@@ -170,6 +176,7 @@ impl Decor {
             sans_droit,
             etat: Arc::clone(&etat),
             version,
+            vu: None,
         };
         let (adresse, tache, pousser) = lever_a_plusieurs_qui_pousse(cert, pkcs8, service).await;
         let annuaire = format!("{adresse}={}", identite_du_banc.texte().as_str());
@@ -199,8 +206,84 @@ impl Decor {
             sondeur,
             bac_echo,
             tache,
+            seconde: None,
             pousser,
         }
+    }
+
+    /// **UN ANNUAIRE DANS LES DEUX FAMILLES** — deux bancs de la même
+    /// identité, l'un sur `[::1]`, l'autre sur `127.0.0.1`, qui partagent
+    /// leur état —, chacun rendant son `vu_depuis` : ce qu'un vrai annuaire
+    /// observerait d'une machine derrière une box, en IPv6 son adresse, en
+    /// IPv4 l'adresse externe de la box (ou d'un NAT au-dessus). L'écho les
+    /// reçoit tous deux par `--directory`, l'IPv6 d'abord ; la passerelle,
+    /// elle, parle à `igd`.
+    async fn lever_en_deux_familles(nom: &str, vu6: &str, vu4: &str, igd: &FauxIgd) -> Self {
+        let (identite_du_banc, cert, pkcs8) = materiel(nom);
+        let etat: Arc<Mutex<EtatDEcho>> = Arc::default();
+        let service = |vu: &str| AnnuaireDEcho {
+            cle: Arc::new(cle_de_banc(nom)),
+            echo: (machine_echo(), cle(GRAINE_ECHO).publique()),
+            sondeur: (machine_sondeur(), cle(GRAINE_SONDEUR).publique()),
+            compte: Identifiant::depuis_entropie(Genre::Utilisateur, [0x55; 16]),
+            sans_droit: Vec::new(),
+            etat: Arc::clone(&etat),
+            version: Some("0.44.1"),
+            vu: Some(vu.parse().expect("une adresse")),
+        };
+        let (six, tache, pousser) =
+            lever_a_plusieurs_qui_pousse_sur("[::1]:0", cert.clone(), pkcs8.clone(), service(vu6))
+                .await;
+        let (quatre, seconde, _) =
+            lever_a_plusieurs_qui_pousse_sur("127.0.0.1:0", cert, pkcs8, service(vu4)).await;
+        let texte = identite_du_banc.texte();
+        let annuaire = format!("{six}={}", texte.as_str());
+        let annuaire_v4 = format!("{quatre}={}", texte.as_str());
+
+        let bac_echo = Bac::neuf(&format!("{nom}-echo"));
+        identite(&bac_echo, machine_echo(), GRAINE_ECHO);
+        let sondeur = Bac::neuf(&format!("{nom}-sondeur"));
+        identite(&sondeur, machine_sondeur(), GRAINE_SONDEUR);
+
+        let ssdp = vers_la_fausse_box(igd);
+        let echo = lancer_l_echo(
+            &annuaire,
+            &bac_echo.0,
+            &["--directory", &annuaire_v4, "echo", "--verbose"],
+            &[("ASL_ECHO_UPNP", "1"), ("ASL_ECHO_SSDP", &ssdp)],
+        );
+        let mut port = None;
+        for _ in 0..200 {
+            port = etat.lock().unwrap().port;
+            if port.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let port = port.expect("asl echo s'annonce en moins de dix secondes");
+        Self {
+            annuaire,
+            identite_du_banc,
+            cle_du_banc: cle_de_banc(nom),
+            etat,
+            echo,
+            port,
+            sondeur,
+            bac_echo,
+            tache,
+            seconde: Some(seconde),
+            pousser,
+        }
+    }
+
+    /// Les annonces reçues, chacune avec le `vu_depuis` rendu.
+    fn annonces(&self) -> Vec<(std::net::IpAddr, String)> {
+        let etat = self.etat.lock().unwrap();
+        etat.vus
+            .iter()
+            .copied()
+            .zip(etat.annonces.iter().cloned())
+            .collect()
     }
 
     /// `asl ping`, depuis l'autre machine — hors de l'ordonnanceur, qui doit
@@ -229,6 +312,9 @@ impl Decor {
             let _ = sortie.read_to_string(&mut dit);
         }
         self.tache.abort();
+        if let Some(seconde) = &self.seconde {
+            seconde.abort();
+        }
         (statut.code(), dit)
     }
 }
@@ -585,6 +671,9 @@ struct ReglageIgd {
     /// Le délai avant de répondre au `M-SEARCH` : une vraie box le tire au
     /// hasard jusqu'à `MX` secondes.
     retard_ssdp: Duration,
+    /// Tant de redirections accordées, puis `606` — une box qui retire son
+    /// accord au renouvellement. `None` : toujours.
+    accords_max: Option<u32>,
 }
 
 /// Une fausse box sur la boucle locale : un répondeur SSDP en unicast, et un
@@ -867,7 +956,10 @@ async fn servir(
                 } else if reglage.conflits > 0 {
                     reglage.conflits = reglage.conflits.saturating_sub(1);
                     faute(718, "ConflictInMappingEntry")
+                } else if reglage.accords_max == Some(0) {
+                    faute(606, "Action not authorized")
                 } else {
+                    reglage.accords_max = reglage.accords_max.map(|reste| reste.saturating_sub(1));
                     reussi("")
                 }
             }
@@ -1338,4 +1430,209 @@ async fn passerelle_ipv4_malgre_l_ipv6(igd: &FauxIgd, voisin: &VoisinV6, nom: &s
         assert!(dit.contains(&attendu), "« {attendu} » manque : {dit}");
     }
     assert!(!dit.contains("pas de passerelle UPnP"), "{dit}");
+}
+
+// ── Le bail en IPv4, quand la box ne perce pas son pare-feu IPv6 ────────────
+//
+// La fausse box n'a pas de `WANIPv6FirewallControl` : aucun trou IPv6 — l'une
+// des deux façons de n'en pas avoir (décision 106). L'autre, le refus `606`
+// d'`AddPinhole` que la Livebox rend, demande une adresse IPv6 globale que la
+// boucle locale n'a pas : elle est éprouvée dans `passerelle.rs`, contre une
+// fausse box qui refuse le trou.
+
+/// Attend qu'une condition tienne — vingt secondes au plus : une bascule
+/// demande deux tours de passerelle et deux connexions.
+async fn attendre_longtemps(quoi: &str, condition: impl Fn() -> bool) {
+    for _ in 0..400 {
+        if condition() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("{quoi} : pas en vingt secondes");
+}
+
+/// L'adresse externe publique de la fausse box (TEST-NET-3).
+const EXTERNE: &str = "203.0.113.7";
+
+/// L'adresse IPv6 de la machine, telle que l'annuaire la verrait.
+const VU6: &str = "2001:db8::7";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sans_trou_ipv6_mais_redirige_le_bail_passe_en_ipv4() {
+    let igd = FauxIgd::lever(ReglageIgd {
+        externe: EXTERNE,
+        ..ReglageIgd::default()
+    })
+    .await;
+    let decor = Decor::lever_en_deux_familles("echo-bail-ipv4", VU6, EXTERNE, &igd).await;
+    let port = decor.port;
+    let etat = Arc::clone(&decor.etat);
+    attendre_longtemps("l'annonce IPv4 avec passerelle", || {
+        let etat = etat.lock().unwrap();
+        etat.vus
+            .iter()
+            .zip(etat.annonces.iter())
+            .any(|(vu, annonce)| vu.is_ipv4() && annonce.contains("\"passerelle\""))
+    })
+    .await;
+    // **L'HYSTÉRÉSIS** : le tour qui suit la bascule — relancé par le
+    // `vu_depuis` nouveau — renouvelle la redirection, et le bail reste.
+    tokio::time::sleep(Duration::from_millis(3_000)).await;
+    let annonces = decor.annonces();
+    // IPv6 d'abord, puis IPv4 — et le port redirigé, qui est ici le sien.
+    assert!(annonces[0].0.is_ipv6(), "{annonces:?}");
+    assert!(!annonces[0].1.contains("passerelle"), "{annonces:?}");
+    let (vu, derniere) = annonces.last().unwrap();
+    assert_eq!(vu.to_string(), EXTERNE, "{annonces:?}");
+    assert!(
+        derniere.ends_with(&format!(
+            r#","passerelle":{{"port":{port},"via":"upnp"}}}}"#
+        )),
+        "{annonces:?}"
+    );
+    assert!(
+        annonces
+            .iter()
+            .all(|(vu, annonce)| vu.is_ipv4() || !annonce.contains("passerelle")),
+        "rien d'annoncé en IPv6 : {annonces:?}"
+    );
+    let (code, dit) = decor.arreter();
+    assert_eq!(code, Some(0), "{dit}");
+    assert!(
+        dit.contains(&format!(
+            "le bail passe en IPv4 : la box ne perce pas son pare-feu IPv6, mais redirige udp \
+             {port} (box {EXTERNE}:{port})"
+        )),
+        "{dit}"
+    );
+    assert_eq!(dit.matches("le bail passe en IPv4").count(), 1, "{dit}");
+    assert!(!dit.contains("le bail revient en IPv6"), "{dit}");
+    assert!(
+        dit.contains(&format!(
+            "réannoncée avec la passerelle : port externe {port} (upnp)"
+        )),
+        "{dit}"
+    );
+    assert!(
+        !dit.contains("le bail part en IPv6 : la redirection IPv4 n'est pas annoncée"),
+        "{dit}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn un_double_nat_revele_apres_la_bascule_ramene_en_ipv6_et_y_laisse() {
+    let igd = FauxIgd::lever(ReglageIgd {
+        externe: EXTERNE,
+        ..ReglageIgd::default()
+    })
+    .await;
+    // En IPv4, l'annuaire nous voit ailleurs qu'à l'adresse que la box dit.
+    let decor =
+        Decor::lever_en_deux_familles("echo-bail-double-nat", VU6, "198.51.100.9", &igd).await;
+    let etat = Arc::clone(&decor.etat);
+    // IPv6, puis IPv4, puis IPv6 de nouveau.
+    attendre_longtemps("le retour en IPv6", || {
+        let etat = etat.lock().unwrap();
+        let familles: Vec<bool> = etat.vus.iter().map(std::net::IpAddr::is_ipv6).collect();
+        familles
+            .windows(3)
+            .any(|trois| trois == [true, false, true])
+    })
+    .await;
+    // **ET L'ON NE REBASCULE PAS** : le tour relancé par le retour se souvient
+    // du double NAT pour cette adresse externe.
+    tokio::time::sleep(Duration::from_millis(4_000)).await;
+    let annonces = decor.annonces();
+    assert!(annonces.last().unwrap().0.is_ipv6(), "{annonces:?}");
+    assert!(
+        annonces
+            .iter()
+            .all(|(_, annonce)| !annonce.contains("passerelle")),
+        "une redirection qui ne vaut pas depuis l'Internet ne s'annonce pas : {annonces:?}"
+    );
+    let (code, dit) = decor.arreter();
+    assert_eq!(code, Some(0), "{dit}");
+    assert_eq!(dit.matches("le bail passe en IPv4").count(), 1, "{dit}");
+    assert!(
+        dit.contains(&format!(
+            "le bail revient en IPv6 : double NAT : la box dit {EXTERNE}, l'annuaire nous voit \
+             depuis 198.51.100.9"
+        )),
+        "{dit}"
+    );
+    assert!(
+        dit.contains(&format!(
+            "double NAT déjà constaté derrière la box ({EXTERNE}) : le bail reste en IPv6"
+        )),
+        "{dit}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn une_redirection_perdue_ramene_le_bail_en_ipv6() {
+    // Une redirection accordée, puis `606` au renouvellement — celui que le
+    // `vu_depuis` du bail IPv4 relance.
+    let igd = FauxIgd::lever(ReglageIgd {
+        externe: EXTERNE,
+        accords_max: Some(1),
+        ..ReglageIgd::default()
+    })
+    .await;
+    let decor = Decor::lever_en_deux_familles("echo-bail-perdue", VU6, EXTERNE, &igd).await;
+    let etat = Arc::clone(&decor.etat);
+    attendre_longtemps("le retour en IPv6", || {
+        let etat = etat.lock().unwrap();
+        let familles: Vec<bool> = etat.vus.iter().map(std::net::IpAddr::is_ipv6).collect();
+        familles
+            .windows(3)
+            .any(|trois| trois == [true, false, true])
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(3_000)).await;
+    let annonces = decor.annonces();
+    assert!(annonces.last().unwrap().0.is_ipv6(), "{annonces:?}");
+    let (code, dit) = decor.arreter();
+    assert_eq!(code, Some(0), "{dit}");
+    assert_eq!(dit.matches("le bail passe en IPv4").count(), 1, "{dit}");
+    assert!(
+        dit.contains("le bail revient en IPv6 : la redirection IPv4 est perdue"),
+        "{dit}"
+    );
+    assert!(dit.contains("refuse la redirection"), "{dit}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn un_double_nat_visible_garde_le_bail_en_ipv6() {
+    // L'adresse externe de la box est partagée (`100.64.0.0/10`) : la box
+    // n'est pas la dernière, et le bail ne bascule même pas.
+    let igd = FauxIgd::lever(ReglageIgd {
+        externe: "100.64.12.34",
+        ..ReglageIgd::default()
+    })
+    .await;
+    let decor =
+        Decor::lever_en_deux_familles("echo-bail-nat-visible", VU6, "100.64.12.34", &igd).await;
+    let actions = Arc::clone(&igd.actions);
+    attendre("l'adresse externe", || {
+        actions
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(action, _)| action == "GetExternalIPAddress")
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(2_000)).await;
+    let annonces = decor.annonces();
+    assert!(
+        annonces.iter().all(|(vu, _)| vu.is_ipv6()),
+        "le bail n'a pas quitté l'IPv6 : {annonces:?}"
+    );
+    let (code, dit) = decor.arreter();
+    assert_eq!(code, Some(0), "{dit}");
+    assert!(!dit.contains("le bail passe en IPv4"), "{dit}");
+    assert!(
+        dit.contains("double NAT : la box n'est pas la dernière (son adresse externe 100.64.12.34 est privée)"),
+        "{dit}"
+    );
 }

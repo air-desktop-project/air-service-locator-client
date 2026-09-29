@@ -44,6 +44,7 @@ async fn lever_l_annuaire(
         sans_droit: Vec::new(),
         etat: Arc::default(),
         version: None,
+        vu: None,
     };
     let (adresse, tache) = lever_a_plusieurs(cert, cle, service).await;
     (identite, adresse, tache)

@@ -658,8 +658,27 @@ pub async fn lever_a_plusieurs_qui_pousse<S>(
 where
     S: ams_h3::Service + Clone + Send + 'static,
 {
+    lever_a_plusieurs_qui_pousse_sur("127.0.0.1:0", chaine, cle, service).await
+}
+
+/// Le même, **à l'écoute de `ecoute`** — `[::1]:0` pour un banc IPv6 : deux
+/// bancs de la même identité, un par famille, font un annuaire joignable en
+/// IPv6 et en IPv4, comme une racine.
+pub async fn lever_a_plusieurs_qui_pousse_sur<S>(
+    ecoute: &str,
+    chaine: Vec<u8>,
+    cle: Vec<u8>,
+    service: S,
+) -> (
+    SocketAddr,
+    tokio::task::JoinHandle<()>,
+    tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+)
+where
+    S: ams_h3::Service + Clone + Send + 'static,
+{
     let (voie, mut a_pousser) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    let socket = UdpSocket::bind("127.0.0.1:0").await.expect("une socket");
+    let socket = UdpSocket::bind(ecoute).await.expect("une socket");
     let adresse = socket.local_addr().expect("une adresse");
 
     let tache = tokio::spawn(async move {
@@ -781,6 +800,9 @@ pub struct EtatDEcho {
     pub jetons: u32,
     /// Chaque annonce reçue, telle quelle — `passerelle` comprise.
     pub annonces: Vec<String>,
+    /// Pour chaque annonce, le `vu_depuis` que le banc qui l'a reçue a rendu
+    /// — sa famille dit celle du bail.
+    pub vus: Vec<core::net::IpAddr>,
 }
 
 /// Un annuaire qui connaît l'écho d'UNE machine, et délivre des jetons pour
@@ -813,27 +835,34 @@ pub struct AnnuaireDEcho {
     /// l'annonce de l'écho ; avant, il la refuse (`400`), comme le décodeur
     /// d'un annuaire d'avant refuse tout champ inconnu.
     pub version: Option<&'static str>,
+    /// L'adresse que la réponse d'annonce dit dans `vu_depuis` — `None` : la
+    /// boucle locale, `127.0.0.1`. Un banc feint l'adresse qu'un vrai
+    /// annuaire observerait derrière une box : c'est elle que la passerelle
+    /// de l'écho compare à l'adresse externe de la box.
+    pub vu: Option<core::net::IpAddr>,
 }
 
 impl AnnuaireDEcho {
+    /// Le `vu_depuis` que ce banc rend.
+    fn vu_depuis(&self) -> core::net::IpAddr {
+        self.vu
+            .unwrap_or(core::net::IpAddr::V4(core::net::Ipv4Addr::LOCALHOST))
+    }
+
     fn repondre<'o>(sortie: &'o mut [u8], code: StatusCode, corps: &[u8]) -> ams_h3::Reponse<'o> {
         let place = sortie.get_mut(..corps.len()).unwrap_or_default();
         place.copy_from_slice(corps.get(..place.len()).unwrap_or_default());
         ams_h3::Reponse::new(code, place)
     }
 
-    /// La réponse d'annonce de l'écho : un point `udp:<port>`, vu depuis la
-    /// boucle locale, et pas encore sondé — **`en_cours`**, parce qu'un
-    /// `asl-proto` d'avant la sonde par l'écho refuse un verdict mesuré sur
-    /// UDP.
-    fn reponse_d_echo(port: u16) -> Vec<u8> {
+    /// La réponse d'annonce de l'écho : un point `udp:<port>`, vu depuis
+    /// `vu`, et pas encore sondé — **`en_cours`**, parce qu'un `asl-proto`
+    /// d'avant la sonde par l'écho refuse un verdict mesuré sur UDP.
+    fn reponse_d_echo(port: u16, vu: core::net::IpAddr) -> Vec<u8> {
         let service = asl_id::Identifiant::depuis_entropie(asl_id::Genre::Service, [0x3E; 16]);
         let bail = asl_proto::Bail::nouveau(CADENCE_DU_BANC, CADENCE_DU_BANC * 3).expect("un bail");
         let port = asl_proto::Port::depuis_u16(port).expect("un port");
-        let vu_depuis = asl_proto::VuDepuis {
-            adresse: core::net::IpAddr::V4(core::net::Ipv4Addr::LOCALHOST),
-            port,
-        };
+        let vu_depuis = asl_proto::VuDepuis { adresse: vu, port };
         let joignabilite = [asl_proto::Joignabilite {
             point: asl_proto::PointEcoute::nouveau(asl_proto::Protocole::Udp, port),
             verdict: asl_proto::Verdict::EnCours,
@@ -891,6 +920,7 @@ impl ams_h3::Service for AnnuaireDEcho {
                 if let Ok(mut etat) = self.etat.lock() {
                     etat.annonces
                         .push(String::from_utf8_lossy(corps).into_owned());
+                    etat.vus.push(self.vu_depuis());
                 }
                 // **`passerelle` (serveur 0.44.0)** : l'`asl-proto` épinglé la
                 // lit ; le banc ne l'accepte que s'il se dit assez récent — un
@@ -919,7 +949,11 @@ impl ams_h3::Service for AnnuaireDEcho {
                 if let Ok(mut etat) = self.etat.lock() {
                     etat.port = Some(port);
                 }
-                Self::repondre(sortie, StatusCode::OK, &Self::reponse_d_echo(port))
+                Self::repondre(
+                    sortie,
+                    StatusCode::OK,
+                    &Self::reponse_d_echo(port, self.vu_depuis()),
+                )
             }
             (Method::Post, b"/v1/echo/jetons") => {
                 let Ok(demande) = asl_api::echo::DemandeDeJeton::decoder(corps) else {
@@ -971,7 +1005,11 @@ impl ams_h3::Service for AnnuaireDEcho {
                     Some(port)
                         if chemin == ou_echo.as_bytes() && !self.sans_droit.contains(&echo) =>
                     {
-                        Self::repondre(sortie, StatusCode::OK, &Self::reponse_d_echo(port))
+                        Self::repondre(
+                            sortie,
+                            StatusCode::OK,
+                            &Self::reponse_d_echo(port, self.vu_depuis()),
+                        )
                     }
                     _ => ams_h3::Reponse::new(StatusCode::NOT_FOUND, &[]),
                 }
