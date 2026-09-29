@@ -1366,18 +1366,16 @@ fe80 02 40 20 80   court
         }
         let socket = std::net::UdpSocket::bind("[::]:0").expect("une socket IPv6");
         let experience = "ff02::114".parse().unwrap();
-        let prises: Vec<u32> = interfaces
+        let (prises, refus): (Vec<_>, Vec<_>) = interfaces
             .iter()
-            .copied()
-            .filter(|index| {
-                socket
-                    .send_to(b"asl", SocketAddrV6::new(experience, 9, 0, *index))
-                    .is_ok()
+            .map(|index| {
+                let envoi = socket.send_to(b"asl", SocketAddrV6::new(experience, 9, 0, *index));
+                (*index, envoi.map_err(|quoi| quoi.to_string()))
             })
-            .collect();
+            .partition(|(_, envoi)| envoi.is_ok());
         assert!(
             !prises.is_empty(),
-            "aucune de {interfaces:?} ne prend l'envoi"
+            "aucune interface ne prend l'envoi : {refus:?}"
         );
     }
 

@@ -99,6 +99,14 @@ jobs:
       - name: Essais de la passerelle (macOS)
         run: cargo test --locked -p asl-cli --bin asl "passerelle::"
 
+      # Un échec de ces essais dit d'abord quelque chose du runner : ses
+      # interfaces et ses routes IPv6, pour le lire.
+      - name: Le réseau du runner (si les essais échouent)
+        if: failure()
+        run: |
+          ifconfig -a
+          netstat -rn -f inet6
+
       - uses: actions/upload-artifact@v4
         with:
           name: asl-macos-universel
