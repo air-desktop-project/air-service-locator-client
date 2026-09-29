@@ -82,61 +82,244 @@ impl core::fmt::Display for Faute {
     }
 }
 
-/// Le répertoire où vit l'identité.
+/// Le conteneur de groupe de l'application Service Locator et de son agent,
+/// relatif au répertoire du compte (`protocole.md`, décision 93, E11 révisé).
+const GROUPE: &str = "Library/Group Containers/SB7H9B6TY8.org.airdesktop.servicelocator/Library/Application Support/asl";
+
+/// L'ancien conteneur de l'application, d'avant le bac à sable partagé : ce
+/// qu'elle migre au premier lancement, et qu'on lit en attendant.
+const ANCIEN_CONTENEUR: &str =
+    "Library/Containers/org.airdesktop.servicelocator.mac/Data/Library/Application Support/asl";
+
+/// D'où vient le répertoire d'état — ce que `asl identity` et `asl diagnose`
+/// disent, parce qu'une identité dont on ignore la provenance ne se départage
+/// pas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origine {
+    /// `--state`.
+    Option,
+    /// `ASL_STATE`.
+    Environnement,
+    /// Le conteneur de groupe de l'application (macOS).
+    Groupe,
+    /// L'ancien conteneur de l'application (macOS), en attendant sa migration.
+    AncienConteneur,
+    /// `$XDG_CONFIG_HOME/asl`, sinon `~/.config/asl`.
+    Utilisateur,
+}
+
+impl Origine {
+    /// Ce qu'on en dit, en une ligne.
+    #[must_use]
+    pub const fn dire(self) -> &'static str {
+        match self {
+            Self::Option => "--state",
+            Self::Environnement => "ASL_STATE",
+            Self::Groupe => "le conteneur de groupe de l'application Service Locator",
+            Self::AncienConteneur => {
+                "l'ancien conteneur de l'application Service Locator (à migrer)"
+            }
+            Self::Utilisateur => {
+                "le répertoire de l'utilisateur ($XDG_CONFIG_HOME/asl, sinon ~/.config/asl)"
+            }
+        }
+    }
+}
+
+/// Le répertoire d'état retenu, d'où il vient, et ce qu'il faut en dire.
+#[derive(Debug)]
+pub struct Etat {
+    /// Le répertoire : l'identité, et à côté le cache des racines.
+    pub dossier: PathBuf,
+    /// D'où il vient.
+    pub origine: Origine,
+    /// Ce qu'on dit sur la sortie d'erreur, une ligne chacun, à chaque
+    /// commande : l'ancien conteneur lu, deux identités qui se contredisent.
+    pub avertissements: Vec<String>,
+}
+
+/// Le répertoire où vit l'identité — et le cache des racines, qui la suit.
 ///
-/// Dans l'ordre : ce que la ligne de commande dit, puis `ASL_STATE`, puis
-/// `$XDG_CONFIG_HOME/asl`, puis `~/.config/asl` — **et sur macOS, si aucun
-/// de ceux-là ne porte d'identité, celui de l'application Service Locator.**
-///
-/// # POURQUOI `asl` CONNAÎT L'APPLICATION, SUR MAC SEULEMENT
-///
-/// Sur un Mac, c'est l'application qui enrôle la machine — « Faire de ce Mac
-/// une machine », sous Touch ID — et elle écrit l'identité **dans ce format,
-/// dans son conteneur** : `~/Library/Containers/org.airdesktop.servicelocator.mac/
-/// Data/Library/Application Support/asl/identite`. Un bac à sable ne peut
-/// pas écrire dans `~/.config`, et un Mac n'a qu'une identité de machine :
-/// c'est donc à l'utilitaire d'aller la lire là où elle est, plutôt que de
-/// dire « cette machine n'est pas enrôlée » à un Mac qui l'est. Ce repli ne
-/// joue que si `~/.config/asl` n'a rien à dire — ce qu'on a enrôlé à la main
-/// passe toujours avant —, et jamais quand `--state` ou `ASL_STATE` a parlé.
+/// Voir [`chercher`] pour l'ordre, et pourquoi il change sur macOS.
 #[must_use]
 pub fn repertoire(demande: Option<&str>) -> PathBuf {
-    let maison = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_owned()));
+    chercher(demande).dossier
+}
+
+/// Cherche le répertoire d'état, dans l'ordre du protocole.
+///
+/// **Partout** : ce que la ligne de commande dit (`--state`), puis
+/// `ASL_STATE` — pris **tels quels, sans aucune recherche ni repli**. Puis :
+///
+/// - **sur Linux**, `$XDG_CONFIG_HOME/asl`, sinon `~/.config/asl` ;
+/// - **sur macOS** (décision 93, E11 révisé), le premier qui porte une
+///   `identite` parmi : le conteneur de groupe de l'application
+///   (`~/Library/Group Containers/SB7H9B6TY8.org.airdesktop.servicelocator/
+///   Library/Application Support/asl/`), l'ancien conteneur de l'application
+///   (`~/Library/Containers/org.airdesktop.servicelocator.mac/Data/Library/
+///   Application Support/asl/`, avec un avertissement), puis
+///   `$XDG_CONFIG_HOME/asl`, sinon `~/.config/asl` — qui est aussi le
+///   répertoire rendu quand aucun ne porte d'identité, et donc celui où
+///   `asl enroll` écrit.
+///
+/// # POURQUOI L'APPLICATION PASSE AVANT `~/.config/asl`, SUR MAC
+///
+/// Sur un Mac, c'est l'application qui enrôle la machine — « Faire de ce Mac
+/// une machine », sous Touch ID — et son agent `asl-echo` lit cette identité
+/// depuis leur conteneur de groupe commun : elle **est** l'identité de la
+/// machine. Un `~/.config/asl` qui en porterait une autre ne l'emporte plus,
+/// mais il n'est pas tu : deux identités différentes sont dites à chaque
+/// commande, sur la sortie d'erreur, plutôt que d'en ignorer une en silence.
+#[must_use]
+pub fn chercher(demande: Option<&str>) -> Etat {
     resoudre(
         demande,
         std::env::var("ASL_STATE").ok().as_deref(),
         std::env::var("XDG_CONFIG_HOME").ok().as_deref(),
-        &maison,
+        &maison(),
+        cfg!(target_os = "macos"),
     )
 }
 
-/// La règle de [`repertoire`], sur ce qu'on lui donne — pour qu'un essai la
-/// nourrisse sans toucher à l'environnement du processus.
+/// Le répertoire du compte.
+///
+/// # SUR MACOS, JAMAIS LE CONTENEUR D'UN BAC À SABLE
+///
+/// Dans un bac à sable, `HOME` désigne le conteneur propre du processus
+/// (`~/Library/Containers/<identifiant>/Data`), et les chemins du protocole
+/// sont relatifs au répertoire du COMPTE. `asl` n'est pas en bac à sable ;
+/// mais le jour où son code tourne dans l'agent de l'application, un `HOME`
+/// de conteneur ferait chercher l'identité dans un dossier qui ne la porte
+/// jamais. On remonte donc d'un tel conteneur jusqu'au compte.
+///
+/// **Pourquoi pas `getpwuid` directement** : ce binaire interdit `unsafe`, et
+/// n'a pas de liaison au système. `std::env::home_dir` le fait pour nous quand
+/// `HOME` manque ; quand `HOME` est là, c'est lui — et le conteneur s'y
+/// reconnaît à sa forme.
+///
+/// **Sur Linux, rien ne change** : `HOME`, sinon le répertoire courant.
+fn maison() -> PathBuf {
+    if cfg!(target_os = "macos") {
+        hors_du_bac_a_sable(&std::env::home_dir().unwrap_or_else(|| PathBuf::from(".")))
+    } else {
+        PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_owned()))
+    }
+}
+
+/// `…/Library/Containers/<identifiant>/Data` → `…` ; tout autre chemin, tel
+/// quel.
+fn hors_du_bac_a_sable(maison: &Path) -> PathBuf {
+    let parties: Vec<_> = maison.components().collect();
+    if let [debut @ .., bibliotheque, conteneurs, _, donnees] = parties.as_slice()
+        && bibliotheque.as_os_str() == "Library"
+        && conteneurs.as_os_str() == "Containers"
+        && donnees.as_os_str() == "Data"
+        && !debut.is_empty()
+    {
+        return debut.iter().collect();
+    }
+    maison.to_path_buf()
+}
+
+/// La règle de [`chercher`], sur ce qu'on lui donne — la maison **et** la
+/// plate-forme —, pour qu'un essai l'éprouve partout, sur une maison à lui,
+/// sans toucher à l'environnement du processus ni au vrai `HOME`.
 fn resoudre(
     demande: Option<&str>,
     etat: Option<&str>,
     xdg: Option<&str>,
     maison: &Path,
-) -> PathBuf {
+    macos: bool,
+) -> Etat {
+    let tel_quel = |dossier: &str, origine| Etat {
+        dossier: PathBuf::from(dossier),
+        origine,
+        avertissements: Vec::new(),
+    };
     if let Some(ou) = demande {
-        return PathBuf::from(ou);
+        return tel_quel(ou, Origine::Option);
     }
     if let Some(ou) = etat {
-        return PathBuf::from(ou);
+        return tel_quel(ou, Origine::Environnement);
     }
-    if let Some(config) = xdg {
-        return PathBuf::from(config).join("asl");
+    let utilisateur = xdg.map_or_else(
+        || maison.join(".config").join("asl"),
+        |config| PathBuf::from(config).join("asl"),
+    );
+    if !macos {
+        return Etat {
+            dossier: utilisateur,
+            origine: Origine::Utilisateur,
+            avertissements: Vec::new(),
+        };
     }
-    let usuel = maison.join(".config").join("asl");
-    #[cfg(target_os = "macos")]
-    if !usuel.join(FICHIER).exists() {
-        let application = maison
-            .join("Library/Containers/org.airdesktop.servicelocator.mac/Data/Library/Application Support/asl");
-        if application.join(FICHIER).exists() {
-            return application;
-        }
+
+    let candidats = [
+        (Origine::Groupe, maison.join(GROUPE)),
+        (Origine::AncienConteneur, maison.join(ANCIEN_CONTENEUR)),
+        (Origine::Utilisateur, utilisateur),
+    ];
+    let (origine, dossier) = candidats
+        .iter()
+        .find(|(_, dossier)| dossier.join(FICHIER).exists())
+        .or_else(|| candidats.last())
+        .cloned()
+        .unwrap_or((Origine::Utilisateur, PathBuf::from(".")));
+
+    let mut avertissements = Vec::new();
+    if origine == Origine::AncienConteneur {
+        avertissements.push(format!(
+            "identité lue dans l'ancien conteneur de l'application ({}) — la migration \
+             n'a pas eu lieu ; lancez l'application Service Locator pour la faire.",
+            dossier.display()
+        ));
     }
-    usuel
+
+    // **DEUX IDENTITÉS QUI SE CONTREDISENT SE DISENT, TOUJOURS.** On compare
+    // les machines que nomment les fichiers présents ; deux copies de la même
+    // (une migration interrompue) ne disent rien de plus que l'avertissement
+    // ci-dessus.
+    let machines: Vec<(PathBuf, String)> = candidats
+        .iter()
+        .filter_map(|(_, ou)| machine_nommee(ou).map(|machine| (ou.clone(), machine)))
+        .collect();
+    let retenue = machines
+        .iter()
+        .find(|(ou, _)| *ou == dossier)
+        .map(|(_, machine)| machine.clone());
+    if machines
+        .iter()
+        .any(|(_, machine)| Some(machine) != retenue.as_ref())
+    {
+        let autres: Vec<String> = machines
+            .iter()
+            .filter(|(ou, machine)| *ou != dossier && Some(machine) != retenue.as_ref())
+            .map(|(ou, machine)| format!("{machine} dans {}", ou.display()))
+            .collect();
+        avertissements.push(format!(
+            "identités de machine différentes : {} dans {} est retenue ; ignorée : {} — \
+             seul vous pouvez les départager.",
+            retenue.as_deref().unwrap_or("une identité illisible"),
+            dossier.display(),
+            autres.join(" ; ")
+        ));
+    }
+
+    Etat {
+        dossier,
+        origine,
+        avertissements,
+    }
+}
+
+/// La machine que nomme le fichier d'identité d'un dossier, s'il existe et se
+/// lit — **sans rien vérifier d'autre** : on compare, on ne s'authentifie pas.
+fn machine_nommee(dossier: &Path) -> Option<String> {
+    let contenu = fs::read_to_string(dossier.join(FICHIER)).ok()?;
+    contenu.lines().find_map(|ligne| {
+        let (clef, valeur) = ligne.trim().split_once('=')?;
+        (clef.trim() == "machine").then(|| valeur.trim().to_owned())
+    })
 }
 
 /// Trente-deux ou seize octets d'entropie, pris au noyau.
@@ -571,42 +754,244 @@ mod essais {
     fn le_repertoire_suit_l_ordre_annonce() {
         // La ligne de commande passe avant tout le reste.
         assert_eq!(repertoire(Some("/tmp/ici")), PathBuf::from("/tmp/ici"));
+        let etat = chercher(Some("/tmp/ici"));
+        assert_eq!(etat.origine, Origine::Option);
+        assert!(etat.avertissements.is_empty());
     }
 
-    /// Le repli vers l'application ne joue que sur macOS, et seulement quand
-    /// `~/.config/asl` n'a rien : on l'éprouve sur une maison à nous, où l'on
-    /// pose l'identité d'un côté puis de l'autre.
-    #[cfg(target_os = "macos")]
+    /// Une maison d'essai, avec ses trois emplacements d'état.
+    struct Maison {
+        racine: PathBuf,
+        groupe: PathBuf,
+        ancien: PathBuf,
+        usuel: PathBuf,
+    }
+
+    impl Maison {
+        fn neuve(quoi: &str) -> Self {
+            let racine = dossier(&format!("maison-{quoi}"));
+            let maison = Self {
+                groupe: racine.join(GROUPE),
+                ancien: racine.join(ANCIEN_CONTENEUR),
+                usuel: racine.join(".config").join("asl"),
+                racine,
+            };
+            for ou in [&maison.groupe, &maison.ancien, &maison.usuel] {
+                fs::create_dir_all(ou).expect("un dossier d'état");
+            }
+            maison
+        }
+
+        /// Pose l'identité d'une machine dont l'entropie tient en un octet.
+        fn poser(ou: &Path, octet: u8) -> String {
+            let machine = Identifiant::depuis_entropie(Genre::Machine, [octet; 16]);
+            ecrire(ou, machine, None, &[0x5A; 32]).expect("écrit");
+            machine.texte().as_str().to_owned()
+        }
+
+        /// La règle, sur cette maison, **comme sur un Mac**.
+        fn sur_mac(&self) -> Etat {
+            resoudre(None, None, None, &self.racine, true)
+        }
+    }
+
+    impl Drop for Maison {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.racine);
+        }
+    }
+
+    /// L'ordre de macOS, éprouvé sur une maison à nous — et donc aussi sur la
+    /// CI Linux : la plate-forme est un argument de la règle.
     #[test]
-    fn sur_mac_l_identite_de_l_application_est_lue_si_l_usuelle_manque() {
-        let maison = std::env::temp_dir().join(format!("asl-maison-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&maison);
-        let application = maison
-            .join("Library/Containers/org.airdesktop.servicelocator.mac/Data/Library/Application Support/asl");
-        fs::create_dir_all(&application).expect("le dossier de l'application");
-        let usuel = maison.join(".config").join("asl");
-        fs::create_dir_all(&usuel).expect("le dossier usuel");
+    fn sur_mac_le_groupe_puis_l_ancien_conteneur_puis_l_usuel() {
+        let maison = Maison::neuve("ordre");
 
         // Rien nulle part : l'usuel, pour que `asl enroll` y écrive.
-        assert_eq!(resoudre(None, None, None, &maison), usuel);
-        // L'application seule a une identité : c'est elle qu'on lit.
-        fs::write(application.join(FICHIER), "machine = m-0\n").expect("écrit");
-        assert_eq!(resoudre(None, None, None, &maison), application);
-        // L'usuel en a une aussi : il passe avant.
-        fs::write(usuel.join(FICHIER), "machine = m-0\n").expect("écrit");
-        assert_eq!(resoudre(None, None, None, &maison), usuel);
-        // Et ce qu'on a demandé passe avant tout, application ou pas.
-        fs::remove_file(usuel.join(FICHIER)).expect("effacé");
+        let etat = maison.sur_mac();
+        assert_eq!(etat.dossier, maison.usuel);
+        assert_eq!(etat.origine, Origine::Utilisateur);
+        assert!(etat.avertissements.is_empty(), "{:?}", etat.avertissements);
+
+        // L'usuel seul.
+        Maison::poser(&maison.usuel, 0x31);
+        let etat = maison.sur_mac();
         assert_eq!(
-            resoudre(None, Some("/tmp/la"), None, &maison),
-            PathBuf::from("/tmp/la")
-        );
-        assert_eq!(
-            resoudre(None, None, Some("/tmp/xdg"), &maison),
-            PathBuf::from("/tmp/xdg/asl")
+            (etat.dossier, etat.origine),
+            (maison.usuel.clone(), Origine::Utilisateur)
         );
 
-        let _ = fs::remove_dir_all(&maison);
+        // L'ancien conteneur, et la même machine : il passe avant, et on dit
+        // que la migration n'a pas eu lieu — sans parler de conflit.
+        Maison::poser(&maison.ancien, 0x31);
+        let etat = maison.sur_mac();
+        assert_eq!(etat.dossier, maison.ancien);
+        assert_eq!(etat.origine, Origine::AncienConteneur);
+        assert_eq!(etat.avertissements.len(), 1, "{:?}", etat.avertissements);
+        assert!(etat.avertissements[0].contains("ancien conteneur"));
+        assert!(etat.avertissements[0].contains("lancez l'application"));
+
+        // Le groupe, même machine : il passe devant tout, en silence — deux
+        // copies identiques sont une migration interrompue, que l'application
+        // finira.
+        Maison::poser(&maison.groupe, 0x31);
+        let etat = maison.sur_mac();
+        assert_eq!(
+            (etat.dossier, etat.origine),
+            (maison.groupe.clone(), Origine::Groupe)
+        );
+        assert!(etat.avertissements.is_empty(), "{:?}", etat.avertissements);
+
+        // Un dossier de groupe sans identité ne compte pas.
+        fs::remove_file(maison.groupe.join(FICHIER)).expect("effacé");
+        assert_eq!(maison.sur_mac().origine, Origine::AncienConteneur);
+
+        // `$XDG_CONFIG_HOME` remplace `~/.config`, au quatrième rang seulement.
+        fs::remove_file(maison.ancien.join(FICHIER)).expect("effacé");
+        let xdg = maison.racine.join("xdg");
+        let etat = resoudre(
+            None,
+            None,
+            Some(xdg.to_str().unwrap()),
+            &maison.racine,
+            true,
+        );
+        assert_eq!(
+            (etat.dossier, etat.origine),
+            (xdg.join("asl"), Origine::Utilisateur)
+        );
+        Maison::poser(&maison.groupe, 0x31);
+        let etat = resoudre(
+            None,
+            None,
+            Some(xdg.to_str().unwrap()),
+            &maison.racine,
+            true,
+        );
+        assert_eq!(etat.origine, Origine::Groupe);
+    }
+
+    #[test]
+    fn deux_identites_differentes_se_disent_et_la_plus_haute_est_prise() {
+        let maison = Maison::neuve("conflit");
+        let groupe = Maison::poser(&maison.groupe, 0x41);
+        let usuel = Maison::poser(&maison.usuel, 0x42);
+
+        let etat = maison.sur_mac();
+        assert_eq!(etat.dossier, maison.groupe, "la plus haute priorité");
+        assert_eq!(etat.avertissements.len(), 1, "{:?}", etat.avertissements);
+        let dit = &etat.avertissements[0];
+        assert!(!dit.contains('\n'), "une ligne : {dit}");
+        assert!(dit.contains(&groupe) && dit.contains(&usuel), "{dit}");
+        assert!(dit.contains("retenue"), "{dit}");
+        assert!(
+            dit.find(&groupe) < dit.find(&usuel),
+            "la retenue d'abord : {dit}"
+        );
+
+        // Trois emplacements, l'ancien conteneur retenu : les deux lignes.
+        fs::remove_file(maison.groupe.join(FICHIER)).expect("effacé");
+        let ancien = Maison::poser(&maison.ancien, 0x43);
+        let etat = maison.sur_mac();
+        assert_eq!(etat.origine, Origine::AncienConteneur);
+        assert_eq!(etat.avertissements.len(), 2, "{:?}", etat.avertissements);
+        assert!(etat.avertissements[1].contains(&ancien));
+        assert!(etat.avertissements[1].contains(&usuel));
+    }
+
+    #[test]
+    fn state_et_asl_state_sont_pris_tels_quels_sans_repli() {
+        let maison = Maison::neuve("sans-repli");
+        Maison::poser(&maison.groupe, 0x51);
+        Maison::poser(&maison.usuel, 0x52);
+        let vide = maison.racine.join("vide");
+
+        for macos in [true, false] {
+            // Un dossier qui ne porte rien reste LE dossier : pas de repli vers
+            // le groupe, et rien à dire des autres.
+            let etat = resoudre(
+                Some(vide.to_str().unwrap()),
+                None,
+                None,
+                &maison.racine,
+                macos,
+            );
+            assert_eq!(
+                (etat.dossier.clone(), etat.origine),
+                (vide.clone(), Origine::Option)
+            );
+            assert!(etat.avertissements.is_empty(), "{:?}", etat.avertissements);
+
+            let etat = resoudre(
+                None,
+                Some(vide.to_str().unwrap()),
+                Some("/tmp/xdg"),
+                &maison.racine,
+                macos,
+            );
+            assert_eq!(
+                (etat.dossier, etat.origine),
+                (vide.clone(), Origine::Environnement)
+            );
+            assert!(etat.avertissements.is_empty());
+
+            // `--state` passe avant `ASL_STATE`.
+            let etat = resoudre(Some("/tmp/a"), Some("/tmp/b"), None, &maison.racine, macos);
+            assert_eq!(etat.dossier, PathBuf::from("/tmp/a"));
+        }
+    }
+
+    /// Linux ne connaît ni le groupe ni l'ancien conteneur, même s'ils portent
+    /// une identité : l'ordre d'hier, sans avertissement.
+    #[test]
+    fn sur_linux_rien_ne_change() {
+        let maison = Maison::neuve("linux");
+        Maison::poser(&maison.groupe, 0x61);
+        Maison::poser(&maison.ancien, 0x62);
+        let etat = resoudre(None, None, None, &maison.racine, false);
+        assert_eq!(
+            (etat.dossier, etat.origine),
+            (maison.usuel.clone(), Origine::Utilisateur)
+        );
+        assert!(etat.avertissements.is_empty());
+        let etat = resoudre(None, None, Some("/tmp/xdg"), &maison.racine, false);
+        assert_eq!(etat.dossier, PathBuf::from("/tmp/xdg/asl"));
+    }
+
+    #[test]
+    fn le_conteneur_d_un_bac_a_sable_remonte_au_compte() {
+        assert_eq!(
+            hors_du_bac_a_sable(Path::new(
+                "/Users/thierry/Library/Containers/org.airdesktop.servicelocator.mac/Data"
+            )),
+            PathBuf::from("/Users/thierry")
+        );
+        for tel_quel in [
+            "/Users/thierry",
+            "/home/thierry",
+            "/Users/thierry/Library/Containers/x/Autre",
+            "Library/Containers/x/Data",
+            ".",
+        ] {
+            assert_eq!(
+                hors_du_bac_a_sable(Path::new(tel_quel)),
+                PathBuf::from(tel_quel)
+            );
+        }
+    }
+
+    #[test]
+    fn les_origines_se_disent() {
+        for origine in [
+            Origine::Option,
+            Origine::Environnement,
+            Origine::Groupe,
+            Origine::AncienConteneur,
+            Origine::Utilisateur,
+        ] {
+            assert!(!origine.dire().is_empty());
+        }
+        assert!(Origine::Groupe.dire().contains("groupe"));
     }
 
     #[test]
