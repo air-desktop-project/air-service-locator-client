@@ -43,6 +43,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/asl-adresses",
     "crates/asl-client",
     "crates/asl-client-tokio",
     "crates/asl-client-ffi",
@@ -74,6 +75,7 @@ authors = ["air-service-locator contributors"]
 repository = "https://github.com/air-desktop-project/air-service-locator-client"
 
 [workspace.dependencies]
+asl-adresses = { path = "crates/asl-adresses", version = "0.27.0" }
 asl-client = { path = "crates/asl-client", version = "0.27.0" }
 asl-client-tokio = { path = "crates/asl-client-tokio", version = "0.27.0" }
 asl-client-ffi = { path = "crates/asl-client-ffi", version = "0.27.0" }

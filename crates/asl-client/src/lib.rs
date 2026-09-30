@@ -86,6 +86,12 @@
 //! expiration sans attendre quarante-cinq secondes.
 
 #![no_std]
+// **AUCUN `unsafe` ICI** (décision 108) : la seule crate du dépôt qui en
+// contient est `asl-adresses`, qui déclare les appels du système, et les deux
+// façades d'ABI (`asl-client-ffi`, `asl-client-android`), qui sont des
+// frontières. Cette bibliothèque-ci, que des tiers chargent, n'en a pas
+// besoin, et le dit.
+#![forbid(unsafe_code)]
 
 use asl_cle::{ClePublique, CleSecrete, CodeEnrolement, Defi, LiaisonDeCanal, Signature};
 

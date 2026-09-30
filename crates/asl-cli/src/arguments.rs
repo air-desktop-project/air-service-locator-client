@@ -20,6 +20,8 @@
 //! de ce module sont donc les seuls qui puissent être exhaustifs, et ils le sont.
 
 use asl_client::renvoi::ASL_DIRECTORY;
+use std::net::IpAddr;
+
 use asl_id::{Genre, Identifiant};
 use asl_proto::{PointEcoute, Port, Protocole};
 
@@ -87,6 +89,10 @@ pub enum Commande {
         upnp: bool,
         /// `--verbose` : dire aussi ce que la passerelle tait d'habitude.
         bavard: bool,
+        /// `--bind <address>` : l'adresse à laquelle lier la socket, nommée
+        /// par l'exploitant (décision 108). Elle l'emporte sur le choix
+        /// automatique de l'adresse stable.
+        liaison: Option<IpAddr>,
     },
     /// Sonder l'écho d'une machine, d'ici, et vérifier que c'est bien elle.
     Ping {
@@ -145,6 +151,11 @@ pub const OPTION_NO_UPNP: &str = "--no-upnp";
 /// L'option d'`asl echo` qui dit aussi ce que la passerelle tait d'habitude
 /// — le trou IPv6 absent, une réponse SSDP écartée (décision 97 ; E20).
 pub const OPTION_VERBOSE: &str = "--verbose";
+
+/// L'option d'`asl echo` qui NOMME l'adresse à laquelle lier la socket
+/// (décision 108) : l'exploitant choisit son interface, ou l'adresse qu'il a
+/// écrite à la main dans le pare-feu de sa box.
+pub const OPTION_BIND: &str = "--bind";
 
 /// Un annuaire tel qu'il a été écrit sur la ligne de commande.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,6 +223,8 @@ pub enum Faute {
     AutreNomSousUnAnnuaire(String),
     /// `asl-directory` sous autre chose que le `n-…` d'un annuaire.
     AslDirectorySansAnnuaire,
+    /// L'adresse de `--bind` ne se lit pas (décision 108).
+    AdresseIllisible(String),
 }
 
 impl core::fmt::Display for Faute {
@@ -248,6 +261,11 @@ impl core::fmt::Display for Faute {
             Self::UtilisateurIllisible(quoi) => {
                 write!(f, "`{quoi}` n'est pas un utilisateur (u-…)")
             }
+            Self::AdresseIllisible(quoi) => write!(
+                f,
+                "`{quoi}` ne se lit pas comme une adresse IP littérale — `--bind` prend une \
+                 adresse de cette machine, IPv6 ou IPv4, jamais un nom"
+            ),
             // **SOUS UN `n-…`, UN SEUL NOM SE RÉSOUT** (décision 73) : un
             // annuaire n'annonce pas de services, il en est un.
             Self::AutreNomSousUnAnnuaire(nom) => write!(
@@ -495,21 +513,37 @@ where
         // Sans argument : l'annuaire joint dit lui-même de quelle voie il
         // parle, et le client n'a pas à nommer un pair qu'il ne connaît pas.
         "replication" => Commande::Replication,
-        // **DEUX OPTIONS, APRÈS LA COMMANDE**, parce qu'elles n'ont de sens
+        // **TROIS OPTIONS, APRÈS LA COMMANDE**, parce qu'elles n'ont de sens
         // que pour elle : `--no-upnp` coupe la passerelle (E15), `--verbose`
-        // dit ce qu'elle tait d'habitude (E20). Tout autre mot est refusé.
+        // dit ce qu'elle tait d'habitude (E20), `--bind` nomme l'adresse à
+        // laquelle se lier (décision 108). Tout autre mot est refusé.
         "echo" => {
             let mut upnp = true;
             let mut bavard = false;
-            for mot in suite.by_ref() {
+            let mut liaison = None;
+            while let Some(mot) = suite.next() {
                 match mot.as_str() {
                     OPTION_NO_UPNP => upnp = false,
                     OPTION_VERBOSE => bavard = true,
+                    OPTION_BIND => {
+                        let ecrite = suite
+                            .next()
+                            .ok_or_else(|| Faute::ValeurManquante(OPTION_BIND.to_owned()))?;
+                        liaison = Some(
+                            ecrite
+                                .parse::<IpAddr>()
+                                .map_err(|_| Faute::AdresseIllisible(ecrite.clone()))?,
+                        );
+                    }
                     _ if mot.starts_with("--") => return Err(Faute::OptionInconnue(mot)),
                     _ => return Err(Faute::ArgumentEnTrop(mot)),
                 }
             }
-            Commande::Echo { upnp, bavard }
+            Commande::Echo {
+                upnp,
+                bavard,
+                liaison,
+            }
         }
         "ping" => {
             let cible = suite.next().ok_or(Faute::ArgumentManquant {
@@ -1036,31 +1070,66 @@ mod essais {
     }
 
     #[test]
-    fn echo_prend_no_upnp_et_verbose_et_rien_d_autre() {
+    fn echo_prend_no_upnp_verbose_bind_et_rien_d_autre() {
         assert_eq!(
             lire(&["echo"]).unwrap().commande,
             Commande::Echo {
                 upnp: true,
-                bavard: false
+                bavard: false,
+                liaison: None
             }
         );
         assert_eq!(
             lire(&["echo", "--no-upnp"]).unwrap().commande,
             Commande::Echo {
                 upnp: false,
-                bavard: false
+                bavard: false,
+                liaison: None
             }
         );
         assert_eq!(
             lire(&["echo", "--verbose", "--no-upnp"]).unwrap().commande,
             Commande::Echo {
                 upnp: false,
-                bavard: true
+                bavard: true,
+                liaison: None
             }
         );
         assert_eq!(
             lire(&["echo", "--upnp"]),
             Err(Faute::OptionInconnue("--upnp".to_owned()))
+        );
+        // **`--bind` PREND UNE ADRESSE LITTÉRALE** (décision 108), et rien
+        // d'autre : un nom, une adresse de travers, ou rien du tout se
+        // refusent en le disant.
+        assert_eq!(
+            lire(&["echo", "--bind", "2a01:cb19:d27:2f00::7"])
+                .unwrap()
+                .commande,
+            Commande::Echo {
+                upnp: true,
+                bavard: false,
+                liaison: Some("2a01:cb19:d27:2f00::7".parse().unwrap())
+            }
+        );
+        assert_eq!(
+            lire(&["echo", "--bind", "192.168.1.20", "--no-upnp"])
+                .unwrap()
+                .commande,
+            Commande::Echo {
+                upnp: false,
+                bavard: false,
+                liaison: Some("192.168.1.20".parse().unwrap())
+            }
+        );
+        assert_eq!(
+            lire(&["echo", "--bind", "oxygen.maison"]),
+            Err(Faute::AdresseIllisible("oxygen.maison".to_owned())),
+            "un nom n'est pas une adresse (C20)"
+        );
+        assert_eq!(
+            lire(&["echo", "--bind"]),
+            Err(Faute::ValeurManquante("--bind".to_owned()))
         );
         assert_eq!(
             lire(&["echo", "grenier"]),

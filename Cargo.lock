@@ -146,6 +146,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "asl-adresses"
+version = "0.27.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "asl-api"
 version = "0.45.0"
 source = "git+https://github.com/air-desktop-project/air-service-locator-server?rev=f984ae8#f984ae887429d42c3bc990420138ec6ee804eb20"
@@ -176,6 +183,7 @@ dependencies = [
  "ams-quic",
  "ams-quic-tls",
  "ams-tls",
+ "asl-adresses",
  "asl-api",
  "asl-cle",
  "asl-client",

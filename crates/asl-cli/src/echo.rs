@@ -70,7 +70,9 @@
 //! règle posée à la main dans une box qui refuse UPnP meurt avec elle.
 //! L'écho se lie donc à **l'adresse IPv6 stable et globale** de l'interface
 //! qui sert le bail, quand la machine en a une et que le système la dit
-//! ([`crate::stable`]) ; à défaut, il garde le choix du système et le dit.
+//! (`asl-adresses`, la seule crate où `unsafe` est permis : sous macOS, les
+//! drapeaux d'une adresse demandent `getifaddrs` et un `ioctl`) ; à défaut,
+//! il garde le choix du système et le dit.
 //! **Le revers est assumé** (Thierry, 2026-09-30) : une adresse stable suit
 //! la machine sur l'Internet. **Et une socket liée à une adresse IPv6 ne
 //! parle pas IPv4** : la bascule de la décision 106 relie donc la socket à
@@ -102,6 +104,8 @@ pub struct OptionsEcho {
     pub upnp: bool,
     /// `--verbose` : dire aussi ce que la passerelle tait d'habitude.
     pub bavard: bool,
+    /// `--bind <address>` : l'adresse nommée par l'exploitant (décision 108).
+    pub liaison: Option<IpAddr>,
 }
 
 /// Lit `ASL_ECHO_UPNP` — `0` coupe la passerelle, `1` la laisse ; toute
@@ -183,10 +187,22 @@ pub async fn echo(
     let tirage = etat::hasard::<8>()
         .map(u64::from_le_bytes)
         .map_err(|quoi| Issue::Configuration(quoi.to_string()))?;
-    // **L'ADRESSE IPv6 STABLE, AVANT DE LIER** (décision 108) : elle se
-    // choisit sur l'interface que le système prendrait pour l'annuaire.
-    let stable = adresse_stable(&reglages).await;
-    let (socket, liee_a_la_stable) = lier_dans(&ordre_de_la_plage(tirage), stable).await?;
+    // **CE À QUOI ON SE LIE** (décision 108) : l'adresse que l'exploitant a
+    // nommée (`--bind`), sinon l'adresse IPv6 stable de l'interface que le
+    // système prendrait pour l'annuaire.
+    let nommee = match options.liaison {
+        Some(adresse) => Some(juger_la_liaison(adresse)?),
+        None => None,
+    };
+    let stable = match nommee {
+        Some(_) => None,
+        None => adresse_stable(&reglages).await,
+    };
+    let (socket, liee_a_la_stable) = lier_dans(
+        &ordre_de_la_plage(tirage),
+        nommee.or(stable.map(IpAddr::V6)),
+    )
+    .await?;
     let socket = Arc::new(socket);
     let ici = socket
         .local_addr()
@@ -197,7 +213,10 @@ pub async fn echo(
     // l'IPv4 sur une socket liée à `[::]` (ce que `net.ipv6.bindv6only`
     // retire à toutes ses sockets), et qu'on ait une IPv6 (sinon le bail y
     // est déjà).
-    let double_pile = ici.is_ipv6() && machine_a_double_pile().await;
+    // **`--bind` FIGE LA FAMILLE** : une socket liée à une adresse nommée ne
+    // se relie pas d'elle-même, et la bascule de la décision 106 est donc
+    // refusée — l'exploitant a dit où écouter.
+    let double_pile = nommee.is_none() && ici.is_ipv6() && machine_a_double_pile().await;
     let points = [PointEcoute::nouveau(
         Protocole::Udp,
         Port::depuis_u16(port)
@@ -215,7 +234,13 @@ pub async fn echo(
         identite.machine().texte().as_str()
     );
     println!("               il ne répond qu'aux sondes signées ; aux autres, le silence.");
-    dire_la_liaison(stable, liee_a_la_stable);
+    match nommee {
+        Some(adresse) => println!(
+            "écho           lié à {adresse}, nommée par --bind : le bail reste dans sa famille,\n\
+             \x20              et la bascule en IPv4 ne s'appliquera pas."
+        ),
+        None => dire_la_liaison(stable, liee_a_la_stable),
+    }
 
     // **LA PASSERELLE, À CÔTÉ** : elle ne bloque jamais une réponse. Elle
     // retire d'abord ce qu'un arrêt brutal a laissé sur la box.
@@ -229,8 +254,16 @@ pub async fn echo(
     let mut socket = Socket {
         socket,
         double_pile,
-        stable,
+        // **CE À QUOI ON SE RELIE EN IPv6** : l'adresse nommée si elle est
+        // IPv6 — et l'on ne s'en déliera pas, `double_pile` étant faux —,
+        // sinon l'adresse stable choisie.
+        stable: match nommee {
+            Some(IpAddr::V6(adresse)) => Some(adresse),
+            Some(IpAddr::V4(_)) => None,
+            None => stable,
+        },
         liee_a_la_stable,
+        nommee: nommee.is_some(),
     };
     let sortie = tenir_l_echo(
         &reglages,
@@ -266,6 +299,9 @@ struct Socket {
     /// La socket est-elle liée à cette adresse **en ce moment** ? Non quand
     /// il n'y en a pas, et non pendant un bail IPv4.
     liee_a_la_stable: bool,
+    /// **L'exploitant a nommé l'adresse** (`--bind`, décision 108) : on ne se
+    /// relie alors jamais de soi-même, et la bascule en IPv4 est refusée.
+    nommee: bool,
 }
 
 impl Socket {
@@ -309,7 +345,7 @@ impl Socket {
                 )));
             }
         }
-        let (neuve, liee) = lier(port, voulue).await.map_err(|quoi| {
+        let (neuve, liee) = lier(port, voulue.map(IpAddr::V6)).await.map_err(|quoi| {
             Issue::Configuration(format!(
                 "la socket de l'écho ne se relie pas à udp {port} : {quoi}"
             ))
@@ -350,6 +386,9 @@ struct Famille {
 /// Ce qui empêche une bascule en IPv4 que la passerelle demande.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Empechement {
+    /// L'exploitant a nommé l'adresse de la socket (`--bind`, décision 108) :
+    /// on ne l'en délie pas.
+    Nommee,
     /// La socket de l'écho ne sait pas l'IPv4.
     PasDeDoublePile,
     /// Aucun annuaire de la liste n'a d'adresse IPv4.
@@ -361,6 +400,9 @@ enum Empechement {
 impl std::fmt::Display for Empechement {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Self::Nommee => {
+                "la socket est liée à l'adresse que `--bind` a nommée : on ne l'en délie pas"
+            }
             Self::PasDeDoublePile => {
                 "la socket de l'écho n'est pas à double pile (IPV6_V6ONLY refusé à zéro)"
             }
@@ -602,7 +644,9 @@ async fn tenir_l_echo(
         .await;
         let _ = connexion.ecouter_les_poussees().await;
 
-        let empechement = if !socket.double_pile {
+        let empechement = if socket.nommee {
+            Some(Empechement::Nommee)
+        } else if !socket.double_pile {
             Some(Empechement::PasDeDoublePile)
         } else if en_ipv4_seulement(tous).is_none() {
             Some(Empechement::PasDAnnuaireIpv4)
@@ -1122,10 +1166,10 @@ fn ordre_de_la_plage(graine: u64) -> [u16; PORTS] {
 ///
 /// [`Issue::Configuration`] — « aucun port libre » — quand toute la plage
 /// est occupée : c'est la machine qu'il faut regarder, pas le réseau.
-async fn lier_dans(ports: &[u16], stable: Option<Ipv6Addr>) -> Result<(UdpSocket, bool), Issue> {
+async fn lier_dans(ports: &[u16], nommee: Option<IpAddr>) -> Result<(UdpSocket, bool), Issue> {
     let mut derniere: Option<std::io::Error> = None;
     for port in ports {
-        match lier(*port, stable).await {
+        match lier(*port, nommee).await {
             Ok(liee) => return Ok(liee),
             Err(quoi) => derniere = Some(quoi),
         }
@@ -1139,12 +1183,13 @@ async fn lier_dans(ports: &[u16], stable: Option<Ipv6Addr>) -> Result<(UdpSocket
     )))
 }
 
-/// **Lie la socket de l'écho à ce port** : à `stable` si l'on en a une
-/// (décision 108), sinon à `[::]` en double pile, sinon — pas d'IPv6 sur
-/// cette machine — à `0.0.0.0`. Rend la socket, et **si elle est liée à
-/// l'adresse stable**.
-async fn lier(port: u16, stable: Option<Ipv6Addr>) -> std::io::Result<(UdpSocket, bool)> {
-    if let Some(adresse) = stable {
+/// **Lie la socket de l'écho à ce port** : à `nommee` si l'on en a une —
+/// l'adresse IPv6 stable choisie, ou celle que `--bind` a nommée
+/// (décision 108) —, sinon à `[::]` en double pile, sinon — pas d'IPv6 sur
+/// cette machine — à `0.0.0.0`. Rend la socket, et **si elle est liée à cette
+/// adresse-là**.
+async fn lier(port: u16, nommee: Option<IpAddr>) -> std::io::Result<(UdpSocket, bool)> {
+    if let Some(adresse) = nommee {
         // Une adresse précise : rien à dire de la double pile, c'est une
         // socket IPv6 et elle le reste (la bascule la reliera).
         match UdpSocket::bind((adresse, port)).await {
@@ -1193,11 +1238,56 @@ async fn machine_a_double_pile() -> bool {
     posee && socket.only_v6().is_ok_and(|seule| !seule)
 }
 
+/// **CE QUE `--bind` EXIGE DE L'ADRESSE QU'ON LUI DONNE** (décision 108).
+///
+/// - **En IPv6, elle doit être globale** : une adresse de lien local, une ULA,
+///   la boucle — l'annuaire ne les verrait pas, et aucune sonde du dehors ne
+///   les atteindrait. S'y lier serait se rendre injoignable exprès.
+/// - **En IPv4, une adresse privée est le cas ORDINAIRE** : derrière une box,
+///   la machine n'en a pas d'autre, et c'est la redirection qui la rend
+///   joignable. On ne refuse donc que ce qui ne peut pas servir : la boucle,
+///   l'indéterminée, le multicast, et une IPv4 enfouie dans l'IPv6 (`::ffff:`
+///   — qu'on demande alors d'écrire en IPv4).
+/// - **Elle doit être de cette machine**, et c'est le noyau qui le dira : à
+///   la liaison, une adresse absente rend `EADDRNOTAVAIL`, et [`lier_dans`]
+///   le dit tel quel. On ne la cherche pas d'avance : le système ne les dit
+///   pas tous ([`asl_adresses::adresses`]), et une liste incomplète
+///   refuserait une adresse bonne.
+///
+/// # Erreurs
+///
+/// [`Issue::Configuration`] — ce que l'adresse a de rédhibitoire, et pourquoi.
+fn juger_la_liaison(adresse: IpAddr) -> Result<IpAddr, Issue> {
+    let refus = |quoi: &str| Err(Issue::Configuration(format!("--bind {adresse} : {quoi}")));
+    match adresse {
+        IpAddr::V6(six) if six.to_ipv4_mapped().is_some() => {
+            refus("c'est une adresse IPv4 enfouie dans l'IPv6 — écrivez-la en IPv4 (`a.b.c.d`)")
+        }
+        IpAddr::V6(six) if !asl_adresses::globale(six) => refus(
+            "cette adresse IPv6 n'est pas globale (lien local, ULA, boucle, multicast) : \
+             l'annuaire ne la verrait pas, et aucune sonde du dehors ne l'atteindrait",
+        ),
+        IpAddr::V4(quatre)
+            if quatre.is_loopback()
+                || quatre.is_unspecified()
+                || quatre.is_multicast()
+                || quatre.is_broadcast() =>
+        {
+            refus(
+                "cette adresse IPv4 ne peut pas recevoir de sonde (boucle, indéterminée, \
+                 multicast, diffusion) — derrière une box, prenez l'adresse privée de la \
+                 machine, que la redirection rend joignable",
+            )
+        }
+        bonne => Ok(bonne),
+    }
+}
+
 /// **L'ADRESSE IPv6 STABLE À LAQUELLE SE LIER** (décision 108), ou rien.
 ///
 /// L'interface est celle que le système prendrait pour joindre un annuaire :
 /// on la lui demande comme [`adresses_locales`] le fait — une socket qu'on
-/// connecte, sans rien envoyer —, puis [`crate::stable::choisir`] tranche.
+/// connecte, sans rien envoyer —, puis `asl_adresses::choisir` tranche.
 async fn adresse_stable(reglages: &Reglages) -> Option<Ipv6Addr> {
     let cible = reglages
         .annuaires()
@@ -1210,7 +1300,7 @@ async fn adresse_stable(reglages: &Reglages) -> Option<Ipv6Addr> {
         IpAddr::V6(six) if !six.is_unspecified() => six,
         _ => return None,
     };
-    crate::stable::choisir(crate::stable::table().as_deref(), source)
+    asl_adresses::choisir(&asl_adresses::adresses(), source)
 }
 
 /// **POURQUOI LA LIAISON N'EST PAS CELLE QU'ON VOULAIT** (décision 108), ou
@@ -1234,8 +1324,7 @@ const fn raison_de_liaison(stable: bool, liee: bool, sans_table: bool) -> Option
 
 /// Ce que l'écho dit de sa liaison, une fois, au démarrage (décision 108).
 fn dire_la_liaison(stable: Option<Ipv6Addr>, liee: bool) {
-    let Some(pourquoi) =
-        raison_de_liaison(stable.is_some(), liee, crate::stable::table().is_none())
+    let Some(pourquoi) = raison_de_liaison(stable.is_some(), liee, !asl_adresses::systeme_bavard())
     else {
         let adresse = stable.map_or_else(String::new, |adresse| adresse.to_string());
         println!(
@@ -1370,8 +1459,8 @@ fn ecouter_l_arret() -> Arc<AtomicBool> {
 mod tests {
     use super::{
         DERNIER_PORT, Empechement, Jugement, PREMIER_PORT, Socket, adresses_locales,
-        en_ipv4_seulement, juger, lier, lier_dans, machine_a_double_pile, ordre_de_la_plage,
-        raison_de_liaison,
+        en_ipv4_seulement, juger, juger_la_liaison, lier, lier_dans, machine_a_double_pile,
+        ordre_de_la_plage, raison_de_liaison,
     };
     use crate::Issue;
     use crate::passerelle::{Retour, Voeu};
@@ -1603,7 +1692,7 @@ mod tests {
         };
         let libre = sonde.local_addr().unwrap().port();
         drop(sonde);
-        let (socket, liee) = lier(libre, Some(std::net::Ipv6Addr::LOCALHOST))
+        let (socket, liee) = lier(libre, Some(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)))
             .await
             .expect("la boucle locale se lie");
         assert!(liee, "on est bien lié à l'adresse demandée");
@@ -1626,12 +1715,13 @@ mod tests {
         let port = sonde.local_addr().unwrap().port();
         drop(sonde);
         let stable = std::net::Ipv6Addr::LOCALHOST;
-        let (socket, liee) = lier(port, Some(stable)).await.expect("liée");
+        let (socket, liee) = lier(port, Some(IpAddr::V6(stable))).await.expect("liée");
         let mut tenue = Socket {
             socket: std::sync::Arc::new(socket),
             double_pile: true,
             stable: Some(stable),
             liee_a_la_stable: liee,
+            nommee: false,
         };
         assert_eq!(tenue.liee(), Some(stable));
 
@@ -1667,6 +1757,7 @@ mod tests {
             double_pile: true,
             stable: None,
             liee_a_la_stable: false,
+            nommee: false,
         };
         for en_ipv4 in [true, false, true] {
             tenue.relier_pour(libre, en_ipv4).await.expect("rien");
@@ -1719,6 +1810,61 @@ mod tests {
             raison_de_liaison(false, false, false)
                 .expect("une raison")
                 .contains("aucune adresse IPv6 stable")
+        );
+    }
+
+    /// **CE QUE `--bind` REFUSE, ET CE QU'IL ACCEPTE** (décision 108).
+    #[test]
+    fn la_liaison_nommee_refuse_ce_qui_ne_peut_pas_servir() {
+        let juge = |texte: &str| juger_la_liaison(texte.parse().unwrap());
+        // En IPv6 : globale seulement.
+        assert!(juge("2a01:cb19:d27:2f00:144b:b441:5901:6706").is_ok());
+        for refusee in ["fe80::1", "fd00::a", "::1", "::", "ff02::c"] {
+            let faute = juge(refusee).expect_err(refusee);
+            assert!(
+                matches!(&faute, Issue::Configuration(quoi) if quoi.contains("n'est pas globale")),
+                "{refusee} : {faute:?}"
+            );
+        }
+        // Une IPv4 enfouie : on demande de l'écrire en IPv4.
+        let faute = juge("::ffff:192.168.1.20").expect_err("enfouie");
+        assert!(
+            matches!(&faute, Issue::Configuration(quoi) if quoi.contains("enfouie dans l'IPv6")),
+            "{faute:?}"
+        );
+        // En IPv4 : une adresse privée est le cas ORDINAIRE derrière une box.
+        assert!(juge("192.168.1.20").is_ok(), "derrière une box");
+        assert!(juge("203.0.113.7").is_ok());
+        for refusee in ["127.0.0.1", "0.0.0.0", "224.0.0.1", "255.255.255.255"] {
+            let faute = juge(refusee).expect_err(refusee);
+            assert!(
+                matches!(&faute, Issue::Configuration(quoi) if quoi.contains("ne peut pas recevoir")),
+                "{refusee} : {faute:?}"
+            );
+        }
+    }
+
+    /// **`--bind` L'EMPORTE, ET FIGE LA FAMILLE** : la passerelle peut bien
+    /// demander l'IPv4, on ne délie pas ce que l'exploitant a nommé.
+    #[test]
+    fn une_adresse_nommee_refuse_la_bascule_et_le_dit() {
+        let externe = "203.0.113.7".parse().unwrap();
+        assert_eq!(
+            juger(
+                Voeu::Ipv4 {
+                    externe,
+                    port: 6634
+                },
+                false,
+                false,
+                Some(Empechement::Nommee)
+            ),
+            Jugement::Empeche(Empechement::Nommee)
+        );
+        assert!(
+            Empechement::Nommee
+                .to_string()
+                .contains("`--bind` a nommée")
         );
     }
 }

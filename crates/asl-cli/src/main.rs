@@ -52,7 +52,6 @@ mod etat;
 mod passerelle;
 mod ping;
 mod rendu;
-mod stable;
 
 use arguments::{Commande, Invocation};
 
@@ -227,6 +226,7 @@ COMMANDS
                                       the other wrote.
 
     echo [--no-upnp] [--verbose]      Answer for this machine. Takes a UDP port
+         [--bind <address>]
                                       at random in 6631-6639 (the next one if it
                                       is taken; none free is a configuration
                                       error), announces `asl-echo` on it (one udp
@@ -267,6 +267,18 @@ COMMANDS
                                       quiet (no IPv6 pinhole, a skipped reply).
                                       ASL_ECHO_SSDP=<ip:port>[,…] asks those
                                       gateways directly instead of multicast.
+                                      Binds to the machine's STABLE IPv6
+                                      address when the system tells which one
+                                      is (Linux, macOS): a temporary address
+                                      is gone tomorrow, and a rule written by
+                                      hand in the gateway dies with it. It
+                                      says which address it took, or why it
+                                      could not. --bind <address> names one
+                                      instead — an IPv6 that must be global,
+                                      or an IPv4 (private is the usual case
+                                      behind a gateway); it wins over the
+                                      automatic choice, and the lease then
+                                      stays in that family (no IPv4 switch).
 
     ping <m-…|name|alias>             Prove, from here, that a machine answers and
                                       that it is really it. Resolves its asl-echo,
@@ -355,6 +367,7 @@ EXAMPLES
     asl replication
     asl echo
     asl echo --no-upnp
+    asl echo --bind 2a01:cb19:d27:2f00:144b:b441:5901:6706
     asl ping grenier
     asl ping m-7F3A9C2E5B1D4068ABCDEFGHJK"
     );
@@ -452,11 +465,16 @@ async fn conduire(invocation: &Invocation) -> Sortie {
             let identite = identite(&dossier)?;
             commandes::replication(invocation, &identite).await
         }
-        Commande::Echo { upnp, bavard } => {
+        Commande::Echo {
+            upnp,
+            bavard,
+            liaison,
+        } => {
             let identite = identite(&dossier)?;
             let options = echo::OptionsEcho {
                 upnp: *upnp,
                 bavard: *bavard,
+                liaison: *liaison,
             };
             echo::echo(invocation, &identite, &dossier, options).await
         }
