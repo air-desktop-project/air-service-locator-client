@@ -23,6 +23,7 @@ asl-echo.workspace = true
 # Le codec UPnP de la passerelle de l'écho : **ici, et jamais dans
 # `asl-client`** (§3 quater) — la bibliothèque que chargent les daemons des
 # autres n'ouvre rien sur la box.
+asl-adresses.workspace = true
 asl-upnp.workspace = true
 
 # `IPV6_MULTICAST_IF` pour le `M-SEARCH` IPv6 de la passerelle — voir

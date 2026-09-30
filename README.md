@@ -515,6 +515,32 @@ groupe. Et, faute de `getifaddrs` (C4), l'écho n'annonce
 qu'une adresse locale par famille : celle par laquelle la machine sort vers
 l'annuaire.
 
+**L'écho se lie à l'adresse IPv6 STABLE de la machine** (0.27.0,
+décision 108). Liée à `[::]`, sa socket laisserait le système choisir son
+adresse source — et là où les adresses temporaires tournent (RFC 8981 ; macOS
+par défaut, Linux souvent), c'est une adresse qui aura disparu demain. Une
+box qui refuse le trou UPnP ne laisse alors qu'une règle posée à la main, et
+cette règle meurt avec l'adresse qu'elle nomme (constaté sur une Livebox,
+qui ne propose qu'une liste fermée d'équipements, à une ancienne adresse
+temporaire dépréciée). L'écho retient donc **l'adresse stable et globale de
+l'interface qui sert le bail** — ni temporaire, ni dépréciée, ni provisoire,
+ni lien-local, ni ULA ; la plus petite s'il en reste plusieurs —, l'annonce,
+et **le dit** au démarrage ; à défaut, il garde le choix du système et dit
+pourquoi. Le revers est assumé : une adresse stable suit la machine sur
+l'Internet. Les drapeaux se lisent dans `/proc/net/if_inet6` sous Linux, et
+sous macOS par `getifaddrs` puis un `ioctl(SIOCGIFAFLAG_IN6)` — c'est tout
+ce que fait la crate `asl-adresses`, **le seul endroit du dépôt où `unsafe`
+est permis** (des déclarations `libc`, aucune ligne de C : C4 tient).
+
+**`asl echo --bind <adresse>`** nomme l'adresse à la place du choix
+automatique : une IPv6, qui doit être **globale** (une ULA ou un lien local
+ne se joignent pas du dehors), ou une IPv4 — derrière une box, l'adresse
+privée de la machine est le cas ordinaire, et c'est la redirection qui la
+rend joignable. Elle l'emporte sur tout, et **le bail reste alors dans sa
+famille** : la bascule en IPv4 (décision 106) ne s'applique pas, puisqu'on ne
+délie pas ce que l'exploitant a nommé. Une adresse absente de la machine est
+refusée par le noyau, et l'écho le dit tel quel.
+
 **La passerelle : UPnP, pour mettre toutes les chances de son côté** (0.24.0,
 décisions 94 à 97). Derrière une box, le bail ne laisse entrer que ce que le
 NAT veut bien laisser entrer ; une redirection demandée à la box laisse

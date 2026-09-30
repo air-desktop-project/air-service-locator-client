@@ -99,6 +99,19 @@ jobs:
       - name: Essais de la passerelle (macOS)
         run: cargo test --locked -p asl-cli --bin asl "passerelle::" -- --nocapture
 
+      # **LES ADRESSES ET LEURS DRAPEAUX, SUR LE NOYAU DE macOS**
+      # (décision 108). C'est ici, et nulle part ailleurs, que `getifaddrs`
+      # puis `ioctl(SIOCGIFAFLAG_IN6)` sont réellement appelés : sous Linux,
+      # `asl-adresses` lit `/proc`. Les essais ne concluent rien d'une machine
+      # sans IPv6 — ils éprouvent que le parcours de la liste ne fasse rien de
+      # mal, et que ce qui en sort soit cohérent.
+      - name: Essais des adresses (macOS)
+        run: cargo test --locked -p asl-adresses -- --nocapture
+
+      # La socket de l'écho, liée à une adresse nommée, sur ce noyau-là.
+      - name: Essais de l'écho (macOS)
+        run: cargo test --locked -p asl-cli --bin asl "echo::" -- --nocapture
+
       # Un échec de ces essais dit d'abord quelque chose du runner : ses
       # interfaces et ses routes IPv6, pour le lire.
       - name: Le réseau du runner (si les essais échouent)
