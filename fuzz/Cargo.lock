@@ -47,7 +47,7 @@ dependencies = [
 
 [[package]]
 name = "asl-client"
-version = "0.27.0"
+version = "0.27.1"
 dependencies = [
  "asl-api",
  "asl-cle",
@@ -91,7 +91,7 @@ dependencies = [
 
 [[package]]
 name = "asl-upnp"
-version = "0.27.0"
+version = "0.27.1"
 
 [[package]]
 name = "autocfg"
@@ -128,9 +128,9 @@ dependencies = [
 
 [[package]]
 name = "cfg-if"
-version = "1.0.4"
+version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
 name = "cmov"
@@ -587,9 +587,9 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "unicode-ident"
-version = "1.0.24"
+version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+checksum = "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954"
 
 [[package]]
 name = "wnaf"
