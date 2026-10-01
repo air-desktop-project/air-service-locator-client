@@ -40,9 +40,19 @@ use std::net::Ipv6Addr;
 
 // ── Ce que le système dit d'une adresse ─────────────────────────────────────
 
-/// Ce que le système dit d'une adresse IPv6, **normalisé** : les drapeaux de
-/// Linux et ceux de macOS ne portent pas les mêmes nombres, et cette
-/// structure est ce que les deux ont en commun de ce qui nous intéresse.
+/// Ce que le système dit d'une adresse IPv6, **normalisé**.
+///
+/// # LES DRAPEAUX NE PORTENT PAS LES MÊMES NOMBRES D'UN SYSTÈME À L'AUTRE
+///
+/// **C'est le piège de ce module**, et il a mordu (0.27.0, relevé sur oxygen
+/// le 2026-09-30) : sous Linux `IFA_F_TEMPORARY` vaut `0x01` et
+/// `IFA_F_DEPRECATED` `0x20` ; sous macOS, `0x01` est `IN6_IFF_ANYCAST` et
+/// `0x20` est `IN6_IFF_NODAD`, la temporaire étant `0x80` et la dépréciée
+/// `0x10`. Une valeur d'un système employée sur l'autre ne rend pas une
+/// erreur : elle rend un **mensonge plausible**. D'où cette structure, où
+/// plus aucun nombre ne circule, et deux lectures séparées
+/// ([`etat_linux`], [`etat_macos`]) dont les constantes sont, sur macOS,
+/// **vérifiées à la compilation contre celles de `libc`**.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Etat {
     /// Elle tourne (RFC 8981 ; `IFA_F_TEMPORARY`, `IN6_IFF_TEMPORARY`) —
@@ -57,16 +67,43 @@ pub struct Etat {
     /// Le réseau a dit qu'elle est à un autre, ou son lien est détaché
     /// (`IFA_F_DADFAILED` ; `IN6_IFF_DUPLICATED`, `IN6_IFF_DETACHED`).
     pub douteuse: bool,
+    /// **Stabilisée au sens de RFC 7217** (`IN6_IFF_SECURED`) — macOS le dit,
+    /// et l'on s'en sert pour DÉPARTAGER. **Linux n'a pas ce drapeau** : sa
+    /// stable ne porte aucun drapeau du tout, et `securisee` y est donc
+    /// toujours faux. « Préférer » ne doit jamais devenir « exiger », sans
+    /// quoi Linux n'aurait plus aucune candidate.
+    pub securisee: bool,
+    /// **LE SYSTÈME A-T-IL DIT CES DRAPEAUX ?**
+    ///
+    /// Faux quand on n'a rien pu lui demander — pas de `/proc`, un `ioctl`
+    /// refusé, un système qui ne les expose pas : l'adresse n'est alors **pas
+    /// candidate**, et l'appelant garde le choix du système (`[::]`), qu'il
+    /// journalise. **C'était le défaut de la 0.27.0** : un état « tout à
+    /// faux » passait pour stable, et l'on se liait à la plus petite adresse
+    /// de l'interface — sur oxygen, une temporaire DÉPRÉCIÉE. Mieux vaut le
+    /// repli qu'une mauvaise adresse.
+    pub connu: bool,
 }
 
 impl Etat {
-    /// **Peut-on s'y lier pour durer ?** Ni temporaire, ni dépréciée, ni
-    /// provisoire, ni douteuse. La façon dont l'adresse a été formée ne
-    /// compte pas : une adresse stabilisée par RFC 7217 (« secured ») et une
-    /// adresse posée à la main sont stables toutes les deux.
+    /// Ce qu'on sait d'une adresse dont le système n'a rien dit : rien.
+    pub const INCONNU: Self = Self {
+        temporaire: false,
+        depreciee: false,
+        provisoire: false,
+        douteuse: false,
+        securisee: false,
+        connu: false,
+    };
+
+    /// **Peut-on s'y lier pour durer ?** Il faut que le système ait parlé, et
+    /// qu'il n'ait dit ni temporaire, ni dépréciée, ni provisoire, ni
+    /// douteuse. La façon dont l'adresse a été formée ne compte pas : une
+    /// adresse stabilisée par RFC 7217 et une adresse posée à la main sont
+    /// stables toutes les deux — `securisee` ne sert qu'à départager.
     #[must_use]
     pub const fn stable(&self) -> bool {
-        !self.temporaire && !self.depreciee && !self.provisoire && !self.douteuse
+        self.connu && !self.temporaire && !self.depreciee && !self.provisoire && !self.douteuse
     }
 }
 
@@ -108,14 +145,24 @@ pub fn globale(adresse: Ipv6Addr) -> bool {
 /// que parmi les adresses de cette interface — se lier ailleurs serait se lier
 /// là où la route ne passe pas.
 ///
-/// Rendue : la plus petite, **dans l'ordre de ses seize octets**, des adresses
-/// de cette interface qui sont globales et stables. Un redémarrage reprend
-/// donc la même tant que le préfixe tient, et deux exploitants qui regardent
-/// la même machine y trouvent la même réponse.
+/// **Les candidates sont les adresses globales et stables de CETTE
+/// interface** — une machine en a plusieurs qui portent une globale (helium
+/// en a deux), et se lier sur celle où la route ne passe pas ne servirait à
+/// rien. Parmi elles :
+///
+/// 1. **celles que le système dit stabilisées** (RFC 7217, `IN6_IFF_SECURED`)
+///    d'abord, s'il y en a — c'est macOS qui le dit, et c'est exactement
+///    l'adresse que son `ifconfig` marque « secured » ;
+/// 2. **à défaut, toutes** : sous Linux, la stable ne porte aucun drapeau, et
+///    exiger « secured » n'y laisserait aucune candidate ;
+/// 3. puis **la plus petite, dans l'ordre de ses seize octets** — un
+///    redémarrage reprend la même tant que le préfixe tient, et deux
+///    exploitants qui regardent la même machine y trouvent la même réponse.
 ///
 /// **Rien** quand la liste ne dit pas l'interface de `source`, ou quand cette
-/// interface n'a aucune adresse stable et globale : l'appelant garde alors le
-/// choix du système, et le dit.
+/// interface n'a aucune candidate — y compris parce que le système n'a rien
+/// dit de ses drapeaux ([`Etat::connu`]) : l'appelant garde alors le choix du
+/// système, et le dit. **Le repli vaut mieux qu'une mauvaise adresse.**
 #[must_use]
 pub fn choisir(adresses: &[Adresse], source: Ipv6Addr) -> Option<Ipv6Addr> {
     // L'interface de la source. Si la source est absente de la liste — une
@@ -124,11 +171,16 @@ pub fn choisir(adresses: &[Adresse], source: Ipv6Addr) -> Option<Ipv6Addr> {
         .iter()
         .find(|lue| lue.adresse == source)
         .map(|lue| lue.interface.as_str())?;
-    adresses
-        .iter()
-        .filter(|lue| lue.interface == interface && lue.etat.stable() && globale(lue.adresse))
-        .map(|lue| lue.adresse)
-        .min_by_key(Ipv6Addr::octets)
+    let candidates = || {
+        adresses
+            .iter()
+            .filter(|lue| lue.interface == interface && lue.etat.stable() && globale(lue.adresse))
+    };
+    let securisees = candidates().filter(|lue| lue.etat.securisee);
+    let plus_petite = |suite: &mut dyn Iterator<Item = &Adresse>| {
+        suite.map(|lue| lue.adresse).min_by_key(Ipv6Addr::octets)
+    };
+    plus_petite(&mut { securisees }).or_else(|| plus_petite(&mut candidates()))
 }
 
 // ── Linux : `/proc/net/if_inet6` ────────────────────────────────────────────
@@ -181,6 +233,8 @@ fn ligne_de_table(texte: &str) -> Option<Adresse> {
             depreciee: drapeaux & LINUX_DEPRECIEE != 0,
             provisoire: drapeaux & LINUX_PROVISOIRE != 0,
             douteuse: drapeaux & LINUX_DAD_ECHOUEE != 0,
+            connu: true,
+            ..Etat::default()
         },
     })
 }
@@ -368,9 +422,8 @@ const _: () = assert!(core::mem::size_of::<In6Ifreq>() == IN6_IFREQ_OCTETS);
 ///
 /// **Rien de conclu quand quoi que ce soit manque** : sans socket, avec un nom
 /// qui ne tient pas, ou sur un `ioctl` refusé, on rend [`Etat::default`] —
-/// l'adresse est alors dite stable, et [`choisir`] pourra la retenir. C'est le
-/// comportement d'avant la décision 108, et il ne fait rien de faux : le
-/// système n'a rien dit.
+/// l'adresse est alors dite inconnue, et [`choisir`] ne la retiendra pas. Le
+/// repli du choix au système vaut mieux qu'une adresse potentiellement fausse.
 #[cfg(target_os = "macos")]
 fn drapeaux_de(
     descripteur: libc::c_int,
@@ -436,6 +489,8 @@ fn drapeaux_de(
         depreciee: drapeaux & MACOS_DEPRECIEE != 0,
         provisoire: drapeaux & MACOS_PROVISOIRE != 0,
         douteuse: drapeaux & (MACOS_DUPLIQUEE | MACOS_DETACHEE) != 0,
+        securisee: drapeaux & libc::IN6_IFF_SECURED != 0,
+        connu: true,
     }
 }
 
@@ -578,7 +633,14 @@ fe80000000000000144bb44159016706 05 40 20 80 en9
 
     #[test]
     fn un_etat_se_juge_drapeau_par_drapeau() {
-        assert!(Etat::default().stable());
+        assert!(!Etat::default().stable());
+        assert!(
+            Etat {
+                connu: true,
+                ..Etat::default()
+            }
+            .stable()
+        );
         for ecartee in [
             Etat {
                 temporaire: true,
