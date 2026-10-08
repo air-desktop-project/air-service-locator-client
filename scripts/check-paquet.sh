@@ -167,7 +167,23 @@ if command -v systemd-analyze > /dev/null 2>&1; then
     # relatif, par une copie de l'unité réécrite pour ce chemin.
     sed "s|^ExecStart=/usr/bin/asl |ExecStart=$essai/deballe/usr/bin/asl |" "$unite" \
         > "$essai/asl-echo.service"
-    if ! systemd-analyze verify --man=no "$essai/asl-echo.service" > "$essai/verify" 2>&1; then
+    # **`verify` PARLE AUSSI DES UNITÉS DE LA MACHINE, PAS SEULEMENT DE LA
+    # NÔTRE** : il charge le graphe, donc les unités installées, et commente les
+    # leurs. Sur l'image Ubuntu 26 des runners, trois d'entre elles portent
+    # encore un `CPUAccounting=` que systemd a retiré — `walinuxagent.service`,
+    # `xfs_scrub_all.service`, `system-xfs_scrub.slice`. Les retenir, c'était
+    # attribuer à NOTRE unité un défaut de l'image : le contrôle échouait sur
+    # quelque chose que ce dépôt ne peut ni causer ni corriger (2026-10-08).
+    #
+    # On écarte ce qui porte un chemin de répertoire d'unités SYSTÈME, et rien
+    # d'autre : une plainte sur l'unité présentée reste fatale, un message sans
+    # chemin aussi, et un REFUS (code non nul) reste un refus quoi qu'il dise.
+    refuse=non
+    systemd-analyze verify --man=no "$essai/asl-echo.service" > "$essai/brut" 2>&1 \
+        || refuse=oui
+    grep -vE '^/(usr/)?(local/)?(lib|etc|run)/systemd/' "$essai/brut" \
+        > "$essai/verify" || true
+    if [ "$refuse" = oui ]; then
         rate "systemd-analyze refuse l'unité :
 $(sed 's/^/    /' "$essai/verify")"
     elif [ -s "$essai/verify" ]; then
