@@ -110,8 +110,8 @@ bancs (n'importe qui crée un compte).
 Deux détails de barrière, vus depuis macOS :
 
 - `scripts/check-toolchain.sh` échoue sur macOS avec deux VIOLATIONS alors
-  que la toolchain est la bonne (« déclare nightly-2026-07-11, attendu
-  nightly-2026-07-11 ») — une différence sed/grep BSD ; sans effet en CI.
+  que la toolchain est la bonne (« déclare nightly-2026-08-15, attendu
+  nightly-2026-08-15 ») — une différence sed/grep BSD ; sans effet en CI.
 - `scripts/check-abi.sh` cherche `libasl_client_ffi.so` et ne tourne donc que
   sur Linux ; sur macOS, `nm -gU` sur le `.dylib` donne le même verdict (les
   27 symboles du registre = binaire = en-tête, vérifié à la main).
@@ -688,7 +688,7 @@ C'est le dernier verrou avant que l'attestation soit exigible en production.
   français. (Décision de Thierry, 2026-09-15 ; la table est plus haut.)
 
 - **Une seule toolchain, celle d'Air** (`rust-toolchain.toml`,
-  `nightly-2026-07-11`). Elle ne se modifie pas seule.
+  `nightly-2026-08-15`). Elle ne se modifie pas seule.
 - **Pas une ligne de C** (C4), **jamais une autre pile QUIC** (C15) : les deux
   sont vérifiés sur le graphe résolu par `check-sans-c.sh` et `check-pile.sh`.
 - **L'ABI est un contrat** (C12) : un ajout est libre et s'inscrit dans

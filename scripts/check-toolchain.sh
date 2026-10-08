@@ -32,7 +32,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-attendu="nightly-2026-07-11"
+attendu="nightly-2026-08-15"
 toolchain_air="$HOME/Code/air/rust-toolchain.toml"
 
 echo "check-toolchain — une seule toolchain, celle d'Air (C16)"

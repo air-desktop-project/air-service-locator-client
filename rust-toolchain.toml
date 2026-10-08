@@ -35,7 +35,7 @@
 # s'alignant sur Air, jamais l'inverse.
 
 [toolchain]
-channel = "nightly-2026-07-11"
+channel = "nightly-2026-08-15"
 # `rust-src` : exigé par `-Z build-std`, donc par la future cible `linux-air`.
 # Il ne sert à rien aujourd'hui, et il est là pour que la toolchain soit LA MÊME
 # que celle d'Air — un composant en moins ferait un pin qui n'en est plus un.
