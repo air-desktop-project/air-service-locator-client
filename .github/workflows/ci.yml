@@ -241,11 +241,26 @@ jobs:
   #
   # **DEUX ARCHITECTURES, CHACUNE SUR SA MACHINE** : `asl` tourne sur un PC
   # comme sur un Raspberry Pi. Le paquet `arm64` se construit sur le runner
-  # `ubuntu-24.04-arm` de GitHub — gratuit pour un dépôt public — et NON par
+  # `ubuntu-26.04-arm` de GitHub — gratuit pour un dépôt public — et NON par
   # compilation croisée : `paquet.sh` prend l'architecture de
   # `dpkg --print-architecture`, `dpkg-shlibdeps` lit le binaire avec les outils
   # de la machine, et l'étape 6 de `check-paquet.sh` EXÉCUTE ce qu'elle déballe.
   # Croisé, le binaire serait empaqueté sans avoir jamais tourné.
+  #
+  # **LES DEUX LABELS SONT EXPLICITES, ET C'EST VOULU.** Ni `ubuntu-latest` ni
+  # rien d'implicite : `ubuntu-26.04` et `ubuntu-26.04-arm`, nommés. La raison
+  # n'est pas le goût du pinning, c'est que `dpkg-shlibdeps` LIT le binaire et
+  # écrit un plancher `libc6 (>= …)` **pris de la glibc de la machine de
+  # construction**. Avec `ubuntu-latest`, ce plancher suit l'image que GitHub
+  # décide : la migration vers Ubuntu 26, étalée du 19 octobre au 19 novembre
+  # 2026, est **progressive** — deux runs successifs pouvaient donc produire
+  # **deux planchers différents pour la même version du paquet**. Ce n'est pas
+  # un décalage, c'est du non-déterminisme, et il n'a aucune place dans un job
+  # dont l'étape de vérification exécute ce qu'elle déballe.
+  #
+  # Le parc, mesuré en SSH le 2026-10-08 : nitrogen, argon et speedy en Ubuntu
+  # 26.04 / glibc 2.43 (x86_64), helium en 26.04 / 2.43 (aarch64). Les deux
+  # architectures se bâtissent donc contre la glibc qu'elles rencontreront.
   #
   # **ET LE PAQUET EST PUBLIÉ EN ARTEFACT** : installer `asl` ne doit pas exiger
   # une toolchain sur la machine qui le reçoit. `gh run download <run> -n
@@ -259,9 +274,9 @@ jobs:
       matrix:
         include:
           - architecture: amd64
-            runner: ubuntu-latest
+            runner: ubuntu-26.04
           - architecture: arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-26.04-arm
     steps:
       - uses: actions/checkout@v5
 
