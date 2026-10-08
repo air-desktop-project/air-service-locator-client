@@ -241,7 +241,7 @@ jobs:
   #
   # **DEUX ARCHITECTURES, CHACUNE SUR SA MACHINE** : `asl` tourne sur un PC
   # comme sur un Raspberry Pi. Le paquet `arm64` se construit sur le runner
-  # `ubuntu-24.04-arm` de GitHub — gratuit pour un dépôt public — et NON par
+  # `ubuntu-26.04-arm` de GitHub — gratuit pour un dépôt public — et NON par
   # compilation croisée : `paquet.sh` prend l'architecture de
   # `dpkg --print-architecture`, `dpkg-shlibdeps` lit le binaire avec les outils
   # de la machine, et l'étape 6 de `check-paquet.sh` EXÉCUTE ce qu'elle déballe.
@@ -261,7 +261,7 @@ jobs:
           - architecture: amd64
             runner: ubuntu-latest
           - architecture: arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-26.04-arm
     steps:
       - uses: actions/checkout@v5
 
