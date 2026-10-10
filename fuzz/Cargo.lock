@@ -47,7 +47,7 @@ dependencies = [
 
 [[package]]
 name = "asl-client"
-version = "0.27.4"
+version = "0.27.5"
 dependencies = [
  "asl-api",
  "asl-cle",
@@ -91,7 +91,7 @@ dependencies = [
 
 [[package]]
 name = "asl-upnp"
-version = "0.27.4"
+version = "0.27.5"
 
 [[package]]
 name = "autocfg"
