@@ -61,13 +61,38 @@
 #      réellement fait. Une crate qui compilerait du C sans porter `-sys` dans
 #      son nom n'est attrapée que par lui.
 #
-# **LE TROISIÈME NE CHERCHE QUE DANS `target/*/build/*/out/`, ET C'EST ESSENTIEL.**
-# Une première version balayait tout `target/` : elle a trouvé des centaines de
-# `.o` sous `target/debug/incremental/` et déclaré une violation. Ce sont les
-# objets de la compilation incrémentale de RUSTC, pas ceux d'un compilateur C.
+# **LE TROISIÈME MESURE LA PROVENANCE, IL NE LA DÉDUIT PLUS DU CHEMIN.**
+# Il a fallu deux fautes pour l'apprendre, et c'est la même :
+#
+#   - Une première version balayait tout `target/` : elle a trouvé des centaines
+#     de `.o` sous `target/debug/incremental/` et déclaré une violation. Ce sont
+#     les objets de la compilation incrémentale de RUSTC.
+#   - La version suivante ne cherchait plus que sous `target/*/build/*/out/`, au
+#     motif que ce chemin n'appartenait qu'aux scripts de construction. **Le cargo
+#     du `nightly-2026-08-15` y range aussi des artefacts de rustc** : le
+#     2026-10-09, le gate a accusé `libasl_client_ffi.a`, qui est la cible
+#     `staticlib` de la crate, dans une crate SANS `build.rs`.
 #
 # Un contrôle qui accuse le compilateur du langage qu'il protège est pire
-# qu'absent : on apprend à ignorer son verdict.
+# qu'absent : on apprend à ignorer son verdict. Tant qu'il raisonne sur un
+# EMPLACEMENT, il recommencera à chaque changement de disposition de cargo.
+#
+# Le critère lit donc la section `.comment` de chaque objet, que le compilateur
+# producteur y écrit lui-même (`rustc version …`, `GCC: …`, `clang version …`).
+# Le détail, et ce que la mesure a révélé, sont dans `scripts/provenance-objets.py`.
+#
+# **CE QUE LA MESURE A RÉVÉLÉ, ET QUI CHANGE CE QUE C4 PEUT AFFIRMER.** Sur les 887
+# membres de `libasl_client_ffi.a`, 852 portent `rustc version` et **35 portent
+# `clang version 23.1.0git`** : les intrinsèques de `compiler-rt` que **la toolchain
+# elle-même** livre dans `libcompiler_builtins-*.rlib`. Aucune crate tierce ne les
+# introduit, et aucune `staticlib` Rust n'en est exempte. C4 interdit qu'une crate
+# TIERCE compile ou lie du C ; il ne peut pas interdire le socle que rustc pose sous
+# tout programme Rust. Ces objets sont donc exemptés — par **empreinte SHA-256** du
+# membre livré par le sysroot, jamais par son nom : écrit d'abord sur les noms, le
+# critère acceptait un objet GCC renommé `…-popcountdi2.o`.
+#
+# **Fermé par défaut** : un objet dont la provenance ne peut pas être établie est une
+# violation, pas un doute accordé au prévenu.
 #
 # # `libc` EST ADMISE, ET IL FAUT DIRE POURQUOI
 #
@@ -171,16 +196,10 @@ done
 echo "construction, puis inspection des artefacts…"
 cargo build --workspace --locked --quiet
 
-# `cc` dépose ses objets et ses archives dans le `OUT_DIR` du script de
-# construction, et nulle part ailleurs. C'est donc là, et seulement là, qu'on
-# regarde.
-objets=$(find target -path '*/build/*/out/*' \( -name '*.o' -o -name '*.a' \) -type f 2>/dev/null | head -20 || true)
-if [ -n "$objets" ]; then
-    echo "VIOLATION  des objets compilés par un script de construction :"
-    printf '%s\n' "$objets" | sed 's/^/           /'
+# On MESURE la provenance de chaque objet, on ne la DÉDUIT plus de son chemin.
+# Le détail du pourquoi est en tête de ce fichier (« LE TROISIÈME MESURE… »).
+if ! python3 scripts/provenance-objets.py; then
     violations=$((violations + 1))
-else
-    echo "aucun objet dans la sortie d'un script de construction"
 fi
 
 echo
