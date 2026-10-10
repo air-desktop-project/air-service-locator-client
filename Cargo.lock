@@ -147,7 +147,7 @@ dependencies = [
 
 [[package]]
 name = "asl-adresses"
-version = "0.27.1"
+version = "0.27.3"
 dependencies = [
  "libc",
 ]
@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "asl-cli"
-version = "0.27.1"
+version = "0.27.3"
 dependencies = [
  "ams-h3",
  "ams-proto-http",
@@ -198,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "asl-client"
-version = "0.27.1"
+version = "0.27.3"
 dependencies = [
  "asl-api",
  "asl-cle",
@@ -210,7 +210,7 @@ dependencies = [
 
 [[package]]
 name = "asl-client-android"
-version = "0.27.1"
+version = "0.27.3"
 dependencies = [
  "asl-client-ffi",
  "jni",
@@ -218,7 +218,7 @@ dependencies = [
 
 [[package]]
 name = "asl-client-ffi"
-version = "0.27.1"
+version = "0.27.3"
 dependencies = [
  "ams-h3",
  "ams-proto-http",
@@ -238,7 +238,7 @@ dependencies = [
 
 [[package]]
 name = "asl-client-tokio"
-version = "0.27.1"
+version = "0.27.3"
 dependencies = [
  "ams-h3",
  "ams-proto-h3",
@@ -292,7 +292,7 @@ dependencies = [
 
 [[package]]
 name = "asl-upnp"
-version = "0.27.1"
+version = "0.27.3"
 
 [[package]]
 name = "autocfg"
