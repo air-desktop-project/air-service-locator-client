@@ -61,3 +61,13 @@ liaisons/kotlin/src/main/resources/
 
 # Ce que `scripts/construire-natif.sh` produit.
 distribution/
+
+# Vidages d'ICE de rustc — `rustc-ice-<horodatage>-<pid>.txt`, déposés À LA RACINE par
+# `install_ice_hook` quand le compilateur plante. Ce sont des traces de diagnostic (un
+# backtrace de rustc), pas des sources : elles n'ont rien à faire dans un dépôt.
+#
+# La règle est ici par PRÉVENTION, et elle est payée : le 2026-10-08, quatre de ces vidages
+# ont été commités à la racine du dépôt `air-service-locator-server` avec un changement de
+# toolchain, et ont atteint sa branche par défaut parce que RIEN ne les retenait. Un ICE
+# n'est pas un évènement rare sur une toolchain nightly épinglée.
+rustc-ice-*.txt
